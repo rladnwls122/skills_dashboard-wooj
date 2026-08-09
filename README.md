@@ -28,8 +28,16 @@ Amazon Q용 Incident Context 생성을 하나의 화면에서 수행한다.
 git clone https://github.com/rladnwls122/skills_dashboard-wooj.git
 cd skills_dashboard-wooj
 mise run install          # pnpm install (better-sqlite3 네이티브 빌드 포함)
-cp .env.example .env       # 필요시 값 수정 (리소스 이름을 비우면 자동 탐색)
+mise run env               # task-3 런북 값(skills-eks/skills-alb/skills-db-proxy/
+                            # skills-waf 등)으로 .env 생성 + AWS/kubeconfig 상태 점검
 ```
+
+`mise run env`는 `scripts/generate-env.sh`를 실행 — task-3 런북에 고정된 리소스
+이름을 자동으로 채우고, AWS 자격증명/kubeconfig 컨텍스트가 잡혀 있는지
+`aws sts get-caller-identity`/`kubectl config current-context`로 확인해서
+알려준다. **비밀키는 파일에 쓰지 않음** — 이미 설정된 AWS CLI 체인을 그대로 씀.
+직접 값을 바꾸고 싶으면 생성된 `.env`를 열어 수정하면 된다 (재실행 시 기존
+파일은 타임스탬프 백업 후 덮어씀).
 
 ### 3. 실행
 
