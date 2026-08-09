@@ -8,6 +8,7 @@ import type {
   MetricSummary,
   TimelineEntry,
   VerificationResult,
+  WafRecommendation,
 } from "@/lib/types";
 import { maskText } from "./mask";
 import { listDeployHistory, listWafHistory, saveIncidentSnapshot } from "./db";
@@ -26,6 +27,7 @@ export interface IncidentSnapshot {
   wafHistory: { ts: string; ruleName: string; action: string; status: string; detail: string }[];
   deployHistory: { ts: string; target: string; change: string; verdict: string }[];
   verifications: VerificationResult[];
+  wafRecommendations: WafRecommendation[];
 }
 
 export function buildSnapshot(parts: {
@@ -39,6 +41,7 @@ export function buildSnapshot(parts: {
   logs: IncidentSnapshot["logs"];
   previousLogs: IncidentSnapshot["previousLogs"];
   verifications: VerificationResult[];
+  wafRecommendations: WafRecommendation[];
 }): IncidentSnapshot {
   let wafHistory: IncidentSnapshot["wafHistory"] = [];
   let deployHistory: IncidentSnapshot["deployHistory"] = [];
@@ -179,6 +182,16 @@ export function toMarkdown(s: IncidentSnapshot): string {
   for (const v of s.verifications) {
     md.push(`- #${v.actionId} → ${v.verdict} (${v.checkedAt})`);
     for (const d of v.details) md.push(`  - ${d}`);
+  }
+
+  md.push(`\n## 12. WAF 규칙 추천 (적용 가능한 Rule JSON 포함)`);
+  if (s.wafRecommendations.length === 0) md.push(`- 추천 없음`);
+  for (const r of s.wafRecommendations) {
+    md.push(`### [${r.kind}] ${r.targetPattern}`);
+    md.push(`- ${r.reason} (confidence: ${r.confidence}, 오탐위험: ${r.falsePositiveRisk})`);
+    md.push("```json");
+    md.push(r.ruleJson);
+    md.push("```");
   }
 
   return maskText(md.join("\n"));

@@ -29,8 +29,10 @@ import {
   applyHistory,
   applyRecommendation,
   buildHttpSummary,
+  buildQHandoff,
   generateRecommendations,
   getAclInfo,
+  listSampleRows,
   rollbackWaf,
   simulateRecommendation,
 } from "@/lib/server/waf";
@@ -62,6 +64,7 @@ import type {
   Verdict,
   VerificationResult,
   WafPanel,
+  WafSampleRow,
 } from "@/lib/types";
 
 function ok<T>(data: T): ActionResult<T> {
@@ -319,6 +322,24 @@ export async function getWafHistoryAction(): Promise<ActionResult<ApplyHistoryEn
   }
 }
 
+export async function getWafSamplesAction(): Promise<ActionResult<WafSampleRow[]>> {
+  try {
+    return ok(await listSampleRows());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function generateQHandoffAction(
+  recommendationId: string,
+): Promise<ActionResult<{ text: string }>> {
+  try {
+    return ok({ text: await buildQHandoff(recommendationId) });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Deployment actions
 // ---------------------------------------------------------------------------
@@ -512,6 +533,7 @@ export async function generateIncidentContextAction(): Promise<
     const prevLogs = peekCached<IncidentSnapshot["previousLogs"]>("panel:lastprevlogs");
     const verifications = peekCached<VerificationResult[]>("panel:verifications") ?? [];
 
+    const wafPanel = peekCached<WafPanel>("panel:waf");
     const snapshot = buildSnapshot({
       metrics: metrics?.metrics ?? [],
       httpSummary: metrics?.httpSummary ?? null,
@@ -525,6 +547,7 @@ export async function generateIncidentContextAction(): Promise<
         ? { pod: prevLogs.pod, container: prevLogs.container, lines: prevLogs.lines }
         : null,
       verifications,
+      wafRecommendations: wafPanel?.recommendations ?? [],
     });
     return ok({
       markdown: toMarkdown(snapshot),

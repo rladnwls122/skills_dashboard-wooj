@@ -18,6 +18,18 @@ const RED = /(error|fatal|exception|\b50\d\b|\b5xx\b)/i;
 const ORANGE = /(warn|warning|timeout|\b429\b|\b4\d{2}\b|\b4xx\b)/i;
 const YELLOW = /(retry|backoff|connection refused|oom)/i;
 
+const LINE_TS_RE = /^\d{4}-\d{2}-\d{2}T(\d{2}:\d{2}:\d{2})(?:\.\d+)?Z?\s([\s\S]*)$/;
+
+function splitLineTs(line: string): { ts: string | null; rest: string } {
+  const m = line.match(LINE_TS_RE);
+  if (!m) return { ts: null, rest: line };
+  return { ts: m[1] ?? null, rest: m[2] ?? "" };
+}
+
+function isProblemLine(line: string): boolean {
+  return RED.test(line) || ORANGE.test(line) || YELLOW.test(line);
+}
+
 function lineColor(line: string): string {
   if (RED.test(line)) return "text-red-400";
   if (ORANGE.test(line)) return "text-orange-400";
@@ -56,6 +68,8 @@ export function InvestigationTab({
   const [tailLines, setTailLines] = useState(200);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [search, setSearch] = useState("");
+  const [hideTs, setHideTs] = useState(false);
+  const [onlyProblems, setOnlyProblems] = useState(false);
 
   const selectedPod = pods.find((p) => p.name === selection?.pod);
   const container =
@@ -75,11 +89,14 @@ export function InvestigationTab({
   );
 
   const filteredLines = useMemo(() => {
-    const lines = logs.data?.lines ?? [];
-    if (!search) return lines;
-    const q = search.toLowerCase();
-    return lines.filter((l) => l.toLowerCase().includes(q));
-  }, [logs.data, search]);
+    let lines = logs.data?.lines ?? [];
+    if (onlyProblems) lines = lines.filter(isProblemLine);
+    if (search) {
+      const q = search.toLowerCase();
+      lines = lines.filter((l) => l.toLowerCase().includes(q));
+    }
+    return lines;
+  }, [logs.data, search, onlyProblems]);
 
   const httpSummary = metrics.data?.httpSummary ?? null;
 
@@ -454,6 +471,14 @@ export function InvestigationTab({
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
               자동갱신(5s)
             </label>
+            <label className="flex items-center gap-1 text-neutral-400">
+              <input type="checkbox" checked={onlyProblems} onChange={(e) => setOnlyProblems(e.target.checked)} />
+              문제만
+            </label>
+            <label className="flex items-center gap-1 text-neutral-400">
+              <input type="checkbox" checked={hideTs} onChange={(e) => setHideTs(e.target.checked)} />
+              시간 숨김
+            </label>
             <button
               type="button"
               onClick={logs.refresh}
@@ -483,11 +508,19 @@ export function InvestigationTab({
                 : "Pod를 선택하세요"}
             </div>
           )}
-          {filteredLines.map((line, i) => (
-            <div key={i} className={`whitespace-pre-wrap break-all ${lineColor(line)}`}>
-              {line}
-            </div>
-          ))}
+          {filteredLines.map((line, i) => {
+            const { ts, rest } = splitLineTs(line);
+            return (
+              <div key={i} className="flex gap-2">
+                {!hideTs && (
+                  <span className="shrink-0 tabular-nums text-neutral-600 select-none">
+                    {ts ?? "        "}
+                  </span>
+                )}
+                <span className={`whitespace-pre-wrap break-all ${lineColor(line)}`}>{rest}</span>
+              </div>
+            );
+          })}
         </div>
       </Card>
 
@@ -561,17 +594,28 @@ export function InvestigationTab({
           {httpSummary ? (
             <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
               <div className="mb-1 text-neutral-600">{httpSummary.source}</div>
-              {httpSummary.byPath.map((p) => (
-                <div key={p.path} className="flex justify-between gap-2">
-                  <span className={`truncate ${p.lowPriority ? "text-neutral-600" : "text-neutral-300"}`}>
-                    {p.path || "/"}
-                    {p.lowPriority && " (헬스체크)"}
-                  </span>
-                  <span className="tabular-nums text-neutral-400">
-                    {p.count}건{p.blocked > 0 && <span className="text-red-400"> 차단{p.blocked}</span>}
-                  </span>
-                </div>
-              ))}
+              {httpSummary.byPath.map((p) => {
+                const suspicious =
+                  !p.lowPriority &&
+                  p.count >= 30 &&
+                  p.count / Math.max(httpSummary.totalSampled, 1) >= 0.5;
+                return (
+                  <div key={p.path} className="flex justify-between gap-2">
+                    <span className={`truncate ${p.lowPriority ? "text-neutral-600" : "text-neutral-300"}`}>
+                      {suspicious && (
+                        <span className="mr-1 rounded-[3px] bg-red-900 px-1 font-mono text-[9px] font-bold text-red-200">
+                          의심
+                        </span>
+                      )}
+                      {p.path || "/"}
+                      {p.lowPriority && " (헬스체크)"}
+                    </span>
+                    <span className="tabular-nums text-neutral-400">
+                      {p.count}건{p.blocked > 0 && <span className="text-red-400"> 차단{p.blocked}</span>}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <div className="text-[11px] text-neutral-500">

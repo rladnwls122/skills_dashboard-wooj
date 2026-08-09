@@ -18,6 +18,7 @@ import { cached } from "./cache";
 import { ENV, WAF_LIMITS, isLowPriorityPath } from "./config";
 import { logsClient, wafClient } from "./aws";
 import { insertWafHistory, getWafHistory, listWafHistory } from "./db";
+import { maskText } from "./mask";
 import type {
   ApplyHistoryEntry,
   HttpSummary,
@@ -27,7 +28,21 @@ import type {
   StatusDistribution,
   WafAclInfo,
   WafRecommendation,
+  WafSampleRow,
 } from "@/lib/types";
+
+// Pretty-print WAF objects with SearchString bytes decoded to text — the same
+// shape the WAF console JSON editor accepts, and readable by Amazon Q.
+export function wafJson(value: unknown): string {
+  return JSON.stringify(
+    value,
+    (_k, v: unknown) => {
+      if (v instanceof Uint8Array) return new TextDecoder().decode(v);
+      return v;
+    },
+    2,
+  );
+}
 
 interface AclHandle {
   webAcl: WebACL;
@@ -328,6 +343,7 @@ export async function generateRecommendations(
         expectedImpact: `임계치 초과 IP만 매칭 — 정상 저빈도 사용자는 영향 없을 것으로 추정 (검증 필요)`,
         falsePositiveRisk: "LOW",
         hasScopeDown: false,
+        ruleJson: "",
       },
     });
   }
@@ -367,6 +383,7 @@ export async function generateRecommendations(
           expectedImpact: `해당 UA 문자열 포함 요청 전부 매칭 — 동일 도구 사용 정상 사용자 존재 시 오탐 가능`,
           falsePositiveRisk: "MEDIUM",
           hasScopeDown: false,
+        ruleJson: "",
         },
       });
     }
@@ -407,6 +424,7 @@ export async function generateRecommendations(
         expectedImpact: `해당 경로 고빈도 IP만 매칭. 경로 외 트래픽 영향 없음.`,
         falsePositiveRisk: "LOW",
         hasScopeDown: true,
+        ruleJson: "",
       },
     });
   }
@@ -443,6 +461,7 @@ export async function generateRecommendations(
         expectedImpact: `동일 쿼리 파라미터 사용 요청 매칭. 정상 기능 쿼리라면 오탐 위험 높음 — COUNT 검증 필수.`,
         falsePositiveRisk: "HIGH",
         hasScopeDown: false,
+        ruleJson: "",
       },
     });
   }
@@ -468,6 +487,7 @@ export async function generateRecommendations(
         expectedImpact: `계측 전용(COUNT) — 트래픽 영향 없음`,
         falsePositiveRisk: "LOW",
         hasScopeDown: false,
+        ruleJson: "",
       },
     });
     recs.push({
@@ -493,11 +513,34 @@ export async function generateRecommendations(
         expectedImpact: `COUNT override — 트래픽 영향 없음. 매칭량 확인 후 차단 전환 판단.`,
         falsePositiveRisk: "LOW",
         hasScopeDown: false,
+        ruleJson: "",
       },
     });
   }
 
-  for (const r of recs) recStore.set(r.rec.id, r);
+  let nextPriority = 100;
+  try {
+    const { webAcl } = await getAclHandle();
+    nextPriority =
+      (webAcl.Rules ?? []).reduce((a, r) => Math.max(a, r.Priority ?? 0), 0) + 10;
+  } catch {
+    // priority preview falls back to 100 when the ACL is unreachable
+  }
+  for (const r of recs) {
+    const ruleName = `${r.rec.name}-${r.rec.id.slice(0, 24)}`.slice(0, 128);
+    r.rec.ruleJson = wafJson({
+      Name: ruleName,
+      Priority: nextPriority,
+      Statement: r.statement,
+      ...(r.isManagedGroup ? { OverrideAction: { Count: {} } } : { Action: { Count: {} } }),
+      VisibilityConfig: {
+        SampledRequestsEnabled: true,
+        CloudWatchMetricsEnabled: true,
+        MetricName: ruleName.replaceAll(/[^A-Za-z0-9_-]/g, "").slice(0, 128) || "dashRule",
+      },
+    });
+    recStore.set(r.rec.id, r);
+  }
   return recs.map((r) => r.rec);
 }
 
@@ -511,6 +554,94 @@ function hash(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) | 0;
   return h;
+}
+
+// Raw sampled requests as table rows — lets the operator see the individual
+// suspicious requests behind the aggregates (newest first, capped at 300).
+export async function listSampleRows(): Promise<WafSampleRow[]> {
+  const { samples } = await fetchSampledRequests();
+  return samples
+    .map((s) => ({
+      ts: s.Timestamp ? new Date(s.Timestamp).toISOString() : "",
+      ip: s.Request?.ClientIP ?? "",
+      country: s.Request?.Country ?? "",
+      method: s.Request?.Method ?? "",
+      path: samplePath(s),
+      query: sampleQuery(s).slice(0, 120),
+      userAgent: sampleHeader(s, "user-agent").slice(0, 80),
+      action: s.Action ?? "",
+      rule: s.RuleNameWithinRuleGroup ?? "",
+    }))
+    .sort((a, b) => (a.ts < b.ts ? 1 : -1))
+    .slice(0, 300);
+}
+
+// One paste-ready block for Amazon Q: situation, current WebACL rules JSON,
+// the recommended rule JSON, local simulation numbers, and the questions.
+export async function buildQHandoff(recommendationId: string): Promise<string> {
+  const stored = recStore.get(recommendationId);
+  if (!stored) throw new Error("recommendation expired — refresh the WAF panel");
+  const rec = stored.rec;
+
+  let aclName = ENV.wafWebAclName;
+  let existingRulesJson = "[]";
+  try {
+    const { webAcl } = await getAclHandle();
+    aclName = webAcl.Name ?? aclName;
+    existingRulesJson = wafJson(
+      (webAcl.Rules ?? []).map((r) => ({
+        Name: r.Name,
+        Priority: r.Priority,
+        Statement: r.Statement,
+        Action: r.Action,
+        OverrideAction: r.OverrideAction,
+      })),
+    );
+  } catch (e) {
+    existingRulesJson = `조회 실패: ${e instanceof Error ? e.message : String(e)}`;
+  }
+
+  let simText = "시뮬레이션 미실행 (샘플 부족 또는 오류)";
+  try {
+    const sim = await simulateRecommendation(recommendationId, 0);
+    simText = [
+      `- 샘플 매칭: ${sim.matchedSampled}/${sim.totalSampled} (${sim.matchRatePct}%)`,
+      `- 추정 매칭량 ${sim.estimatedMatched}건 / 추정 오탐 ${sim.estimatedFalsePositives}건 / 위험도 ${sim.riskLevel}`,
+      ...sim.notes.map((n) => `- ${n}`),
+    ].join("\n");
+  } catch {
+    // keep default text
+  }
+
+  const text = [
+    `# WAF 규칙 추가 검토 요청`,
+    ``,
+    `AWS WAFv2 WebACL "${aclName}" (scope: ${ENV.wafScope})에 아래 규칙 추가를 검토 중이다.`,
+    ``,
+    `## 탐지 상황`,
+    `- 대상 패턴: ${rec.targetPattern}`,
+    `- 판단 근거: ${rec.reason}`,
+    ...rec.evidence.map((e) => `- ${e}`),
+    ``,
+    `## 현재 WebACL 규칙 (JSON)`,
+    "```json",
+    existingRulesJson,
+    "```",
+    ``,
+    `## 추가하려는 규칙 (COUNT 모드, JSON)`,
+    "```json",
+    rec.ruleJson,
+    "```",
+    ``,
+    `## 로컬 시뮬레이션 결과 (GetSampledRequests 기반 추정)`,
+    simText,
+    ``,
+    `## 질문`,
+    `1. 이 규칙을 현재 WebACL에 추가하면 정상 트래픽을 차단할 위험이 있는가?`,
+    `2. 조건(경로/임계치/scope-down)을 더 안전하게 만들려면 어떻게 수정해야 하는가? 수정안을 동일한 Rule JSON 형식으로 제시해달라.`,
+    `3. 우선순위·WCU·기존 규칙과의 충돌 관점에서 문제가 있는가?`,
+  ].join("\n");
+  return maskText(text);
 }
 
 // ---------------------------------------------------------------------------

@@ -169,6 +169,22 @@ export interface WafRecommendation {
   expectedImpact: string;
   falsePositiveRisk: RiskLevel;
   hasScopeDown: boolean;
+  // The actual WAFv2 Rule object this recommendation would apply, pretty-printed
+  // (SearchString decoded to plain text — same format the WAF console JSON
+  // editor accepts). Shown/copied in the UI and handed to Amazon Q.
+  ruleJson: string;
+}
+
+export interface WafSampleRow {
+  ts: string;
+  ip: string;
+  country: string;
+  method: string;
+  path: string;
+  query: string;
+  userAgent: string;
+  action: string;
+  rule: string;
 }
 
 export interface SimulationResult {

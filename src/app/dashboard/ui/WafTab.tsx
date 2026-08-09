@@ -3,11 +3,13 @@
 import { useState } from "react";
 import {
   applyRuleAction,
+  generateQHandoffAction,
+  getWafSamplesAction,
   rollbackWafAction,
   simulateRuleAction,
 } from "@/app/actions/dashboard";
-import type { MetricsPanel, SimulationResult, WafPanel } from "@/lib/types";
-import { Card, ErrorNote, SectionLoading, fmtTs, type PollState } from "./shared";
+import type { MetricsPanel, SimulationResult, WafPanel, WafSampleRow } from "@/lib/types";
+import { Card, ErrorNote, SectionLoading, fmtTs, usePoll, type PollState } from "./shared";
 
 const RISK_COLOR = {
   LOW: "text-emerald-400",
@@ -54,6 +56,41 @@ export function WafTab({
   const [confirmApply, setConfirmApply] = useState<{ id: string; mode: "COUNT" | "BLOCK" } | null>(
     null,
   );
+  const [openJson, setOpenJson] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [sampleFilter, setSampleFilter] = useState<"ALL" | "BLOCK" | "ALLOW" | "COUNT">("ALL");
+  const [sampleSearch, setSampleSearch] = useState("");
+
+  const samples = usePoll(getWafSamplesAction, 30_000);
+
+  const copyText = async (key: string, text: string): Promise<void> => {
+    await navigator.clipboard.writeText(text);
+    setCopied(key);
+    setTimeout(() => setCopied(null), 1500);
+  };
+
+  const copyQHandoff = async (id: string): Promise<void> => {
+    setBusy(id);
+    setMessage(null);
+    const res = await generateQHandoffAction(id);
+    if (res.ok) {
+      await copyText(`q-${id}`, res.data.text);
+      setMessage("Amazon Q용 프롬프트 복사됨 — 콘솔 Q 채팅에 그대로 붙여넣으면 됨 (현재 룰 JSON + 추천 룰 JSON + 시뮬 결과 + 질문 포함)");
+    } else {
+      setMessage(`Q 프롬프트 생성 실패: ${res.error}`);
+    }
+    setBusy(null);
+  };
+
+  const filteredSamples = (samples.data ?? []).filter((s) => {
+    if (sampleFilter !== "ALL" && s.action !== sampleFilter) return false;
+    if (sampleSearch) {
+      const q = sampleSearch.toLowerCase();
+      const hay = `${s.ip} ${s.path} ${s.query} ${s.userAgent} ${s.method}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
 
   const wafBlockedMetric = metrics.data?.metrics.find((m) => m.key === "wafBlocked");
   const wafAllowedMetric = metrics.data?.metrics.find((m) => m.key === "wafAllowed");
@@ -171,13 +208,23 @@ export function WafTab({
 
       <Card title="WAF 로그 통계 (경로/쿼리/헤더/메소드/차단)">
         {metrics.data?.httpSummary ? (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             <StatList
               title={`Path (총 ${metrics.data.httpSummary.totalSampled}건, 차단 ${metrics.data.httpSummary.byPath.reduce((a, p) => a + p.blocked, 0)}건)`}
               rows={metrics.data.httpSummary.byPath.map((p) => ({
                 key: `${p.path || "/"}${p.blocked > 0 ? ` (차단 ${p.blocked})` : ""}`,
                 count: p.count,
                 warn: p.blocked > 0,
+              }))}
+            />
+            <StatList
+              title="IP (점유율 30%↑ 강조)"
+              rows={metrics.data.httpSummary.byIp.map((ip) => ({
+                key: ip.key,
+                count: ip.count,
+                warn:
+                  ip.count >= 20 &&
+                  ip.count / Math.max(metrics.data!.httpSummary!.totalSampled, 1) >= 0.3,
               }))}
             />
             <StatList
@@ -279,7 +326,42 @@ export function WafTab({
                     >
                       BLOCK 승격
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setOpenJson(openJson === r.id ? null : r.id)}
+                      className="rounded bg-neutral-800 px-3 py-1 text-neutral-300 hover:bg-neutral-700"
+                    >
+                      {openJson === r.id ? "JSON 닫기" : "룰 JSON"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy === r.id}
+                      onClick={() => void copyQHandoff(r.id)}
+                      className="rounded bg-sky-800/70 px-3 py-1 font-semibold text-sky-100 hover:bg-sky-800 disabled:opacity-50"
+                    >
+                      {copied === `q-${r.id}` ? "복사됨!" : "Q 프롬프트 복사"}
+                    </button>
                   </div>
+
+                  {openJson === r.id && (
+                    <div className="mt-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="font-mono text-[10px] text-neutral-500">
+                          WAF 콘솔 JSON 편집기에 그대로 붙여넣기 가능
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void copyText(`json-${r.id}`, r.ruleJson)}
+                          className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+                        >
+                          {copied === `json-${r.id}` ? "복사됨!" : "JSON 복사"}
+                        </button>
+                      </div>
+                      <pre className="max-h-64 overflow-auto rounded bg-black p-2 font-mono text-[10px] leading-4 text-emerald-300">
+                        {r.ruleJson}
+                      </pre>
+                    </div>
+                  )}
 
                   {confirmApply?.id === r.id && (
                     <div className="mt-2 rounded border border-red-900 bg-red-950/40 p-2">
@@ -316,6 +398,91 @@ export function WafTab({
             )}
           </div>
         )}
+      </Card>
+
+      <Card
+        title={`샘플 요청 원본 (${filteredSamples.length}/${samples.data?.length ?? 0})`}
+        right={
+          <div className="flex items-center gap-2 text-[11px]">
+            <ErrorNote error={samples.error} />
+            {(["ALL", "BLOCK", "ALLOW", "COUNT"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setSampleFilter(f)}
+                className={`rounded px-2 py-0.5 font-mono text-[10px] ${
+                  sampleFilter === f
+                    ? "bg-neutral-200 text-neutral-900"
+                    : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+            <input
+              value={sampleSearch}
+              onChange={(e) => setSampleSearch(e.target.value)}
+              placeholder="IP/경로/UA 검색"
+              className="w-36 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5"
+            />
+            <button
+              type="button"
+              onClick={samples.refresh}
+              className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+            >
+              새로고침
+            </button>
+          </div>
+        }
+      >
+        <div className="max-h-80 overflow-auto">
+          <table className="w-full text-left font-mono text-[10px]">
+            <thead className="sticky top-0 bg-neutral-900 text-neutral-500">
+              <tr>
+                {["시각", "IP", "국가", "메소드", "경로", "쿼리", "User-Agent", "판정", "룰"].map((h) => (
+                  <th key={h} className="px-2 py-1 font-medium whitespace-nowrap">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredSamples.map((s, i) => (
+                <tr
+                  key={i}
+                  className={`border-t border-neutral-800 ${s.action === "BLOCK" ? "bg-red-950/25 text-red-300" : "text-neutral-300"}`}
+                >
+                  <td className="px-2 py-0.5 whitespace-nowrap text-neutral-500">{fmtTs(s.ts)}</td>
+                  <td className="px-2 py-0.5 whitespace-nowrap">{s.ip}</td>
+                  <td className="px-2 py-0.5">{s.country}</td>
+                  <td className="px-2 py-0.5">{s.method}</td>
+                  <td className="max-w-48 truncate px-2 py-0.5" title={s.path}>
+                    {s.path}
+                  </td>
+                  <td className="max-w-40 truncate px-2 py-0.5 text-neutral-500" title={s.query}>
+                    {s.query}
+                  </td>
+                  <td className="max-w-48 truncate px-2 py-0.5 text-neutral-500" title={s.userAgent}>
+                    {s.userAgent}
+                  </td>
+                  <td
+                    className={`px-2 py-0.5 font-bold ${s.action === "BLOCK" ? "text-red-400" : s.action === "COUNT" ? "text-amber-400" : "text-emerald-400"}`}
+                  >
+                    {s.action}
+                  </td>
+                  <td className="max-w-32 truncate px-2 py-0.5 text-neutral-500" title={s.rule}>
+                    {s.rule}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filteredSamples.length === 0 && !samples.error && (
+            <div className="p-3 text-center text-[11px] text-neutral-500">
+              {samples.loading ? "수집 중…" : "조건에 맞는 샘플 없음"}
+            </div>
+          )}
+        </div>
       </Card>
     </div>
   );

@@ -9,6 +9,10 @@ description = "Install dependencies"
 run = "node scripts/generate-env.mjs"
 description = "Generate .env pre-filled with task-3 runbook values"
 
+[tasks.attack-sim]
+run = "node scripts/attack-sim.mjs"
+description = "Rehearsal traffic generator (--target <url> required, --dry to preview)"
+
 [tasks.dev]
 run = "pnpm dev"
 description = "Run dev server on :3100"

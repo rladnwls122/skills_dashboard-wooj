@@ -65,13 +65,19 @@ mise run build && mise run start   # production 빌드로 실행
    이상 목록을 한 화면에 모아 보여줌. 장애 발생 시 가장 먼저 보는 탭.
 2. **조사 (Investigation)** — Pod 상세 상태·리소스 사용률, Node 리소스 사용률,
    Pod/Node 개수(min/current/max), Target Group별 지표, Warning Event Board,
-   Pod 로그 터미널(검색·Previous 로그·자동갱신 지원), 요청 로그 분석
-   (latency/비정상 응답/Error·Warn), HTTP Path·상태코드 분포, Incident
-   Timeline이 모여 있다. Overview나 Warning Event Board에서 "보기"/"로그"
-   버튼을 누르면 해당 Pod 로그로 바로 이동한다.
-3. **방화벽 (WAF)** — WAF 이상 요약, 경로/쿼리/헤더/메소드별 통계, 규칙 추천
-   목록. 규칙 카드에서 **시뮬레이션 → COUNT 적용(승인 필요) → BLOCK 승격
-   (COUNT 검증 이력 필요)** 순서로만 진행된다. 적용 이력에서 롤백 가능.
+   Pod 로그 터미널(검색·Previous 로그·자동갱신, **"문제만"**으로 Error/Warn
+   라인만 필터, **"시간 숨김"**으로 타임스탬프 접기), 요청 로그 분석
+   (latency/비정상 응답/Error·Warn), HTTP Path·상태코드 분포(경로 집중은 "의심"
+   배지), Incident Timeline이 모여 있다. Overview나 Warning Event Board에서
+   "보기"/"로그" 버튼을 누르면 해당 Pod 로그로 바로 이동한다.
+3. **방화벽 (WAF)** — WAF 이상 요약, 경로/IP/쿼리/헤더/메소드별 통계(IP 점유율
+   30%↑ 강조), **샘플 요청 원본 테이블**(개별 요청을 행 단위로 — IP/경로/UA/판정,
+   BLOCK/ALLOW/COUNT 필터·검색). 규칙 추천 카드에서 **시뮬레이션 → COUNT
+   적용(승인 필요) → BLOCK 승격(COUNT 검증 이력 필요)** 순서로만 진행된다.
+   각 추천 카드의 **"룰 JSON"** 버튼으로 WAF 콘솔에 그대로 붙여넣을 수 있는
+   Rule JSON을 보고 복사할 수 있고, **"Q 프롬프트 복사"** 버튼은 현재 WebACL 룰
+   JSON + 추천 룰 JSON + 시뮬 결과 + 검토 질문을 한 덩어리로 만들어 클립보드에
+   넣어준다 — Amazon Q 채팅에 그대로 붙여넣으면 됨. 적용 이력에서 롤백 가능.
 4. **조치 (Action)** — Deployment의 Replicas/CPU/Memory Limit을 변경. 값을
    입력하면 변경 전/후 비교표가 뜨고, 승인 버튼을 눌러야 실제로 적용된다.
    적용 후 약 2분 뒤 자동으로(또는 "지금 검증" 버튼으로) 효과를 검증해
@@ -82,6 +88,21 @@ mise run build && mise run start   # production 빌드로 실행
 
 **원칙**: 자동 차단·자동 정책 변경 없음. WAF/Deployment 변경은 항상 사람의
 명시적 승인을 거친다.
+
+### 대회 전 리허설 (선택)
+
+실제 공격 없이 탐지→추천→시뮬→적용 흐름을 검증하려면 리허설 트래픽 생성기를
+쓴다. **본인 소유 대상에만** 사용:
+
+```bash
+mise run attack-sim -- --target https://<대시보드가 보는 ALB/CloudFront 호스트> --dry
+# 실제 전송:
+mise run attack-sim -- --target https://<host> --scenario mixed --duration 60 --rps 20
+```
+
+시나리오: `normal` / `ip-flood` / `path-flood` / `bad-ua` / `sqli` / `mixed`.
+지정한 대상에 HTTP 요청만 보내며 AWS/K8s는 건드리지 않는다. 실행 후 WAF 탭의
+샘플 요청·추천 규칙에서 결과 확인 (WAF 샘플 반영까지 수 분 소요될 수 있음).
 
 ---
 
