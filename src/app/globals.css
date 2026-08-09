@@ -1,0 +1,105 @@
+@import "tailwindcss";
+
+/* Avionics console palette: blue-black neutrals, signal colors reserved for
+   state (green/amber/red), blue reserved for interaction/identity. Remapping
+   the Tailwind scales re-skins every component consistently. */
+@theme {
+  --color-neutral-950: #0b0e14;
+  --color-neutral-900: #10141d;
+  --color-neutral-800: #1c2230;
+  --color-neutral-700: #293145;
+  --color-neutral-600: #3d4763;
+  --color-neutral-500: #5e6a85;
+  --color-neutral-400: #8b98b8;
+  --color-neutral-300: #c3cce0;
+  --color-neutral-200: #dbe2f0;
+  --color-neutral-100: #edf1f9;
+
+  --color-emerald-400: #3ddc97;
+  --color-emerald-500: #2cc588;
+  --color-emerald-600: #1fa873;
+  --color-emerald-800: #14573f;
+  --color-emerald-900: #0e3f2e;
+  --color-emerald-950: #0a2b20;
+
+  --color-amber-300: #ffc87d;
+  --color-amber-400: #ffb454;
+  --color-amber-500: #f59d33;
+  --color-amber-600: #d97f1d;
+  --color-amber-700: #a35e14;
+  --color-amber-900: #4d2c0c;
+  --color-amber-950: #331d08;
+
+  --color-red-200: #ffc2c2;
+  --color-red-300: #ff9494;
+  --color-red-400: #ff5c5c;
+  --color-red-500: #f04343;
+  --color-red-600: #d32f2f;
+  --color-red-700: #a32424;
+  --color-red-800: #701a1a;
+  --color-red-900: #4d1414;
+  --color-red-950: #330d0d;
+
+  --color-sky-200: #b8d7ff;
+  --color-sky-300: #8ec0ff;
+  --color-sky-400: #59a7ff;
+  --color-sky-500: #3d8ef2;
+  --color-sky-600: #2a72d4;
+  --color-sky-900: #12365e;
+  --color-sky-950: #0b2440;
+
+  --color-orange-400: #ff8f4d;
+  --color-yellow-300: #ffd970;
+
+  --font-mono: "Cascadia Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas,
+    "Liberation Mono", monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0b0e14;
+  color: #c3cce0;
+}
+
+:focus-visible {
+  outline: 2px solid #59a7ff;
+  outline-offset: 1px;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #293145;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #10141d;
+}
+
+/* Annunciator strip: only CRITICAL segments blink, like a real warning panel. */
+@keyframes ann-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.ann-crit {
+  animation: ann-pulse 1.1s steps(2, jump-none) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ann-crit {
+    animation: none;
+  }
+  * {
+    animation-duration: 0.001s !important;
+    transition-duration: 0.001s !important;
+  }
+}

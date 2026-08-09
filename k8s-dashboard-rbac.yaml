@@ -1,0 +1,70 @@
+# RBAC for skills-dashboard (spec §27)
+# - Namespace-scoped Role for everything except nodes (cluster-scoped resource,
+#   read-only ClusterRole unavoidable; ClusterRole *writes* remain prohibited).
+# - No secrets, no configmap/service/ingress/role/rolebinding writes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: skills-dashboard
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: skills-dashboard
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: skills-dashboard
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: skills-dashboard
+    namespace: default
+roleRef:
+  kind: Role
+  name: skills-dashboard
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: skills-dashboard-nodes-read
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: skills-dashboard-nodes-read
+subjects:
+  - kind: ServiceAccount
+    name: skills-dashboard
+    namespace: default
+roleRef:
+  kind: ClusterRole
+  name: skills-dashboard-nodes-read
+  apiGroup: rbac.authorization.k8s.io
