@@ -6,7 +6,7 @@ run = "corepack enable pnpm && pnpm install"
 description = "Install dependencies"
 
 [tasks.env]
-run = "bash scripts/generate-env.sh"
+run = "node scripts/generate-env.mjs"
 description = "Generate .env pre-filled with task-3 runbook values"
 
 [tasks.dev]
