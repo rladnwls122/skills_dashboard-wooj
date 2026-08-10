@@ -3,6 +3,7 @@ import { ENV } from "./config";
 import { getPodLogs } from "./k8s";
 import { runInsightsQuery } from "./logsinsights";
 import { maskLines } from "./mask";
+import { PARSE_FIELDS, hhmmss, toIso } from "./logfields";
 import type { RequestLogAnalysis, RequestLogEntry } from "@/lib/types";
 
 export interface PodLogsFetch {
@@ -29,23 +30,6 @@ function podScope(pod: string, container: string): string {
     f += ` and kubernetes.container_name = "${container}"`;
   }
   return f;
-}
-
-const PARSE_FIELDS =
-  'parse log /"latency_ms":(?<latency_ms>[0-9.]+)/' +
-  ' | parse log /"method":"(?<method>[A-Z]+)"/' +
-  ' | parse log /"path":"(?<path>[^"]*)"/' +
-  ' | parse log /"status":(?<status>[0-9]+)/';
-
-// Converts "2026-08-10 03:07:12.727" (Insights @timestamp, UTC) to ISO so the
-// existing terminal timestamp splitter keeps working.
-function toIso(ts: string): string {
-  return `${ts.replace(" ", "T")}Z`;
-}
-
-function hhmmss(iso: string): string {
-  const m = iso.match(/T(\d{2}:\d{2}:\d{2})/);
-  return m?.[1] ?? "";
 }
 
 // All log reads and aggregations run in CloudWatch Logs Insights — nothing is
