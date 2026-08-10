@@ -9,6 +9,7 @@ import {
   simulateRuleAction,
 } from "@/app/actions/dashboard";
 import type { MetricsPanel, SimulationResult, WafPanel, WafSampleRow } from "@/lib/types";
+import { RequestLogPanel } from "./RequestLogPanel";
 import { Card, ErrorNote, SectionLoading, fmtTs, usePoll, type PollState } from "./shared";
 
 const RISK_COLOR = {
@@ -136,6 +137,119 @@ export function WafTab({
           {message}
         </div>
       )}
+
+      <Card
+        title={`샘플 요청 원본 (${filteredSamples.length}/${samples.data?.length ?? 0})`}
+        right={
+          <div className="flex items-center gap-2 text-[11px]">
+            <ErrorNote error={samples.error} />
+            {(["ALL", "BLOCK", "ALLOW", "COUNT"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setSampleFilter(f)}
+                className={`rounded px-2 py-0.5 font-mono text-[10px] ${
+                  sampleFilter === f
+                    ? "bg-neutral-200 text-neutral-900"
+                    : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+            <input
+              value={sampleSearch}
+              onChange={(e) => setSampleSearch(e.target.value)}
+              placeholder="IP/경로/UA/코드 검색"
+              className="w-36 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5"
+            />
+            <button
+              type="button"
+              onClick={samples.refresh}
+              className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+            >
+              새로고침
+            </button>
+          </div>
+        }
+      >
+        <div className="max-h-80 overflow-auto">
+          <table className="w-full text-left font-mono text-[10px]">
+            <thead className="sticky top-0 bg-neutral-900 text-neutral-500">
+              <tr>
+                {(
+                  [
+                    { label: "시각" },
+                    { label: "IP" },
+                    { label: "국가" },
+                    { label: "메소드" },
+                    { label: "경로" },
+                    { label: "쿼리" },
+                    { label: "User-Agent" },
+                    { label: "상태", hint: "WAF가 직접 응답한 요청만 기록됨 (Block+커스텀 응답, CAPTCHA). 일반 ALLOW 요청은 비어 있음 — 실제 앱 상태 코드는 아래 앱 요청 로그 참고" },
+                    { label: "판정" },
+                    { label: "룰" },
+                  ] as const
+                ).map((h) => (
+                  <th
+                    key={h.label}
+                    title={"hint" in h ? h.hint : undefined}
+                    className={`px-2 py-1 font-medium whitespace-nowrap ${"hint" in h ? "cursor-help underline decoration-dotted" : ""}`}
+                  >
+                    {h.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredSamples.map((s, i) => (
+                <tr
+                  key={i}
+                  className={`border-t border-neutral-800 ${s.action === "BLOCK" ? "bg-red-950/25 text-red-300" : "text-neutral-300"}`}
+                >
+                  <td className="px-2 py-0.5 whitespace-nowrap text-neutral-500">{fmtTs(s.ts)}</td>
+                  <td className="px-2 py-0.5 whitespace-nowrap">{s.ip}</td>
+                  <td className="px-2 py-0.5">{s.country}</td>
+                  <td className="px-2 py-0.5">{s.method}</td>
+                  <td className="max-w-48 truncate px-2 py-0.5" title={s.path}>
+                    {s.path}
+                  </td>
+                  <td className="max-w-40 truncate px-2 py-0.5 text-neutral-500" title={s.query}>
+                    {s.query}
+                  </td>
+                  <td className="max-w-48 truncate px-2 py-0.5 text-neutral-500" title={s.userAgent}>
+                    {s.userAgent}
+                  </td>
+                  <td className="px-2 py-0.5 tabular-nums whitespace-nowrap">
+                    {s.responseCode === null ? (
+                      <span className="text-neutral-600">—</span>
+                    ) : (
+                      <span className={s.responseCode >= 500 ? "text-red-400" : s.responseCode >= 400 ? "text-amber-400" : "text-neutral-300"}>
+                        {s.responseCode}
+                      </span>
+                    )}
+                  </td>
+                  <td
+                    className={`px-2 py-0.5 font-bold ${s.action === "BLOCK" ? "text-red-400" : s.action === "COUNT" ? "text-amber-400" : "text-emerald-400"}`}
+                  >
+                    {s.action}
+                  </td>
+                  <td className="max-w-32 truncate px-2 py-0.5 text-neutral-500" title={s.rule}>
+                    {s.rule}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {filteredSamples.length === 0 && !samples.error && (
+            <div className="p-3 text-center text-[11px] text-neutral-500">
+              {samples.loading ? "수집 중…" : "조건에 맞는 샘플 없음"}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <RequestLogPanel />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="WAF 이상 요약" right={<ErrorNote error={waf.error} />}>
@@ -398,117 +512,6 @@ export function WafTab({
             )}
           </div>
         )}
-      </Card>
-
-      <Card
-        title={`샘플 요청 원본 (${filteredSamples.length}/${samples.data?.length ?? 0})`}
-        right={
-          <div className="flex items-center gap-2 text-[11px]">
-            <ErrorNote error={samples.error} />
-            {(["ALL", "BLOCK", "ALLOW", "COUNT"] as const).map((f) => (
-              <button
-                key={f}
-                type="button"
-                onClick={() => setSampleFilter(f)}
-                className={`rounded px-2 py-0.5 font-mono text-[10px] ${
-                  sampleFilter === f
-                    ? "bg-neutral-200 text-neutral-900"
-                    : "bg-neutral-800 text-neutral-400 hover:bg-neutral-700"
-                }`}
-              >
-                {f}
-              </button>
-            ))}
-            <input
-              value={sampleSearch}
-              onChange={(e) => setSampleSearch(e.target.value)}
-              placeholder="IP/경로/UA/코드 검색"
-              className="w-36 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5"
-            />
-            <button
-              type="button"
-              onClick={samples.refresh}
-              className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
-            >
-              새로고침
-            </button>
-          </div>
-        }
-      >
-        <div className="max-h-80 overflow-auto">
-          <table className="w-full text-left font-mono text-[10px]">
-            <thead className="sticky top-0 bg-neutral-900 text-neutral-500">
-              <tr>
-                {(
-                  [
-                    { label: "시각" },
-                    { label: "IP" },
-                    { label: "국가" },
-                    { label: "메소드" },
-                    { label: "경로" },
-                    { label: "쿼리" },
-                    { label: "User-Agent" },
-                    { label: "상태", hint: "WAF가 직접 응답한 요청만 기록됨 (Block+커스텀 응답, CAPTCHA). 일반 ALLOW 요청은 비어 있음 — 실제 앱 상태 코드는 아래 앱 요청 로그 참고" },
-                    { label: "판정" },
-                    { label: "룰" },
-                  ] as const
-                ).map((h) => (
-                  <th
-                    key={h.label}
-                    title={"hint" in h ? h.hint : undefined}
-                    className={`px-2 py-1 font-medium whitespace-nowrap ${"hint" in h ? "cursor-help underline decoration-dotted" : ""}`}
-                  >
-                    {h.label}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filteredSamples.map((s, i) => (
-                <tr
-                  key={i}
-                  className={`border-t border-neutral-800 ${s.action === "BLOCK" ? "bg-red-950/25 text-red-300" : "text-neutral-300"}`}
-                >
-                  <td className="px-2 py-0.5 whitespace-nowrap text-neutral-500">{fmtTs(s.ts)}</td>
-                  <td className="px-2 py-0.5 whitespace-nowrap">{s.ip}</td>
-                  <td className="px-2 py-0.5">{s.country}</td>
-                  <td className="px-2 py-0.5">{s.method}</td>
-                  <td className="max-w-48 truncate px-2 py-0.5" title={s.path}>
-                    {s.path}
-                  </td>
-                  <td className="max-w-40 truncate px-2 py-0.5 text-neutral-500" title={s.query}>
-                    {s.query}
-                  </td>
-                  <td className="max-w-48 truncate px-2 py-0.5 text-neutral-500" title={s.userAgent}>
-                    {s.userAgent}
-                  </td>
-                  <td className="px-2 py-0.5 tabular-nums whitespace-nowrap">
-                    {s.responseCode === null ? (
-                      <span className="text-neutral-600">—</span>
-                    ) : (
-                      <span className={s.responseCode >= 500 ? "text-red-400" : s.responseCode >= 400 ? "text-amber-400" : "text-neutral-300"}>
-                        {s.responseCode}
-                      </span>
-                    )}
-                  </td>
-                  <td
-                    className={`px-2 py-0.5 font-bold ${s.action === "BLOCK" ? "text-red-400" : s.action === "COUNT" ? "text-amber-400" : "text-emerald-400"}`}
-                  >
-                    {s.action}
-                  </td>
-                  <td className="max-w-32 truncate px-2 py-0.5 text-neutral-500" title={s.rule}>
-                    {s.rule}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {filteredSamples.length === 0 && !samples.error && (
-            <div className="p-3 text-center text-[11px] text-neutral-500">
-              {samples.loading ? "수집 중…" : "조건에 맞는 샘플 없음"}
-            </div>
-          )}
-        </div>
       </Card>
     </div>
   );
