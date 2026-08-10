@@ -402,3 +402,22 @@ export interface IncidentContextResult {
 }
 
 export type ActionResult<T> = { ok: true; data: T } | { ok: false; error: string };
+
+export interface RequestLogRow {
+  // ISO timestamp
+  ts: string;
+  method: string;
+  path: string;
+  status: number;
+  latencyMs: number;
+}
+
+export interface RequestLogQueryResult {
+  rows: RequestLogRow[];
+  // recordsMatched — how many matched in the window, beyond the row cap
+  totalMatched: number;
+  scannedBytes: number;
+  windowLabel: string;
+  // true when the row cap hid matches
+  truncated: boolean;
+}
