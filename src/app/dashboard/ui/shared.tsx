@@ -11,6 +11,17 @@ export interface PollState<T> {
   refresh: () => void;
 }
 
+// A Server Action call that never reaches the server rejects with a bare
+// TypeError whose message is "Failed to fetch" — rendered as-is it is
+// indistinguishable from an AWS/K8s API error, so label the transport case.
+function describeError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/failed to fetch|networkerror|load failed|network request failed/i.test(raw)) {
+    return `서버 연결 끊김 — 대시보드 서버 응답 없음 (${raw})`;
+  }
+  return raw;
+}
+
 // Client-side polling with an in-flight guard: a tick is skipped while the
 // previous request is still running (spec §24).
 export function usePoll<T>(
@@ -34,12 +45,14 @@ export function usePoll<T>(
       if (res.ok) {
         setData(res.data);
         setError(null);
+        // Only a success advances the clock — otherwise the sidebar reads
+        // "just updated" while the panel is still showing stale data.
+        setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
       } else {
         setError(res.error);
       }
-      setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(describeError(e));
     } finally {
       inflight.current = false;
       setLoading(false);
