@@ -9,6 +9,7 @@ import {
   ErrorNote,
   SectionLoading,
   StatusBadge,
+  Truncate,
   WarningEventDetailModal,
   fmtTs,
   usePoll,
@@ -186,7 +187,7 @@ export function InvestigationTab({
           <div className="max-h-40 space-y-1 overflow-y-auto text-[11px]">
             {(kube.data?.podScaling ?? []).map((s) => (
               <div key={s.name} className="flex items-center justify-between rounded bg-neutral-950 px-2 py-1">
-                <span className="truncate text-neutral-300">{s.name}</span>
+                <Truncate text={s.name} className="text-neutral-300" />
                 <span className="tabular-nums text-neutral-400">
                   {s.min ?? "-"} / <span className="font-bold text-neutral-200">{s.current}</span> /{" "}
                   {s.max ?? "-"}
@@ -201,7 +202,7 @@ export function InvestigationTab({
           <div className="max-h-40 space-y-1 overflow-y-auto text-[11px]">
             {(kube.data?.nodeScaling ?? []).map((s) => (
               <div key={s.name} className="flex items-center justify-between rounded bg-neutral-950 px-2 py-1">
-                <span className="truncate text-neutral-300">{s.name}</span>
+                <Truncate text={s.name} className="text-neutral-300" />
                 <span className="tabular-nums text-neutral-400">
                   {s.min ?? "-"} / <span className="font-bold text-neutral-200">{s.current}</span> /{" "}
                   {s.max ?? "-"}
@@ -285,7 +286,7 @@ export function InvestigationTab({
             {(kube.data?.podResources ?? []).map((p) => (
               <div key={p.pod} className="rounded bg-neutral-950 px-2 py-1">
                 <div className="flex justify-between text-neutral-300">
-                  <span className="truncate">{p.pod}</span>
+                  <Truncate text={p.pod} />
                   <span className="tabular-nums text-neutral-500">
                     {(p.cpuUsageMilli / 1000).toFixed(2)} core · {(p.memUsageBytes / 1024 / 1024).toFixed(0)}Mi
                   </span>
@@ -307,7 +308,7 @@ export function InvestigationTab({
             {(kube.data?.nodeResources ?? []).map((n) => (
               <div key={n.name} className="rounded bg-neutral-950 px-2 py-1">
                 <div className="flex justify-between text-neutral-300">
-                  <span className="truncate">{n.name}</span>
+                  <Truncate text={n.name} />
                   <span className="tabular-nums text-neutral-500">
                     {(n.cpuUsageMilli / 1000).toFixed(2)}/{(n.cpuCapacityMilli / 1000).toFixed(1)} core ·{" "}
                     {(n.memUsageBytes / 1024 / 1024 / 1024).toFixed(2)}/
@@ -390,8 +391,8 @@ export function InvestigationTab({
                     <td className={`px-2 py-1 ${e.highlighted ? "font-semibold text-amber-400" : ""}`}>
                       {e.reason}
                     </td>
-                    <td className="max-w-64 truncate px-2 py-1 text-neutral-400" title={e.message}>
-                      {e.message}
+                    <td className="max-w-64 px-2 py-1 text-neutral-400">
+                      <Truncate text={e.message} />
                     </td>
                     <td className="px-2 py-1 tabular-nums">{e.count}</td>
                     <td className="px-2 py-1">
@@ -560,7 +561,7 @@ export function InvestigationTab({
               <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
                 {logs.data.requestLog.byPath.map((p) => (
                   <div key={p.path} className="flex justify-between rounded bg-neutral-950 px-2 py-1">
-                    <span className="truncate text-neutral-300">{p.path}</span>
+                    <Truncate text={p.path} className="text-neutral-300" />
                     <span className="tabular-nums text-neutral-500">
                       {p.count}건 · avg {p.avgLatencyMs}ms · max {p.maxLatencyMs}ms
                       {p.nonOkCount > 0 && <span className="text-amber-400"> · non-2xx {p.nonOkCount}</span>}

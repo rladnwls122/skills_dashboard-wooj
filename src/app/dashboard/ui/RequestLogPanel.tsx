@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getRequestLogRowsAction } from "@/app/actions/dashboard";
 import type { RequestLogQueryResult } from "@/lib/types";
-import { Card, ErrorNote, SectionLoading, fmtTs } from "./shared";
+import { Card, ErrorNote, SectionLoading, Truncate, fmtTs } from "./shared";
 
 const CLASSES = ["ALL", "2xx", "3xx", "4xx", "5xx"] as const;
 type StatusClass = (typeof CLASSES)[number];
@@ -128,8 +128,8 @@ export function RequestLogPanel() {
                 <tr key={i} className="border-t border-neutral-800 text-neutral-300">
                   <td className="px-2 py-0.5 whitespace-nowrap text-neutral-500">{fmtTs(r.ts)}</td>
                   <td className="px-2 py-0.5">{r.method}</td>
-                  <td className="max-w-64 truncate px-2 py-0.5" title={r.path}>
-                    {r.path}
+                  <td className="max-w-64 px-2 py-0.5">
+                    <Truncate text={r.path} />
                   </td>
                   <td className={`px-2 py-0.5 font-bold tabular-nums ${statusColor(r.status)}`}>
                     {r.status}

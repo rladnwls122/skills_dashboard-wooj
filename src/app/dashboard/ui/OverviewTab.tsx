@@ -8,6 +8,7 @@ import {
   SectionLoading,
   Sparkline,
   StatusBadge,
+  Truncate,
   WarningEventDetailModal,
   fmtDelta,
   type PollState,
@@ -97,13 +98,13 @@ export function OverviewTab({
                   onClick={() => onJumpToLogs(p.name, p.containers[0]?.name ?? "")}
                   className="flex w-full justify-between rounded bg-red-950/40 px-2 py-1 text-left text-red-300 hover:bg-red-950/70"
                 >
-                  <span className="truncate">{p.name}</span>
+                  <Truncate text={p.name} />
                   <span>{p.statusLabel}</span>
                 </button>
               ))}
               {restartPods.map((p) => (
                 <div key={`r-${p.name}`} className="flex justify-between rounded bg-amber-950/40 px-2 py-1 text-amber-300">
-                  <span className="truncate">{p.name}</span>
+                  <Truncate text={p.name} />
                   <span>재시작 +{p.recentRestartIncrease}</span>
                 </div>
               ))}

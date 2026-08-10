@@ -277,3 +277,41 @@ export function fmtTs(iso: string): string {
     return iso;
   }
 }
+
+// Truncated inline text with a hover tooltip that shows the full value in a
+// translucent box, clamped so it never leaves the viewport.
+export function Truncate({ text, className = "" }: { text: string; className?: string }) {
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+
+  const show = (e: React.MouseEvent<HTMLSpanElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setPos({ x: r.left, y: r.bottom + 4 });
+  };
+  const hide = () => setPos(null);
+
+  return (
+    <span
+      className={`truncate ${className}`}
+      onMouseEnter={show}
+      onMouseMove={pos ? undefined : show}
+      onMouseLeave={hide}
+    >
+      {text}
+      {pos && text && (
+        <span
+          role="tooltip"
+          style={{
+            position: "fixed",
+            left: `min(${pos.x}px, calc(100vw - 20rem - 8px))`,
+            top: pos.y,
+            maxWidth: "20rem",
+            zIndex: 50,
+          }}
+          className="pointer-events-none block max-h-40 overflow-hidden rounded border border-neutral-700 bg-neutral-900/85 px-2 py-1 text-[11px] whitespace-pre-wrap break-words text-neutral-100 shadow-lg backdrop-blur-sm"
+        >
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}

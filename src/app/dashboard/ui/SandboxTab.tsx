@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { getDefaultTestRequestsAction, testRuleJsonAction } from "@/app/actions/dashboard";
 import type { RuleTestResult, TestRequest, WafPanel } from "@/lib/types";
-import { Card, ErrorNote, SectionLoading, type PollState } from "./shared";
+import { Card, ErrorNote, SectionLoading, Truncate, type PollState } from "./shared";
 
 const PLACEHOLDER = `{
   "Name": "block-wp-login",
@@ -241,11 +241,11 @@ export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
                 return (
                   <tr key={row.requestId} className="border-t border-neutral-800 text-neutral-300">
                     <td className="px-2 py-0.5 text-neutral-500">{row.requestId}</td>
-                    <td className="max-w-40 truncate px-2 py-0.5" title={req?.path ?? ""}>
-                      {req?.path ?? "-"}
+                    <td className="max-w-40 px-2 py-0.5">
+                      <Truncate text={req?.path ?? ""} />
                     </td>
-                    <td className="max-w-40 truncate px-2 py-0.5 text-neutral-500" title={req?.userAgent ?? ""}>
-                      {req?.userAgent ?? "-"}
+                    <td className="max-w-40 px-2 py-0.5 text-neutral-500">
+                      <Truncate text={req?.userAgent ?? ""} />
                     </td>
                     <td className={`px-2 py-0.5 ${style?.cls ?? ""}`}>{style?.label ?? row.outcome}</td>
                     <td className="px-2 py-0.5 text-neutral-500">{row.reason}</td>

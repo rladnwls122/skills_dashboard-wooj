@@ -10,7 +10,7 @@ import {
 } from "@/app/actions/dashboard";
 import type { MetricsPanel, SimulationResult, WafPanel, WafSampleRow } from "@/lib/types";
 import { RequestLogPanel } from "./RequestLogPanel";
-import { Card, ErrorNote, SectionLoading, fmtTs, usePoll, type PollState } from "./shared";
+import { Card, ErrorNote, SectionLoading, Truncate, fmtTs, usePoll, type PollState } from "./shared";
 
 const RISK_COLOR = {
   LOW: "text-emerald-400",
@@ -211,14 +211,14 @@ export function WafTab({
                   <td className="px-2 py-0.5 whitespace-nowrap">{s.ip}</td>
                   <td className="px-2 py-0.5">{s.country}</td>
                   <td className="px-2 py-0.5">{s.method}</td>
-                  <td className="max-w-48 truncate px-2 py-0.5" title={s.path}>
-                    {s.path}
+                  <td className="max-w-48 px-2 py-0.5">
+                    <Truncate text={s.path} />
                   </td>
-                  <td className="max-w-40 truncate px-2 py-0.5 text-neutral-500" title={s.query}>
-                    {s.query}
+                  <td className="max-w-40 px-2 py-0.5 text-neutral-500">
+                    <Truncate text={s.query} />
                   </td>
-                  <td className="max-w-48 truncate px-2 py-0.5 text-neutral-500" title={s.userAgent}>
-                    {s.userAgent}
+                  <td className="max-w-48 px-2 py-0.5 text-neutral-500">
+                    <Truncate text={s.userAgent} />
                   </td>
                   <td className="px-2 py-0.5 tabular-nums whitespace-nowrap">
                     {s.responseCode === null ? (
@@ -234,8 +234,8 @@ export function WafTab({
                   >
                     {s.action}
                   </td>
-                  <td className="max-w-32 truncate px-2 py-0.5 text-neutral-500" title={s.rule}>
-                    {s.rule}
+                  <td className="max-w-32 px-2 py-0.5 text-neutral-500">
+                    <Truncate text={s.rule} />
                   </td>
                 </tr>
               ))}
