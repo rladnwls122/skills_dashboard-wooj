@@ -3,6 +3,8 @@
 import { POLLING } from "@/lib/server/config";
 import { cached, peekCached, putCached } from "@/lib/server/cache";
 import { errMsg, fetchCoreMetrics, fetchTargetGroupMetrics } from "@/lib/server/cloudwatch";
+import { fetchRequestLogRows } from "@/lib/server/applog";
+import type { StatusClass } from "@/lib/server/applogquery";
 import {
   countReadyNodes,
   getDeployment,
@@ -59,6 +61,7 @@ import type {
   MetricsPanel,
   MetricSummary,
   PodLogsResult,
+  RequestLogQueryResult,
   SimulationResult,
   StatusDistribution,
   Verdict,
@@ -355,6 +358,22 @@ export async function generateQHandoffAction(
 ): Promise<ActionResult<{ text: string }>> {
   try {
     return ok({ text: await buildQHandoff(recommendationId) });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// App request log — on-demand status-code query (no polling; Insights bills
+// per byte scanned)
+// ---------------------------------------------------------------------------
+
+export async function getRequestLogRowsAction(params: {
+  statusClass: StatusClass;
+  pathContains: string;
+}): Promise<ActionResult<RequestLogQueryResult>> {
+  try {
+    return ok(await fetchRequestLogRows(params));
   } catch (e) {
     return fail(e);
   }
