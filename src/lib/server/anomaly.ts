@@ -182,6 +182,15 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
         evidence,
         "HIGH",
       );
+      // A named scanner/recon tool is an unambiguous, near-zero-false-positive
+      // signature on its own — unlike the other detectors above, its severity
+      // must not be downgraded by escalate() just because no other metric is
+      // spiking (a lone scanner UA is common with volume-based signals quiet).
+      // Overwrite the severity `push` just set instead of touching escalate,
+      // which every other detector in this file still relies on unchanged.
+      // Non-null: `push` synchronously appended one element immediately above.
+      const justPushed = anomalies[anomalies.length - 1]!;
+      justPushed.severity = hasScanner ? "CRITICAL" : "WARNING";
     }
   }
 

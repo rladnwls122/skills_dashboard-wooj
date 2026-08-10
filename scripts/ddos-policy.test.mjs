@@ -42,6 +42,38 @@ const summary = (byPath, byUa) => ({
 const input = (httpSummary) => ({ metrics: [], httpSummary, pods: [], events: [], fingerprints: [] });
 const traffic = (as) => as.filter((a) => a.type === "TRAFFIC_ANOMALY_SUSPECTED");
 
+// A realistic metrics snapshot where every tracked metric is quiet (NORMAL),
+// matching the MetricSummary shape detectAnomalies reads (status plus the
+// fields the spike messages format). Using this instead of `metrics: []`
+// closes a gap where an absent metric (`undefined`) reads as "not NORMAL"
+// and inflates spikeSignals, silently corroborating an otherwise-isolated
+// finding.
+const normalMetric = (key, current) => ({
+  key,
+  label: key,
+  unit: "",
+  current,
+  previous: current,
+  delta: 0,
+  percentChange: 0,
+  status: "NORMAL",
+  points: [],
+});
+const normalMetrics = [
+  normalMetric("targetResponseTime", 0.2),
+  normalMetric("http4xx", 5),
+  normalMetric("http5xx", 0),
+  normalMetric("wafBlocked", 0),
+  normalMetric("rdsClientConnections", 5),
+];
+const inputQuiet = (httpSummary) => ({
+  metrics: normalMetrics,
+  httpSummary,
+  pods: [],
+  events: [],
+  fingerprints: [],
+});
+
 const loadGen = detectAnomalies(
   input(summary(
     [{ path: "/v1/user", count: 990, blocked: 0, lowPriority: false }],
@@ -93,9 +125,13 @@ check("Go load generator raises no malicious-client anomaly", malicious(loadGen)
 check("Go off-surface scan raises no malicious-client anomaly", malicious(scan).length, 0);
 check("Mozilla traffic raises no malicious-client anomaly", malicious(mixed).length, 0);
 
-// A named scanner tool in the UA mix does raise one, citing the tool, never an IP.
+// A named scanner tool in the UA mix does raise one, citing the tool, never an
+// IP — and using inputQuiet (realistic all-NORMAL metrics, not the empty-array
+// fixture) proves the severity isn't riding on an accidental spikeSignals
+// inflation: a lone scanner signature must be CRITICAL even with every other
+// metric quiet.
 const scanner = detectAnomalies(
-  input(summary(
+  inputQuiet(summary(
     [{ path: "/v1/user", count: 500, blocked: 0, lowPriority: false }],
     [{ key: "sqlmap/1.7", count: 60 }],
   )),
@@ -111,6 +147,27 @@ check(
   malicious(scanner)[0]?.evidence.some((e) => e.toLowerCase().includes("sqlmap")) ?? false,
   true,
 );
+check(
+  "scanner signature is guaranteed CRITICAL even with all other metrics NORMAL",
+  malicious(scanner)[0]?.severity,
+  "CRITICAL",
+);
+
+// A spoofed-but-not-scanner UA (malformed Mozilla, no named tool) is a softer
+// signal — it stays WARNING even under the same quiet-metrics conditions.
+const spoofed = detectAnomalies(
+  inputQuiet(summary(
+    [{ path: "/v1/user", count: 500, blocked: 0, lowPriority: false }],
+    [{ key: "Mozilla/5.0 (asdfghjklqwertyuiopzxcvbnm)", count: 60 }],
+  )),
+);
+check("spoofed-only UA raises a malicious-client anomaly", malicious(spoofed).length, 1);
+check(
+  "spoofed-only finding cites no source IP",
+  malicious(spoofed)[0]?.evidence.some((e) => e.includes("203.0.113.7")) ?? true,
+  false,
+);
+check("spoofed-only (no scanner/recon) severity stays WARNING", malicious(spoofed)[0]?.severity, "WARNING");
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
