@@ -86,7 +86,7 @@ export function WafTab({
     if (sampleFilter !== "ALL" && s.action !== sampleFilter) return false;
     if (sampleSearch) {
       const q = sampleSearch.toLowerCase();
-      const hay = `${s.ip} ${s.path} ${s.query} ${s.userAgent} ${s.method}`.toLowerCase();
+      const hay = `${s.ip} ${s.path} ${s.query} ${s.userAgent} ${s.method} ${s.responseCode ?? ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -422,7 +422,7 @@ export function WafTab({
             <input
               value={sampleSearch}
               onChange={(e) => setSampleSearch(e.target.value)}
-              placeholder="IP/경로/UA 검색"
+              placeholder="IP/경로/UA/코드 검색"
               className="w-36 rounded border border-neutral-700 bg-neutral-900 px-2 py-0.5"
             />
             <button
@@ -439,9 +439,26 @@ export function WafTab({
           <table className="w-full text-left font-mono text-[10px]">
             <thead className="sticky top-0 bg-neutral-900 text-neutral-500">
               <tr>
-                {["시각", "IP", "국가", "메소드", "경로", "쿼리", "User-Agent", "판정", "룰"].map((h) => (
-                  <th key={h} className="px-2 py-1 font-medium whitespace-nowrap">
-                    {h}
+                {(
+                  [
+                    { label: "시각" },
+                    { label: "IP" },
+                    { label: "국가" },
+                    { label: "메소드" },
+                    { label: "경로" },
+                    { label: "쿼리" },
+                    { label: "User-Agent" },
+                    { label: "상태", hint: "WAF가 직접 응답한 요청만 기록됨 (Block+커스텀 응답, CAPTCHA). 일반 ALLOW 요청은 비어 있음 — 실제 앱 상태 코드는 아래 앱 요청 로그 참고" },
+                    { label: "판정" },
+                    { label: "룰" },
+                  ] as const
+                ).map((h) => (
+                  <th
+                    key={h.label}
+                    title={"hint" in h ? h.hint : undefined}
+                    className={`px-2 py-1 font-medium whitespace-nowrap ${"hint" in h ? "cursor-help underline decoration-dotted" : ""}`}
+                  >
+                    {h.label}
                   </th>
                 ))}
               </tr>
@@ -464,6 +481,15 @@ export function WafTab({
                   </td>
                   <td className="max-w-48 truncate px-2 py-0.5 text-neutral-500" title={s.userAgent}>
                     {s.userAgent}
+                  </td>
+                  <td className="px-2 py-0.5 tabular-nums whitespace-nowrap">
+                    {s.responseCode === null ? (
+                      <span className="text-neutral-600">—</span>
+                    ) : (
+                      <span className={s.responseCode >= 500 ? "text-red-400" : s.responseCode >= 400 ? "text-amber-400" : "text-neutral-300"}>
+                        {s.responseCode}
+                      </span>
+                    )}
                   </td>
                   <td
                     className={`px-2 py-0.5 font-bold ${s.action === "BLOCK" ? "text-red-400" : s.action === "COUNT" ? "text-amber-400" : "text-emerald-400"}`}

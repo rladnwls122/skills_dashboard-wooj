@@ -465,22 +465,28 @@ function hash(s: string): number {
   return h;
 }
 
+// Exported for unit tests — the mapping is pure, the fetch is not.
+export function toSampleRow(s: SampledHTTPRequest): WafSampleRow {
+  return {
+    ts: s.Timestamp ? new Date(s.Timestamp).toISOString() : "",
+    ip: s.Request?.ClientIP ?? "",
+    country: s.Request?.Country ?? "",
+    method: s.Request?.Method ?? "",
+    path: samplePath(s),
+    query: sampleQuery(s).slice(0, 120),
+    userAgent: sampleHeader(s, "user-agent").slice(0, 80),
+    action: s.Action ?? "",
+    rule: s.RuleNameWithinRuleGroup ?? "",
+    responseCode: s.ResponseCodeSent ?? null,
+  };
+}
+
 // Raw sampled requests as table rows — lets the operator see the individual
 // suspicious requests behind the aggregates (newest first, capped at 300).
 export async function listSampleRows(): Promise<WafSampleRow[]> {
   const { samples } = await fetchSampledRequests();
   return samples
-    .map((s) => ({
-      ts: s.Timestamp ? new Date(s.Timestamp).toISOString() : "",
-      ip: s.Request?.ClientIP ?? "",
-      country: s.Request?.Country ?? "",
-      method: s.Request?.Method ?? "",
-      path: samplePath(s),
-      query: sampleQuery(s).slice(0, 120),
-      userAgent: sampleHeader(s, "user-agent").slice(0, 80),
-      action: s.Action ?? "",
-      rule: s.RuleNameWithinRuleGroup ?? "",
-    }))
+    .map(toSampleRow)
     .sort((a, b) => (a.ts < b.ts ? 1 : -1))
     .slice(0, 300);
 }

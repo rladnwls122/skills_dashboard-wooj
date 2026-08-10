@@ -185,6 +185,9 @@ export interface WafSampleRow {
   userAgent: string;
   action: string;
   rule: string;
+  // Only populated when WAF itself generated the response (Block with a custom
+  // response, CAPTCHA, Challenge). null for ordinary ALLOW traffic.
+  responseCode: number | null;
 }
 
 export interface SimulationResult {
