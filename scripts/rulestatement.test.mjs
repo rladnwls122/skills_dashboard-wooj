@@ -146,7 +146,7 @@ check(
 check(
   "REMOVE_NULLS strips null bytes",
   ev(byteMatch("select", { QueryString: {} }, "CONTAINS", [{ Priority: 0, Type: "REMOVE_NULLS" }]),
-    { ...REQ, query: "se le ct" }),
+    { ...REQ, query: "se\x00le\x00ct" }),
   true,
 );
 check(

@@ -116,7 +116,8 @@ function applyTransforms(value: string, transforms: unknown): string | null {
         }
         break;
       case "REMOVE_NULLS":
-        out = out.replace(/ /g, "");
+        // Strip NUL bytes.
+        out = out.replace(/\x00/g, "");
         break;
       case "NORMALIZE_PATH": {
         // Collapse repeated slashes and resolve ./ and ../ segments.
