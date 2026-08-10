@@ -19,6 +19,7 @@ import { ENV, WAF_LIMITS, isLowPriorityPath } from "./config";
 import { logsClient, wafClient } from "./aws";
 import { insertWafHistory, getWafHistory, listWafHistory } from "./db";
 import { maskText } from "./mask";
+import { classifyUa, queryHasBase64Blob } from "./threatsig";
 import type {
   ApplyHistoryEntry,
   HttpSummary,
@@ -375,6 +376,81 @@ export async function generateRecommendations(
         evidence: [`쿼리 "${needle}": ${topQuery.count}/${total}건`],
         expectedImpact: `동일 쿼리 파라미터 사용 요청 매칭. 정상 기능 쿼리라면 오탐 위험 높음 — COUNT 검증 필수.`,
         falsePositiveRisk: "HIGH",
+        hasScopeDown: false,
+        ruleJson: "",
+      },
+    });
+  }
+
+  // Unambiguous offensive-tool and spoofed-UA signatures get a Block rule, not
+  // a Count one: these are never legitimate traffic. REQ-02 — ByteMatch is an
+  // indexed, sub-millisecond match at the WAF edge returning a static 403, so
+  // the backend never sees the request. The Go client is bypassed in classifyUa
+  // (REQ-01); gobuster/zgrab still hit because a tool signature wins.
+  const seenSig = new Set<string>();
+  for (const ua of summary.byUa) {
+    const hit = classifyUa(ua.key);
+    if (!hit || seenSig.has(hit.label)) continue;
+    seenSig.add(hit.label);
+    const needle = hit.label;
+    const id = `bytematch-threat-${Math.abs(hash(needle))}`;
+    recs.push({
+      isManagedGroup: false,
+      statement: {
+        ByteMatchStatement: {
+          SearchString: utf8(needle),
+          FieldToMatch: { SingleHeader: { Name: "user-agent" } },
+          TextTransformations: [{ Priority: 0, Type: "LOWERCASE" }],
+          PositionalConstraint: "CONTAINS",
+        },
+      },
+      rec: {
+        id,
+        kind: "BYTE_MATCH",
+        name: "dash-threat-ua",
+        targetPattern: `공격 시그니처 UA "${needle}" (${hit.category})`,
+        criteria: { userAgent: needle },
+        threshold: null,
+        evaluationWindowSec: null,
+        action: "BLOCK",
+        confidence: "HIGH",
+        reason: `알려진 ${hit.category === "SCANNER" ? "취약점 스캐너" : hit.category === "RECON" ? "정찰 스캐너" : "위조/난독"} 시그니처 "${needle}" 관측. ByteMatch(CONTAINS, lowercase) 인덱스 매칭으로 최전단에서 즉시 차단.`,
+        evidence: [`UA "${ua.key}": ${ua.count}건`],
+        expectedImpact: "정적 403 응답 — 백엔드 도달 전 WAF에서 종료되므로 응답 시간 영향 없음. 정상 Go/브라우저 트래픽은 매칭되지 않음.",
+        falsePositiveRisk: "LOW",
+        hasScopeDown: false,
+        ruleJson: "",
+      },
+    });
+  }
+
+  const b64q = summary.queryPatterns.find((q) => queryHasBase64Blob(q.key));
+  if (b64q) {
+    const id = `bytematch-b64query-${Math.abs(hash(b64q.key))}`;
+    recs.push({
+      isManagedGroup: false,
+      statement: {
+        ByteMatchStatement: {
+          SearchString: utf8(b64q.key.slice(0, 60)),
+          FieldToMatch: { QueryString: {} },
+          TextTransformations: [{ Priority: 0, Type: "URL_DECODE" }],
+          PositionalConstraint: "CONTAINS",
+        },
+      },
+      rec: {
+        id,
+        kind: "BYTE_MATCH",
+        name: "dash-b64-query",
+        targetPattern: `base64 난독 쿼리 "${b64q.key.slice(0, 40)}"`,
+        criteria: { query: b64q.key.slice(0, 60) },
+        threshold: null,
+        evaluationWindowSec: null,
+        action: "COUNT",
+        confidence: "MEDIUM",
+        reason: "쿼리 문자열에 base64로 인코딩된 페이로드 의심 패턴 관측. 우선 COUNT로 관찰 후 차단 권장 — 정상 base64 파라미터 오탐 가능.",
+        evidence: [`쿼리 "${b64q.key.slice(0, 60)}": ${b64q.count}건`],
+        expectedImpact: "해당 인코딩 문자열 포함 요청 계측 — 오탐 없음 확인 후 Block 전환.",
+        falsePositiveRisk: "MEDIUM",
         hasScopeDown: false,
         ruleJson: "",
       },
