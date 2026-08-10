@@ -289,64 +289,19 @@ function utf8(s: string): Uint8Array {
   return new TextEncoder().encode(s);
 }
 
-function pathScopeDown(path: string): Statement {
-  return {
-    ByteMatchStatement: {
-      SearchString: utf8(path),
-      FieldToMatch: { UriPath: {} },
-      TextTransformations: [{ Priority: 0, Type: "LOWERCASE" }],
-      PositionalConstraint: "STARTS_WITH",
-    },
-  };
-}
-
+// Competition directive: volumetric (rate-based) detection is disabled in this
+// environment. The scenario's load generator drives heavy traffic at the served
+// API surface from a single IP, and matching it on request volume would take
+// down the scenario itself. No RateBasedStatement is ever recommended here —
+// signature-based rules (UA / QueryString) and COUNT-only managed instrumentation
+// remain. See APP_TRAFFIC_PATHS in config.ts.
 export async function generateRecommendations(
   wafBlockedStatus: string,
   http4xxStatus: string,
 ): Promise<WafRecommendation[]> {
-  const { samples, windowMinutes } = await fetchSampledRequests();
   const summary = await buildHttpSummary(null);
   const recs: StoredRecommendation[] = [];
   const total = Math.max(summary.totalSampled, 1);
-
-  const topIp = summary.byIp[0];
-  if (topIp && topIp.count >= 20 && topIp.count / total >= 0.3) {
-    const sharePct = Math.round((topIp.count / total) * 100);
-    const observedPer5m = Math.ceil((topIp.count / windowMinutes) * 5);
-    const est = estimateTotalFactor(samples.length);
-    const limit = Math.max(WAF_LIMITS.minRateLimit, observedPer5m * est * 2);
-    const id = `rate-ip-${topIp.key.replaceAll(".", "-")}`;
-    recs.push({
-      isManagedGroup: false,
-      statement: {
-        RateBasedStatement: {
-          Limit: limit,
-          AggregateKeyType: "IP",
-          EvaluationWindowSec: 300,
-        },
-      },
-      rec: {
-        id,
-        kind: "RATE_BASED",
-        name: `dash-rate-ip`,
-        targetPattern: `IP ${topIp.key} 집중 (샘플 점유율 ${sharePct}%)`,
-        criteria: { ip: topIp.key },
-        threshold: limit,
-        evaluationWindowSec: 300,
-        action: "COUNT",
-        confidence: sharePct >= 50 ? "HIGH" : "MEDIUM",
-        reason: `단일 IP가 샘플 요청의 ${sharePct}%를 차지 — 과도한 요청 집중 가능성. Rate-based 규칙으로 5분당 ${limit}건 초과 시 매칭.`,
-        evidence: [
-          `IP ${topIp.key}: 샘플 ${topIp.count}/${total}건 (${windowMinutes}분)`,
-          `추정 5분당 요청률: ~${observedPer5m * est}건`,
-        ],
-        expectedImpact: `임계치 초과 IP만 매칭 — 정상 저빈도 사용자는 영향 없을 것으로 추정 (검증 필요)`,
-        falsePositiveRisk: "LOW",
-        hasScopeDown: false,
-        ruleJson: "",
-      },
-    });
-  }
 
   const topUa = summary.byUa[0];
   const suspiciousUa =
@@ -387,46 +342,6 @@ export async function generateRecommendations(
         },
       });
     }
-  }
-
-  const topPath = summary.byPath.find((p) => !p.lowPriority);
-  if (topPath && topPath.count >= 30 && topPath.count / total >= 0.5 && http4xxStatus !== "NORMAL") {
-    const sharePct = Math.round((topPath.count / total) * 100);
-    const est = estimateTotalFactor(samples.length);
-    const observedPer5m = Math.ceil((topPath.count / windowMinutes) * 5);
-    const limit = Math.max(WAF_LIMITS.minRateLimit, observedPer5m * est * 2);
-    const id = `rate-path-${Math.abs(hash(topPath.path))}`;
-    recs.push({
-      isManagedGroup: false,
-      statement: {
-        RateBasedStatement: {
-          Limit: limit,
-          AggregateKeyType: "IP",
-          EvaluationWindowSec: 300,
-          ScopeDownStatement: pathScopeDown(topPath.path),
-        },
-      },
-      rec: {
-        id,
-        kind: "RATE_BASED",
-        name: `dash-rate-path`,
-        targetPattern: `경로 ${topPath.path} 집중 (${sharePct}%) + 4XX 증가`,
-        criteria: { path: topPath.path },
-        threshold: limit,
-        evaluationWindowSec: 300,
-        action: "COUNT",
-        confidence: "MEDIUM",
-        reason: `특정 경로에 트래픽 집중 + 4XX 상승 — 해당 경로 한정 rate-based (scope-down: UriPath STARTS_WITH).`,
-        evidence: [
-          `경로 ${topPath.path}: 샘플 ${topPath.count}/${total}건`,
-          `4XX 상태: ${http4xxStatus}`,
-        ],
-        expectedImpact: `해당 경로 고빈도 IP만 매칭. 경로 외 트래픽 영향 없음.`,
-        falsePositiveRisk: "LOW",
-        hasScopeDown: true,
-        ruleJson: "",
-      },
-    });
   }
 
   const topQuery = summary.queryPatterns[0];
@@ -542,12 +457,6 @@ export async function generateRecommendations(
     recStore.set(r.rec.id, r);
   }
   return recs.map((r) => r.rec);
-}
-
-function estimateTotalFactor(sampleCount: number): number {
-  // GetSampledRequests caps at 500 per rule — treat the sample as a lower
-  // bound and keep the extrapolation factor conservative.
-  return sampleCount >= 450 ? 3 : 1;
 }
 
 function hash(s: string): number {

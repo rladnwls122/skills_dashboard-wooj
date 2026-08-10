@@ -1,4 +1,5 @@
 import "server-only";
+import { isAppTrafficPath } from "./config";
 import type {
   Anomaly,
   AnomalyType,
@@ -123,17 +124,26 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
 
   if (input.httpSummary) {
     const total = Math.max(input.httpSummary.totalSampled, 1);
-    const topIp = input.httpSummary.byIp[0];
-    const topPath = input.httpSummary.byPath.find((p) => !p.lowPriority);
+    // Request volume is never an anomaly in this environment — the scenario's
+    // own load generator hammers the served API surface from a single IP.
+    // Only traffic aimed outside that surface (probing, scanning) counts, so
+    // the source-IP signal is gone and the path signal skips APP_TRAFFIC_PATHS.
+    const offSurface = input.httpSummary.byPath.filter(
+      (p) => !p.lowPriority && !isAppTrafficPath(p.path),
+    );
+    const offSurfaceCount = offSurface.reduce((a, p) => a + p.count, 0);
     const concentrated: string[] = [];
-    if (topIp && topIp.count >= 20 && topIp.count / total >= 0.3) {
-      concentrated.push(`IP ${topIp.key}: 샘플 ${topIp.count}/${total}건`);
-    }
-    if (topPath && topPath.count >= 30 && topPath.count / total >= 0.5) {
-      concentrated.push(`경로 ${topPath.path}: 샘플 ${topPath.count}/${total}건`);
+    const topOff = offSurface[0];
+    if (topOff && topOff.count >= 30 && topOff.count / total >= 0.5) {
+      concentrated.push(`경로 ${topOff.path}: 샘플 ${topOff.count}/${total}건 (서비스 경로 외)`);
     }
     const topUa = input.httpSummary.byUa[0];
-    if (topUa && topUa.count / total >= 0.4 && !/mozilla/i.test(topUa.key)) {
+    if (
+      topUa &&
+      offSurfaceCount >= 20 &&
+      topUa.count / total >= 0.4 &&
+      !/mozilla/i.test(topUa.key)
+    ) {
       concentrated.push(`UA "${topUa.key}": ${topUa.count}/${total}건`);
     }
     if (concentrated.length > 0) {
@@ -141,7 +151,7 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
         "TRAFFIC_ANOMALY_SUSPECTED",
         concentrated.length >= 2 ? "CRITICAL" : "WARNING",
         "비정상 트래픽 집중 의심",
-        "특정 IP/경로/UA에 요청이 집중 — 자동화 트래픽 또는 스캔 가능성. WAF 탭에서 규칙 추천 확인.",
+        "서비스 경로(/v1/*) 외 요청이 집중 — 스캔 또는 탐색 시도 가능성. WAF 탭에서 규칙 추천 확인.",
         concentrated,
         concentrated.length >= 2 ? "HIGH" : "MEDIUM",
       );

@@ -38,6 +38,23 @@ export function isLowPriorityPath(path: string): boolean {
   return LOW_PRIORITY_PATHS.some((h) => p === h || p.startsWith(`${h}/`));
 }
 
+// The API surface this environment actually serves (ALB listener rules).
+// Competition rule: the scenario's own load generator drives heavy traffic at
+// these paths from a single IP, so request volume against them is never
+// treated as an attack — no volumetric detection, no rate-based rule, no
+// mention in the Amazon Q handoff. Traffic aimed anywhere else stays in scope.
+export const APP_TRAFFIC_PATHS = (
+  process.env.APP_TRAFFIC_PATHS ?? "/v1/user,/v1/product,/v1/stress,/v1/image"
+)
+  .split(",")
+  .map((p) => p.trim())
+  .filter((p) => p.length > 0);
+
+export function isAppTrafficPath(path: string): boolean {
+  const p = path.split("?")[0] ?? path;
+  return APP_TRAFFIC_PATHS.some((a) => p === a || p.startsWith(`${a}/`));
+}
+
 export interface MetricThreshold {
   // WARNING when (abs >= warnAbs) OR (pct >= warnPct AND abs >= minAbs).
   // CRITICAL requires BOTH abs >= critAbs AND pct >= critPct — a single
@@ -91,6 +108,5 @@ export const INSIGHTS_LIMITS = {
 export const WAF_LIMITS = {
   // Default WCU quota per WebACL.
   maxWcu: 5_000,
-  minRateLimit: 100,
   sampleWindowMinutes: 15,
 } as const;

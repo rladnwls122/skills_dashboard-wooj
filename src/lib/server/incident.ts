@@ -65,6 +65,11 @@ export function buildSnapshot(parts: {
   const snapshot: IncidentSnapshot = {
     timestamp: new Date().toISOString(),
     ...parts,
+    // Drop the source-IP ranking at the single choke point every incident
+    // output flows through (markdown, JSON, stored snapshot): volume from one
+    // IP is the scenario's own load generator, and this feeds the Amazon Q
+    // handoff.
+    httpSummary: parts.httpSummary ? { ...parts.httpSummary, byIp: [] } : null,
     wafHistory,
     deployHistory,
   };
@@ -106,8 +111,9 @@ export function toMarkdown(s: IncidentSnapshot): string {
     for (const p of h.byPath.slice(0, 10)) {
       md.push(`- ${p.path} — ${p.count}건 (차단 ${p.blocked}${p.lowPriority ? ", 헬스체크 제외 대상" : ""})`);
     }
-    md.push(`\n### Top IPs`);
-    for (const i of h.byIp.slice(0, 5)) md.push(`- ${i.key} — ${i.count}건`);
+    // Source-IP ranking is deliberately omitted: request volume from a single
+    // IP is the scenario's own load generator, not a finding, and this report
+    // is pasted into the Amazon Q handoff.
     md.push(`\n### Top User-Agents`);
     for (const u of h.byUa.slice(0, 5)) md.push(`- ${maskText(u.key)} — ${u.count}건`);
   }
