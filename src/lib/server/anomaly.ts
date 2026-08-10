@@ -1,5 +1,6 @@
 import "server-only";
 import { isAppTrafficPath } from "./config";
+import { classifyUa, queryHasBase64Blob } from "./threatsig";
 import type {
   Anomaly,
   AnomalyType,
@@ -154,6 +155,32 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
         "서비스 경로(/v1/*) 외 요청이 집중 — 스캔 또는 탐색 시도 가능성. WAF 탭에서 규칙 추천 확인.",
         concentrated,
         concentrated.length >= 2 ? "HIGH" : "MEDIUM",
+      );
+    }
+
+    // Malicious-client signatures in the sampled UA/query mix. Independent of
+    // request volume — a single scanner fingerprint is a finding — and blind to
+    // source IP by policy. The Go client is bypassed inside classifyUa (REQ-01).
+    const flaggedUa = input.httpSummary.byUa
+      .map((u) => ({ hit: classifyUa(u.key), key: u.key, count: u.count }))
+      .filter((x): x is { hit: NonNullable<ReturnType<typeof classifyUa>>; key: string; count: number } => x.hit !== null);
+    const b64Query = input.httpSummary.queryPatterns.filter((q) => queryHasBase64Blob(q.key));
+    if (flaggedUa.length > 0 || b64Query.length > 0) {
+      const evidence: string[] = [];
+      for (const f of flaggedUa.slice(0, 5)) {
+        evidence.push(`악성 클라이언트 UA "${f.key}" (${f.hit.category}/${f.hit.label}): ${f.count}건`);
+      }
+      for (const q of b64Query.slice(0, 3)) {
+        evidence.push(`base64 난독화 쿼리 의심: "${q.key.slice(0, 60)}"`);
+      }
+      const hasScanner = flaggedUa.some((f) => f.hit.category !== "SPOOFED");
+      push(
+        "MALICIOUS_CLIENT_SUSPECTED",
+        hasScanner ? "CRITICAL" : "WARNING",
+        "악성 클라이언트 시그니처 탐지",
+        "샘플 트래픽에서 스캐너·정찰 툴 또는 위조/난독 시그니처가 관측됨",
+        evidence,
+        "HIGH",
       );
     }
   }

@@ -85,5 +85,32 @@ check("generateRecommendations emits no RATE_BASED kind", genBody.includes('kind
 const incSrc = await readFile(new URL(`${SRC}incident.ts`), "utf8");
 check("buildSnapshot blanks byIp", incSrc.includes("byIp: []"), true);
 
+// New malicious-client detection must not disturb the volumetric policy:
+// Go-http-client is bypassed, so the load generator and the off-surface scan
+// (both Go UA) keep their existing anomaly counts.
+const malicious = (as) => as.filter((a) => a.type === "MALICIOUS_CLIENT_SUSPECTED");
+check("Go load generator raises no malicious-client anomaly", malicious(loadGen).length, 0);
+check("Go off-surface scan raises no malicious-client anomaly", malicious(scan).length, 0);
+check("Mozilla traffic raises no malicious-client anomaly", malicious(mixed).length, 0);
+
+// A named scanner tool in the UA mix does raise one, citing the tool, never an IP.
+const scanner = detectAnomalies(
+  input(summary(
+    [{ path: "/v1/user", count: 500, blocked: 0, lowPriority: false }],
+    [{ key: "sqlmap/1.7", count: 60 }],
+  )),
+);
+check("scanner UA raises a malicious-client anomaly", malicious(scanner).length, 1);
+check(
+  "malicious-client finding cites no source IP",
+  malicious(scanner)[0]?.evidence.some((e) => e.includes("203.0.113.7")) ?? true,
+  false,
+);
+check(
+  "malicious-client finding names the tool",
+  malicious(scanner)[0]?.evidence.some((e) => e.toLowerCase().includes("sqlmap")) ?? false,
+  true,
+);
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
