@@ -6,7 +6,9 @@
     "dev": "next dev -p 3100",
     "build": "next build",
     "start": "next start -p 3100",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --import ./scripts/testing/register.mjs scripts/ddos-policy.test.mjs",
+    "test:ddos": "node --import ./scripts/testing/register.mjs scripts/ddos-policy.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.716.0",
