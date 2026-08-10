@@ -108,6 +108,35 @@ function applyTransforms(value: string, transforms: unknown): string | null {
       case "HTML_ENTITY_DECODE":
         out = htmlEntityDecode(out);
         break;
+      case "BASE64_DECODE":
+        try {
+          out = Buffer.from(out, "base64").toString("utf8");
+        } catch {
+          // WAF leaves an undecodable value unchanged.
+        }
+        break;
+      case "REMOVE_NULLS":
+        out = out.replace(/ /g, "");
+        break;
+      case "NORMALIZE_PATH": {
+        // Collapse repeated slashes and resolve ./ and ../ segments.
+        const segs: string[] = [];
+        for (const seg of out.split("/")) {
+          if (seg === "" || seg === ".") continue;
+          if (seg === "..") segs.pop();
+          else segs.push(seg);
+        }
+        out = `/${segs.join("/")}`;
+        break;
+      }
+      case "CMD_LINE":
+        // AWS CMD_LINE: drop \ " ' ^, collapse whitespace to one space, lowercase.
+        out = out
+          .replace(/[\\"'^]/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLowerCase();
+        break;
       default:
         return null;
     }
@@ -217,9 +246,9 @@ export function evalStatement(stmt: unknown, req: TestRequest, ctx: EvalContext)
       ctx.notes.add("ByteMatchStatement의 FieldToMatch 또는 TextTransformation이 미지원 — 평가 불가");
       return "UNKNOWN";
     }
-    const transformed = applyTransforms(search, byte["TextTransformations"]);
-    if (transformed === null) return "UNKNOWN";
-    return positional(value, transformed, str(byte["PositionalConstraint"]));
+    // WAF applies TextTransformations to the inspected field only — the
+    // SearchString you author is compared as-is.
+    return positional(value, search, str(byte["PositionalConstraint"]));
   }
 
   const re = asRecord(s["RegexMatchStatement"]);
@@ -251,6 +280,17 @@ export function evalStatement(stmt: unknown, req: TestRequest, ctx: EvalContext)
       return "UNKNOWN";
     }
     return compare(byteLength(value), str(size["ComparisonOperator"]), Number(size["Size"] ?? 0));
+  }
+
+  const geo = asRecord(s["GeoMatchStatement"]);
+  if (geo) {
+    const raw = Array.isArray(geo["CountryCodes"]) ? geo["CountryCodes"] : [];
+    const codes = raw.map((c) => str(c)).filter((c): c is string => c !== null);
+    if (codes.length === 0) {
+      ctx.notes.add("GeoMatchStatement에 CountryCodes가 없음 — 평가 불가");
+      return "UNKNOWN";
+    }
+    return codes.map((c) => c.toUpperCase()).includes(req.country.toUpperCase());
   }
 
   for (const name of UNSUPPORTED_STATEMENTS) {

@@ -20,6 +20,7 @@ const REQ = {
   query: "id=3&name=kim",
   userAgent: "Mozilla/5.0 (Windows NT 10.0)",
   ip: "10.0.2.88",
+  country: "KR",
 };
 const ctx = () => ({ unsupported: new Set(), notes: new Set() });
 const ev = (stmt, req = REQ) => evalStatement(stmt, req, ctx());
@@ -101,7 +102,7 @@ check(
 );
 check(
   "an unknown transform is UNKNOWN, not a pass",
-  ev(byteMatch("/v1/user", URI, "EXACTLY", [{ Priority: 0, Type: "BASE64_DECODE" }])),
+  ev(byteMatch("/v1/user", URI, "EXACTLY", [{ Priority: 0, Type: "MADE_UP_TRANSFORM" }])),
   "UNKNOWN",
 );
 
@@ -134,6 +135,39 @@ check("size GT", ev(size("GT", 7)), true);
 check("size GE", ev(size("GE", 8)), true);
 check("size LT", ev(size("LT", 8)), false);
 check("size LE", ev(size("LE", 8)), true);
+
+// --- Newly supported transforms (deterministic, locally decidable) ---
+check(
+  "BASE64_DECODE decodes the field",
+  ev(byteMatch("attack", { QueryString: {} }, "CONTAINS", [{ Priority: 0, Type: "BASE64_DECODE" }]),
+    { ...REQ, query: "YXR0YWNr" }),
+  true,
+);
+check(
+  "REMOVE_NULLS strips null bytes",
+  ev(byteMatch("select", { QueryString: {} }, "CONTAINS", [{ Priority: 0, Type: "REMOVE_NULLS" }]),
+    { ...REQ, query: "se le ct" }),
+  true,
+);
+check(
+  "NORMALIZE_PATH collapses traversal",
+  ev(byteMatch("/v1/user", URI, "EXACTLY", [{ Priority: 0, Type: "NORMALIZE_PATH" }]),
+    { ...REQ, path: "/v1/a/../user" }),
+  true,
+);
+check(
+  "CMD_LINE normalizes command punctuation",
+  ev(byteMatch("cat /etc/passwd", { QueryString: {} }, "CONTAINS", [{ Priority: 0, Type: "CMD_LINE" }]),
+    { ...REQ, query: "cat    /etc/passwd" }),
+  true,
+);
+
+// --- GeoMatchStatement ---
+const geo = (codes) => ({ GeoMatchStatement: { CountryCodes: codes } });
+check("GeoMatch hit on country", ev(geo(["KR", "JP"])), true);
+check("GeoMatch miss on country", ev(geo(["US", "CN"])), false);
+check("GeoMatch is case-insensitive", ev(geo(["kr"])), true);
+check("GeoMatch with empty codes is UNKNOWN", ev(geo([])), "UNKNOWN");
 
 // --- Three-valued And / Or / Not ---
 const T = byteMatch("/v1/", URI, "STARTS_WITH");

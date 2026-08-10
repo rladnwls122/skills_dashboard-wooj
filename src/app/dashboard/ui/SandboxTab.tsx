@@ -89,6 +89,7 @@ export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
         query: "",
         userAgent: "Mozilla/5.0",
         ip: "10.0.2.1",
+        country: "KR",
       },
     ]);
   };

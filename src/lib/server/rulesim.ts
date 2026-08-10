@@ -21,6 +21,7 @@ export function defaultTestRequests(): TestRequest[] {
     query: "",
     userAgent: BROWSER_UA,
     ip: "10.0.2.88",
+    country: "KR",
   }));
   rows.push({
     id: "loadgen",
@@ -29,6 +30,7 @@ export function defaultTestRequests(): TestRequest[] {
     query: "",
     userAgent: "Go-http-client/2.0",
     ip: "10.0.2.23",
+    country: "KR",
   });
   rows.push({
     id: "healthcheck",
@@ -37,6 +39,7 @@ export function defaultTestRequests(): TestRequest[] {
     query: "",
     userAgent: "ELB-HealthChecker/2.0",
     ip: "10.0.2.1",
+    country: "KR",
   });
   return rows;
 }

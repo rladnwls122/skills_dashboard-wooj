@@ -432,6 +432,8 @@ export interface TestRequest {
   query: string;
   userAgent: string;
   ip: string;
+  // ISO 3166-1 alpha-2 country code for GeoMatchStatement evaluation
+  country: string;
 }
 
 export type RuleTestOutcome = "PASS" | "BLOCKED" | "COUNTED" | "UNKNOWN";
