@@ -1,12 +1,14 @@
 "use client";
 
-import type { KubePanel, MetricsPanel, WafPanel } from "@/lib/types";
+import { useState } from "react";
+import type { KubePanel, MetricsPanel, WafPanel, WarningEvent } from "@/lib/types";
 import {
   Card,
   ErrorNote,
   SectionLoading,
   Sparkline,
   StatusBadge,
+  WarningEventDetailModal,
   fmtDelta,
   type PollState,
 } from "./shared";
@@ -25,6 +27,7 @@ export function OverviewTab({
   const pods = kube.data?.pods ?? [];
   const badPods = pods.filter((p) => p.statusLabel !== "Running");
   const restartPods = pods.filter((p) => p.recentRestartIncrease > 0);
+  const [eventDetail, setEventDetail] = useState<WarningEvent | null>(null);
 
   return (
     <div className="space-y-3">
@@ -117,13 +120,15 @@ export function OverviewTab({
           ) : (
             <div className="max-h-48 space-y-1 overflow-y-auto text-[11px]">
               {(kube.data?.events ?? []).slice(0, 8).map((e, i) => (
-                <div
+                <button
                   key={`${e.name}-${i}`}
-                  className={`rounded px-2 py-1 ${e.highlighted ? "bg-amber-950/40 text-amber-300" : "bg-neutral-950 text-neutral-400"}`}
+                  type="button"
+                  onClick={() => setEventDetail(e)}
+                  className={`block w-full cursor-pointer rounded px-2 py-1 text-left ${e.highlighted ? "bg-amber-950/40 text-amber-300 hover:bg-amber-950/70" : "bg-neutral-950 text-neutral-400 hover:bg-neutral-800/60"}`}
                 >
                   <span className="font-semibold">{e.reason}</span> [{e.kind}/{e.name}]{" "}
                   <span className="text-neutral-500">×{e.count}</span>
-                </div>
+                </button>
               ))}
               {(kube.data?.events.length ?? 0) === 0 && (
                 <div className="text-neutral-500">Warning 이벤트 없음</div>
@@ -158,6 +163,14 @@ export function OverviewTab({
           )}
         </Card>
       </div>
+
+      {eventDetail && (
+        <WarningEventDetailModal
+          event={eventDetail}
+          onClose={() => setEventDetail(null)}
+          onJumpToLogs={(pod) => onJumpToLogs(pod, "")}
+        />
+      )}
     </div>
   );
 }

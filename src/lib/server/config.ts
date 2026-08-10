@@ -14,6 +14,9 @@ export const ENV = {
   targetNamespace: process.env.TARGET_NAMESPACE ?? "default",
   maxReplicas: Number(process.env.MAX_REPLICAS ?? "20"),
   dbPath: process.env.DB_PATH ?? "./data/dashboard.db",
+  appLogGroup:
+    process.env.APP_LOG_GROUP ??
+    `/aws/containerinsights/${process.env.EKS_CLUSTER_NAME ?? "skills-eks"}/application`,
 } as const;
 
 // WAF metrics/API for CLOUDFRONT scope live in us-east-1 only.
@@ -69,8 +72,20 @@ export const POLLING = {
   kubeTtlMs: 2_500,
   metricsTtlMs: 25_000,
   wafTtlMs: 25_000,
-  logAutoRefreshMs: 5_000,
+  // Logs Insights bills per byte scanned — auto refresh minimum 30s, results
+  // cached 30s, failures cached 10s.
+  logAutoRefreshMs: 30_000,
+  logCacheTtlMs: 30_000,
+  logFailTtlMs: 10_000,
   verificationDelayMs: 120_000,
+} as const;
+
+export const INSIGHTS_LIMITS = {
+  // Hard cap on any single query window — bounds bytes scanned structurally.
+  maxWindowMs: 4 * 60 * 60_000,
+  defaultWindowMs: 60 * 60_000,
+  queryDeadlineMs: 20_000,
+  maxConcurrent: 2,
 } as const;
 
 export const WAF_LIMITS = {

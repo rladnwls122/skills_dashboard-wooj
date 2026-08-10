@@ -145,19 +145,28 @@ function Clock() {
   );
 }
 
+const REFRESH_CHOICES = [5, 10, 15, 20, 25, 30] as const;
+
 export function DashboardClient() {
   const [tab, setTab] = useState<Tab>("Overview");
   const [podSelection, setPodSelection] = useState<PodSelection | null>(null);
+  const [refreshSec, setRefreshSec] = useState<number>(5);
 
-  // Tiered polling: K8s every 3s, CloudWatch/analysis every 10s (server-side
-  // TTL caps upstream calls at ~25s), WAF every 30s.
-  const kube: PollState<KubePanel> = usePoll(getKubePanelAction, 3_000);
-  const metrics: PollState<MetricsPanel> = usePoll(getMetricsPanelAction, 10_000);
+  // User-selected auto-refresh interval drives all panels; server-side TTL
+  // caps upstream AWS/K8s calls, so faster polling stays safe.
+  const kube: PollState<KubePanel> = usePoll(getKubePanelAction, refreshSec * 1000);
+  const metrics: PollState<MetricsPanel> = usePoll(getMetricsPanelAction, refreshSec * 1000);
   const waf: PollState<WafPanel> = usePoll(
     getWafPanelAction,
-    30_000,
+    Math.max(refreshSec, 30) * 1000,
     tab === "WAF" || tab === "Overview",
   );
+
+  const refreshAll = (): void => {
+    kube.refresh();
+    metrics.refresh();
+    waf.refresh();
+  };
 
   const jumpToLogs = (pod: string, container: string): void => {
     setPodSelection({ pod, container });
@@ -244,7 +253,31 @@ export function DashboardClient() {
             <div className="hidden min-w-0 lg:block">
               <Annunciator segments={segments} />
             </div>
-            <Clock />
+            <div className="flex shrink-0 items-center gap-2">
+              <label className="flex items-center gap-1 font-mono text-[10px] text-neutral-500">
+                갱신
+                <select
+                  value={refreshSec}
+                  onChange={(e) => setRefreshSec(Number(e.target.value))}
+                  className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-1.5 py-1 font-mono text-[11px] text-neutral-300"
+                >
+                  {REFRESH_CHOICES.map((s) => (
+                    <option key={s} value={s}>
+                      {s}초
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={refreshAll}
+                title="지금 새로고침"
+                className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-2 py-1 font-mono text-[11px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100"
+              >
+                ⟳ 새로고침
+              </button>
+              <Clock />
+            </div>
           </div>
           <div className="px-4 pb-2 lg:hidden">
             <div className="mb-2 overflow-x-auto">

@@ -336,6 +336,12 @@ export interface RequestLogAnalysis {
   avgLatencyMs: number | null;
   maxLatencyMs: number | null;
   byPath: PathLatencyStat[];
+  // Backend-computed totals — independent of the (truncated) sample lists above.
+  totalRequests?: number;
+  nonOkTotal?: number;
+  errorWarnTotal?: number;
+  // What population the numbers describe (e.g. "Logs Insights 60m 전체").
+  basis?: string;
 }
 
 export interface KubePanel {
@@ -380,6 +386,10 @@ export interface PodLogsResult {
   previous: boolean;
   fingerprints: FingerprintEntry[];
   requestLog: RequestLogAnalysis;
+  // Logs Insights cost/provenance — null/absent when served by the k8s API.
+  source?: "insights" | "kubernetes";
+  scannedBytes?: number;
+  windowLabel?: string;
 }
 
 export interface IncidentContextResult {

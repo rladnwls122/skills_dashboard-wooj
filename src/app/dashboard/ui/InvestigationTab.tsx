@@ -2,13 +2,14 @@
 
 import { useMemo, useState } from "react";
 import { getPodLogsAction } from "@/app/actions/dashboard";
-import type { KubePanel, MetricsPanel, PodLogsResult } from "@/lib/types";
+import type { KubePanel, MetricsPanel, PodLogsResult, WarningEvent } from "@/lib/types";
 import type { PodSelection } from "./DashboardClient";
 import {
   Card,
   ErrorNote,
   SectionLoading,
   StatusBadge,
+  WarningEventDetailModal,
   fmtTs,
   usePoll,
   type PollState,
@@ -35,6 +36,13 @@ function lineColor(line: string): string {
   if (ORANGE.test(line)) return "text-orange-400";
   if (YELLOW.test(line)) return "text-yellow-300";
   return "text-neutral-300";
+}
+
+function fmtScanBytes(n: number): string {
+  if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(2)}GB`;
+  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${n}B`;
 }
 
 function UsageBar({ label, pct }: { label: string; pct: number | null }) {
@@ -70,6 +78,7 @@ export function InvestigationTab({
   const [search, setSearch] = useState("");
   const [hideTs, setHideTs] = useState(false);
   const [onlyProblems, setOnlyProblems] = useState(false);
+  const [eventDetail, setEventDetail] = useState<WarningEvent | null>(null);
 
   const selectedPod = pods.find((p) => p.name === selection?.pod);
   const container =
@@ -84,7 +93,7 @@ export function InvestigationTab({
       }
       return getPodLogsAction({ pod: selection.pod, container, previous, tailLines });
     },
-    autoRefresh ? 5_000 : 3_600_000,
+    autoRefresh ? 30_000 : 3_600_000,
     Boolean(selection?.pod),
   );
 
@@ -371,7 +380,8 @@ export function InvestigationTab({
                 {(kube.data?.events ?? []).map((e, i) => (
                   <tr
                     key={i}
-                    className={`border-t border-neutral-800 ${e.highlighted ? "bg-amber-950/20" : ""}`}
+                    onClick={() => setEventDetail(e)}
+                    className={`cursor-pointer border-t border-neutral-800 hover:bg-neutral-800/40 ${e.highlighted ? "bg-amber-950/20" : ""}`}
                   >
                     <td className="px-2 py-1 whitespace-nowrap text-neutral-500">{fmtTs(e.timestamp)}</td>
                     <td className="px-2 py-1 text-neutral-300">
@@ -388,7 +398,10 @@ export function InvestigationTab({
                       {e.isPod && (
                         <button
                           type="button"
-                          onClick={() => onSelect({ pod: e.name, container: "" })}
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            onSelect({ pod: e.name, container: "" });
+                          }}
                           className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
                         >
                           로그
@@ -469,7 +482,7 @@ export function InvestigationTab({
             </label>
             <label className="flex items-center gap-1 text-neutral-400">
               <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)} />
-              자동갱신(5s)
+              자동갱신(30s)
             </label>
             <label className="flex items-center gap-1 text-neutral-400">
               <input type="checkbox" checked={onlyProblems} onChange={(e) => setOnlyProblems(e.target.checked)} />
@@ -495,6 +508,14 @@ export function InvestigationTab({
           placeholder="로그 검색 (즉시 필터)"
           className="mb-2 w-full rounded border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs"
         />
+        {logs.data && (
+          <div className="mb-1 font-mono text-[10px] text-neutral-600">
+            소스{" "}
+            {logs.data.source === "insights"
+              ? `CloudWatch Logs Insights · 조회창 ${logs.data.windowLabel} · 스캔 ${fmtScanBytes(logs.data.scannedBytes ?? 0)}`
+              : "Kubernetes API (Insights 폴백/이전 컨테이너)"}
+          </div>
+        )}
         <div className="h-80 overflow-y-auto rounded bg-black p-2 font-mono text-[11px] leading-4">
           {logs.error && <div className="text-red-400">{logs.error}</div>}
           {!logs.error && filteredLines.length === 0 && (
@@ -530,8 +551,11 @@ export function InvestigationTab({
             <div>
               <div className="mb-1 text-[11px] text-neutral-500">
                 평균 latency {logs.data.requestLog.avgLatencyMs ?? "-"}ms · 최대{" "}
-                {logs.data.requestLog.maxLatencyMs ?? "-"}ms · 파싱된 요청{" "}
-                {logs.data.requestLog.entries.length}건
+                {logs.data.requestLog.maxLatencyMs ?? "-"}ms · 요청{" "}
+                {logs.data.requestLog.totalRequests ?? logs.data.requestLog.entries.length}건
+                {logs.data.requestLog.basis && (
+                  <span className="text-neutral-600"> · 기준: {logs.data.requestLog.basis}</span>
+                )}
               </div>
               <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
                 {logs.data.requestLog.byPath.map((p) => (
@@ -544,13 +568,14 @@ export function InvestigationTab({
                   </div>
                 ))}
                 {logs.data.requestLog.byPath.length === 0 && (
-                  <div className="text-neutral-500">Gin 로그 형식 요청을 찾지 못함</div>
+                  <div className="text-neutral-500">파싱된 요청 없음</div>
                 )}
               </div>
             </div>
             <div>
               <div className="mb-1 text-[11px] text-neutral-500">
-                200/201 이외 응답 ({logs.data.requestLog.nonOkEntries.length}건)
+                200/201 이외 응답 (
+                {logs.data.requestLog.nonOkTotal ?? logs.data.requestLog.nonOkEntries.length}건)
               </div>
               <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
                 {logs.data.requestLog.nonOkEntries.map((e, i) => (
@@ -570,7 +595,9 @@ export function InvestigationTab({
             </div>
             <div>
               <div className="mb-1 text-[11px] text-neutral-500">
-                Error/Warn 로그 ({logs.data.requestLog.errorWarnLines.length}건)
+                Error/Warn 로그 (
+                {logs.data.requestLog.errorWarnTotal ?? logs.data.requestLog.errorWarnLines.length}
+                건)
               </div>
               <div className="max-h-56 space-y-1 overflow-y-auto font-mono text-[11px]">
                 {logs.data.requestLog.errorWarnLines.map((l, i) => (
@@ -688,6 +715,14 @@ export function InvestigationTab({
           </div>
         </Card>
       </div>
+
+      {eventDetail && (
+        <WarningEventDetailModal
+          event={eventDetail}
+          onClose={() => setEventDetail(null)}
+          onJumpToLogs={(pod) => onSelect({ pod, container: "" })}
+        />
+      )}
     </div>
   );
 }

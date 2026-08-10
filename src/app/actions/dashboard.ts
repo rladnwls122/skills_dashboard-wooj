@@ -6,7 +6,6 @@ import { errMsg, fetchCoreMetrics, fetchTargetGroupMetrics } from "@/lib/server/
 import {
   countReadyNodes,
   getDeployment,
-  getPodLogs,
   listDeployments,
   listPods,
   listWarningEvents,
@@ -14,6 +13,7 @@ import {
   validatePatch,
   type DeploymentPatchRequest,
 } from "@/lib/server/k8s";
+import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -213,6 +213,10 @@ export async function getMetricsPanelAction(): Promise<ActionResult<MetricsPanel
 // Pod logs — on demand / 5s auto-refresh tier
 // ---------------------------------------------------------------------------
 
+// Log reads/aggregations go to CloudWatch Logs Insights (no local
+// accumulation; Insights bills per byte scanned, so results are cached
+// 30s and failures 10s). The k8s API remains only for previous-container
+// logs and as a fallback when Insights is unavailable.
 export async function getPodLogsAction(params: {
   pod: string;
   container: string;
@@ -220,13 +224,26 @@ export async function getPodLogsAction(params: {
   tailLines: number;
 }): Promise<ActionResult<PodLogsResult>> {
   try {
-    const lines = await cached(
+    const fetched = await cached(
       `logs:${params.pod}:${params.container}:${params.previous}:${params.tailLines}`,
-      3_000,
-      () => getPodLogs(params),
+      POLLING.logCacheTtlMs,
+      async () => {
+        if (params.previous) return fetchPodLogsKube(params);
+        try {
+          return await fetchPodLogsInsights(params);
+        } catch {
+          return fetchPodLogsKube(params);
+        }
+      },
+      POLLING.logFailTtlMs,
     );
+    const { lines } = fetched;
     const fingerprints = aggregateFingerprints([{ pod: params.pod, lines }]);
-    const requestLog = analyzeRequestLog(lines);
+    const requestLog =
+      fetched.analysis ?? {
+        ...analyzeRequestLog(lines),
+        basis: `tail ${params.tailLines} 샘플 (k8s API)`,
+      };
     putCached("panel:fingerprints", 10 * 60_000, fingerprints);
     putCached(
       params.previous ? "panel:lastprevlogs" : "panel:lastlogs",
@@ -239,6 +256,9 @@ export async function getPodLogsAction(params: {
       previous: params.previous,
       fingerprints,
       requestLog,
+      source: fetched.source,
+      scannedBytes: fetched.scannedBytes,
+      windowLabel: fetched.windowLabel,
     });
   } catch (e) {
     return fail(e);

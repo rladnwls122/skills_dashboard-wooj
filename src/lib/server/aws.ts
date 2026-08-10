@@ -46,6 +46,15 @@ export function logsClient(): CloudWatchLogsClient {
   return cwl;
 }
 
+let cwlRegional: CloudWatchLogsClient | null = null;
+
+// Container Insights application logs live in the cluster region, unlike the
+// CLOUDFRONT-scope WAF logs which are us-east-1 only.
+export function logsClientRegional(): CloudWatchLogsClient {
+  if (!cwlRegional) cwlRegional = new CloudWatchLogsClient({ region: ENV.region });
+  return cwlRegional;
+}
+
 export function eksClient(): EKSClient {
   if (!eks) eks = new EKSClient({ region: ENV.region });
   return eks;

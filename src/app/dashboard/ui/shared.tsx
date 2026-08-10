@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ActionResult, MetricPoint, Status } from "@/lib/types";
+import type { ActionResult, MetricPoint, Status, WarningEvent } from "@/lib/types";
 
 export interface PollState<T> {
   data: T | null;
@@ -143,6 +143,110 @@ export function SectionLoading() {
         />
       ))}
     </div>
+  );
+}
+
+export function DetailModal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal
+      aria-label={title}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-xl rounded-[4px] border border-neutral-700 bg-neutral-900 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-neutral-800 px-3 py-2">
+          <h3 className="flex items-center gap-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-neutral-400 uppercase">
+            <span aria-hidden className="h-3 w-0.5 shrink-0 bg-sky-500/70" />
+            {title}
+          </h3>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="닫기"
+            className="rounded px-1.5 py-0.5 text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto p-3 text-[11px]">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+export function WarningEventDetailModal({
+  event,
+  onClose,
+  onJumpToLogs,
+}: {
+  event: WarningEvent;
+  onClose: () => void;
+  onJumpToLogs?: (pod: string) => void;
+}) {
+  const rows: [string, React.ReactNode][] = [
+    ["시각", fmtTs(event.timestamp)],
+    ["Namespace", event.namespace],
+    ["대상", `${event.kind}/${event.name}`],
+    [
+      "사유",
+      <span key="r" className={event.highlighted ? "font-semibold text-amber-400" : ""}>
+        {event.reason}
+      </span>,
+    ],
+    ["횟수", `×${event.count}`],
+  ];
+  return (
+    <DetailModal title="Warning Event 상세" onClose={onClose}>
+      <div className="space-y-1">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex gap-3">
+            <span className="w-20 shrink-0 text-neutral-500">{label}</span>
+            <span className="text-neutral-200">{value}</span>
+          </div>
+        ))}
+        <div className="pt-1">
+          <div className="mb-1 text-neutral-500">메시지</div>
+          <pre className="rounded border border-neutral-800 bg-neutral-950 p-2 font-mono whitespace-pre-wrap break-all text-neutral-300">
+            {event.message || "(메시지 없음)"}
+          </pre>
+        </div>
+        {event.isPod && onJumpToLogs && (
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                onJumpToLogs(event.name);
+                onClose();
+              }}
+              className="rounded bg-neutral-800 px-2 py-1 text-neutral-300 hover:bg-neutral-700"
+            >
+              로그 보기
+            </button>
+          </div>
+        )}
+      </div>
+    </DetailModal>
   );
 }
 
