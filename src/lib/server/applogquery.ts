@@ -41,7 +41,7 @@ export function buildRequestLogQuery(params: {
   }
   const path = validatePathFilter(params.pathContains);
   if (path) parts.push(`filter path like "${path}"`);
-  parts.push("fields @timestamp, method, path, status, latency_ms");
+  parts.push("display @timestamp, method, path, status, latency_ms");
   parts.push("sort @timestamp desc");
   parts.push(`limit ${ROW_LIMIT}`);
   return parts.join(" | ");

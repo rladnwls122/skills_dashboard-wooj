@@ -55,7 +55,7 @@ export async function fetchPodLogsInsights(params: {
     }),
     runInsightsQuery({
       logGroup: ENV.appLogGroup,
-      query: `filter ${scope} | ${PARSE_FIELDS} | filter status >= 300 | fields @timestamp, method, path, status, latency_ms | sort @timestamp desc | limit 100`,
+      query: `filter ${scope} | ${PARSE_FIELDS} | filter status >= 300 | display @timestamp, method, path, status, latency_ms | sort @timestamp desc | limit 100`,
     }),
     runInsightsQuery({
       logGroup: ENV.appLogGroup,

@@ -75,7 +75,7 @@ contains("empty path adds no path filter", qAll, "filter path like", false);
 
 // Structure
 contains("query parses the JSON fields", qAll, 'parse log /"status":(?<status>[0-9]+)/');
-contains("query selects the row fields", qAll, "fields @timestamp, method, path, status, latency_ms");
+contains("query selects the row fields", qAll, "display @timestamp, method, path, status, latency_ms");
 contains("query sorts newest first", qAll, "sort @timestamp desc");
 contains("query caps rows", qAll, `limit ${ROW_LIMIT}`);
 check("row cap is 200", ROW_LIMIT, 200);
