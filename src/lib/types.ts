@@ -421,3 +421,38 @@ export interface RequestLogQueryResult {
   // true when the row cap hid matches
   truncated: boolean;
 }
+
+export interface TestRequest {
+  // stable key for the UI row
+  id: string;
+  method: string;
+  path: string;
+  // query string without the leading "?"
+  query: string;
+  userAgent: string;
+  ip: string;
+}
+
+export type RuleTestOutcome = "PASS" | "BLOCKED" | "COUNTED" | "UNKNOWN";
+
+export interface RuleTestRow {
+  requestId: string;
+  // null when the statement could not be evaluated locally
+  matched: boolean | null;
+  outcome: RuleTestOutcome;
+  reason: string;
+}
+
+export interface RuleTestResult {
+  ruleName: string;
+  action: "Block" | "Count" | "Allow" | "(none)";
+  // statement types encountered that cannot be evaluated locally
+  unsupported: string[];
+  rows: RuleTestRow[];
+  passed: number;
+  blocked: number;
+  counted: number;
+  unknown: number;
+  verdict: "SAFE" | "FALSE_POSITIVE_RISK" | "INCONCLUSIVE";
+  notes: string[];
+}

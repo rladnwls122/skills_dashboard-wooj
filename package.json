@@ -7,9 +7,11 @@
     "build": "next build",
     "start": "next start -p 3100",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm test:ddos && pnpm test:applog",
+    "test": "pnpm test:ddos && pnpm test:applog && pnpm test:rulestatement && pnpm test:rulesim",
     "test:ddos": "node --import ./scripts/testing/register.mjs scripts/ddos-policy.test.mjs",
-    "test:applog": "node --import ./scripts/testing/register.mjs scripts/applogquery.test.mjs"
+    "test:applog": "node --import ./scripts/testing/register.mjs scripts/applogquery.test.mjs",
+    "test:rulestatement": "node --import ./scripts/testing/register.mjs scripts/rulestatement.test.mjs",
+    "test:rulesim": "node --import ./scripts/testing/register.mjs scripts/rulesim.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.716.0",
