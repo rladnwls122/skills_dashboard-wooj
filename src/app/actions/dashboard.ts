@@ -16,6 +16,7 @@ import {
   type DeploymentPatchRequest,
 } from "@/lib/server/k8s";
 import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
+import { defaultTestRequests, testRule } from "@/lib/server/rulesim";
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -62,8 +63,10 @@ import type {
   MetricSummary,
   PodLogsResult,
   RequestLogQueryResult,
+  RuleTestResult,
   SimulationResult,
   StatusDistribution,
+  TestRequest,
   Verdict,
   VerificationResult,
   WafPanel,
@@ -593,6 +596,30 @@ export async function generateIncidentContextAction(): Promise<
       json: toJson(snapshot),
       generatedAt: snapshot.timestamp,
     });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rule sandbox — evaluates a pasted WAFv2 Rule against synthetic requests.
+// Pure and local: nothing is sent to AWS and no WebACL is touched.
+// ---------------------------------------------------------------------------
+
+export async function getDefaultTestRequestsAction(): Promise<ActionResult<TestRequest[]>> {
+  try {
+    return ok(defaultTestRequests());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function testRuleJsonAction(params: {
+  ruleJson: string;
+  requests: TestRequest[];
+}): Promise<ActionResult<RuleTestResult>> {
+  try {
+    return ok(testRule(params));
   } catch (e) {
     return fail(e);
   }
