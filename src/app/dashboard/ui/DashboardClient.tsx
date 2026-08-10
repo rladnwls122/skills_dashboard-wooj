@@ -13,6 +13,7 @@ import { InvestigationTab } from "./InvestigationTab";
 import { WafTab } from "./WafTab";
 import { ActionTab } from "./ActionTab";
 import { IncidentTab } from "./IncidentTab";
+import { SandboxTab } from "./SandboxTab";
 
 const TABS = [
   { id: "Overview", ko: "요약" },
@@ -20,6 +21,7 @@ const TABS = [
   { id: "WAF", ko: "방화벽" },
   { id: "Action", ko: "조치" },
   { id: "Incident", ko: "보고" },
+  { id: "Sandbox", ko: "시험" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -159,7 +161,7 @@ export function DashboardClient() {
   const waf: PollState<WafPanel> = usePoll(
     getWafPanelAction,
     Math.max(refreshSec, 30) * 1000,
-    tab === "WAF" || tab === "Overview",
+    tab === "WAF" || tab === "Overview" || tab === "Sandbox",
   );
 
   const refreshAll = (): void => {
@@ -304,6 +306,7 @@ export function DashboardClient() {
           {tab === "WAF" && <WafTab waf={waf} metrics={metrics} />}
           {tab === "Action" && <ActionTab kube={kube} />}
           {tab === "Incident" && <IncidentTab />}
+          {tab === "Sandbox" && <SandboxTab waf={waf} />}
         </main>
       </div>
     </div>
