@@ -1,7 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getDefaultTestRequestsAction, testRuleJsonAction } from "@/app/actions/dashboard";
+import {
+  getDefaultTestRequestsAction,
+  getMaliciousExampleRequestsAction,
+  testRuleJsonAction,
+} from "@/app/actions/dashboard";
 import type { RuleTestResult, TestRequest, WafPanel } from "@/lib/types";
 import { Card, ErrorNote, SectionLoading, Truncate, type PollState } from "./shared";
 
@@ -35,6 +39,7 @@ const OUTCOME_STYLE: Record<string, { label: string; cls: string }> = {
   PASS: { label: "통과", cls: "text-emerald-400" },
   BLOCKED: { label: "차단", cls: "text-red-400 font-bold" },
   COUNTED: { label: "카운트만", cls: "text-amber-400" },
+  CAUGHT: { label: "정탐(차단)", cls: "text-emerald-400 font-bold" },
   UNKNOWN: { label: "판정 불가", cls: "text-neutral-400" },
 };
 
@@ -90,8 +95,18 @@ export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
         userAgent: "Mozilla/5.0",
         ip: "10.0.2.1",
         country: "KR",
+        benign: true,
       },
     ]);
+  };
+
+  const addMalicious = async (): Promise<void> => {
+    const res = await getMaliciousExampleRequestsAction();
+    if (!res.ok) { setError(res.error); return; }
+    setRequests((prev) => {
+      const have = new Set((prev ?? []).map((r) => r.id));
+      return [...(prev ?? []), ...res.data.filter((r) => !have.has(r.id))];
+    });
   };
 
   const removeRow = (id: string): void => {
@@ -156,13 +171,22 @@ export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
         <Card
           title={`정상 요청 (${requests?.length ?? 0})`}
           right={
-            <button
-              type="button"
-              onClick={addRow}
-              className="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-700"
-            >
-              + 행 추가
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={addRow}
+                className="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-700"
+              >
+                + 행 추가
+              </button>
+              <button
+                type="button"
+                onClick={() => void addMalicious()}
+                className="rounded bg-red-950 px-2 py-0.5 text-[11px] text-red-300 hover:bg-red-900"
+              >
+                + 악성 예시
+              </button>
+            </div>
           }
         >
           {requests === null ? (
@@ -182,7 +206,10 @@ export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
                 </thead>
                 <tbody>
                   {requests.map((r) => (
-                    <tr key={r.id} className="border-t border-neutral-800">
+                    <tr
+                      key={r.id}
+                      className={`border-t border-neutral-800 ${r.benign === false ? "bg-red-950/30" : ""}`}
+                    >
                       {FIELDS.map((f) => (
                         <td key={f.key} className="px-1 py-0.5">
                           <input
@@ -222,6 +249,8 @@ export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
             <span className="text-emerald-400">통과 {result.passed}</span>
             <span className="text-red-400">차단 {result.blocked}</span>
             <span className="text-amber-400">카운트만 {result.counted}</span>
+            <span className="text-emerald-400">정탐 {result.caught}</span>
+            <span className="text-red-300">미탐 {result.missed}</span>
             <span className="text-neutral-400">판정 불가 {result.unknown}</span>
           </div>
           <table className="w-full text-left font-mono text-[10px]">

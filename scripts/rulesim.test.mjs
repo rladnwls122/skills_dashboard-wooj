@@ -1,7 +1,6 @@
 const SRC = new URL("../src/lib/server/", import.meta.url).href;
-const { testRule, defaultTestRequests, RULE_JSON_MAX, MAX_REQUESTS, FIELD_MAX } = await import(
-  `${SRC}rulesim.ts`
-);
+const { testRule, defaultTestRequests, maliciousExampleRequests, RULE_JSON_MAX, MAX_REQUESTS, FIELD_MAX } =
+  await import(`${SRC}rulesim.ts`);
 
 let failures = 0;
 const check = (name, actual, expected) => {
@@ -159,6 +158,36 @@ check(
   "counts always sum to the row count",
   safe.passed + safe.blocked + safe.counted + safe.unknown,
   safe.rows.length,
+);
+
+// --- Malicious example set ---
+const evil = maliciousExampleRequests();
+check("malicious examples are non-empty", evil.length > 0, true);
+check("all malicious examples are flagged benign:false", evil.every((r) => r.benign === false), true);
+
+// A rule that blocks /wp-login catches the malicious wp-login probe (true
+// positive) and leaves the normal set alone.
+const wp = testRule({
+  ruleJson: rule(pathStarts("/wp-login"), { Block: {} }),
+  requests: [...defaults, ...evil],
+});
+check("blocking a malicious example counts as caught, not blocked", wp.blocked, 0);
+check("the malicious wp-login probe is caught", wp.caught >= 1, true);
+check("a rule catching only malicious traffic stays SAFE", wp.verdict, "SAFE");
+
+// Blocking a benign row is still a false-positive risk.
+const overblock = testRule({
+  ruleJson: rule(pathStarts("/v1"), { Block: {} }),
+  requests: [...defaults, ...evil],
+});
+check("blocking benign /v1 rows is a false-positive risk", overblock.verdict, "FALSE_POSITIVE_RISK");
+check("benign blocked rows are counted as blocked", overblock.blocked > 0, true);
+
+// counts (incl. caught) always account for every row
+check(
+  "counts including caught sum to the row count",
+  wp.passed + wp.blocked + wp.counted + wp.caught + wp.unknown,
+  wp.rows.length,
 );
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

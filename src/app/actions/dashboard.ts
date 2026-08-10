@@ -16,7 +16,7 @@ import {
   type DeploymentPatchRequest,
 } from "@/lib/server/k8s";
 import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
-import { defaultTestRequests, testRule } from "@/lib/server/rulesim";
+import { defaultTestRequests, maliciousExampleRequests, testRule } from "@/lib/server/rulesim";
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -609,6 +609,14 @@ export async function generateIncidentContextAction(): Promise<
 export async function getDefaultTestRequestsAction(): Promise<ActionResult<TestRequest[]>> {
   try {
     return ok(defaultTestRequests());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function getMaliciousExampleRequestsAction(): Promise<ActionResult<TestRequest[]>> {
+  try {
+    return ok(maliciousExampleRequests());
   } catch (e) {
     return fail(e);
   }

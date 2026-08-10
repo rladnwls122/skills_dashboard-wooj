@@ -434,9 +434,12 @@ export interface TestRequest {
   ip: string;
   // ISO 3166-1 alpha-2 country code for GeoMatchStatement evaluation
   country: string;
+  // false marks a deliberately malicious example — blocking it is a true
+  // positive, not a false positive.
+  benign: boolean;
 }
 
-export type RuleTestOutcome = "PASS" | "BLOCKED" | "COUNTED" | "UNKNOWN";
+export type RuleTestOutcome = "PASS" | "BLOCKED" | "COUNTED" | "CAUGHT" | "UNKNOWN";
 
 export interface RuleTestRow {
   requestId: string;
@@ -455,6 +458,10 @@ export interface RuleTestResult {
   passed: number;
   blocked: number;
   counted: number;
+  // malicious examples the rule blocked (true positives)
+  caught: number;
+  // malicious examples the rule let through
+  missed: number;
   unknown: number;
   verdict: "SAFE" | "FALSE_POSITIVE_RISK" | "INCONCLUSIVE";
   notes: string[];
