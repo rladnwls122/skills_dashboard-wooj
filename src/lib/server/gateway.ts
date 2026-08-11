@@ -123,6 +123,13 @@ export function evaluateContract(h: HttpSummary | null): ContractCheck {
   return { conforming, deviations };
 }
 
+// Which side of the contract a path sits on. A status code says nothing on its
+// own — 404 on an unlisted path is the policy working, on a listed one it is a
+// routing failure — so any path listed as evidence carries this label.
+export function pathScopeLabel(path: string): string {
+  return isAppTrafficPath(path) ? "지정" : "미지정";
+}
+
 // What response a candidate rule should return once it moves to Block, given
 // the contract. A rule scoped to an unlisted path must not answer 403: that
 // tells a scanner the path is worth guarding, which is exactly what the 404

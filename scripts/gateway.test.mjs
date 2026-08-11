@@ -10,6 +10,7 @@ const {
   contractLines,
   evaluateContract,
   packToLimit,
+  pathScopeLabel,
   responseGuidance,
 } = await import(`${SRC}gateway.ts`);
 const { toQPrompt } = await import(`${SRC}incident.ts`);
@@ -32,13 +33,13 @@ check("abnormal requests are 403", GATEWAY_CONTRACT.abnormalStatus, 403);
 has("contract names the 404 scanning policy", contractLines(), "404 Not Found");
 has("contract names the abnormal kinds", contractLines(), "SQL Injection");
 
-const summary = (byPath, statusDist = { c2xx: 100, c3xx: 0, c4xx: 0, c5xx: 0 }) => ({
+const summary = (byPath, statusDist = { c2xx: 100, c3xx: 0, c4xx: 0, c5xx: 0 }, byUa = []) => ({
   totalSampled: byPath.reduce((a, p) => a + p.count, 0),
   windowLabel: "15m",
   source: "test",
   byPath,
   byIp: [],
-  byUa: [],
+  byUa,
   byMethod: [],
   queryPatterns: [],
   headerPatterns: [],
@@ -83,6 +84,10 @@ const p = (path, count, blocked = 0, lowPriority = false) => ({ path, count, blo
 }
 check("no traffic yields no verdicts", evaluateContract(null), { conforming: [], deviations: [] });
 
+// --- Paths listed as evidence carry which side of the contract they sit on ---
+check("a served path is labelled 지정", pathScopeLabel("/v1/user"), "지정");
+check("a path the gateway does not serve is labelled 미지정", pathScopeLabel("/.env"), "미지정");
+
 // --- Rule authoring guidance follows the same split ---
 has("unlisted-path rules get CustomResponse 404", [responseGuidance("/v1/admin")], "CustomResponse 404");
 has("listed-path rules keep the default 403", [responseGuidance("/v1/user")], "403가 계약과 일치");
@@ -100,6 +105,65 @@ has("path-agnostic rules are told to scope down", [responseGuidance(undefined)],
   const out = packToLimit(["# 헤더"], [{ title: "[A]", lines: ["- 한 줄"] }], 2000);
   check("short output is not padded or cut", out, "# 헤더\n\n[A]\n- 한 줄");
   check("nothing is marked omitted when everything fit", out.includes("생략"), false);
+}
+
+// --- Top paths and user-agents reach the prompt as ranked, labelled lists ---
+{
+  const empty = {
+    timestamp: "2026-08-11T00:00:00.000Z",
+    metrics: [],
+    httpSummary: summary(
+      [p("/v1/user", 900, 12), p("/login", 300, 300), p("/health", 5, 0, true)],
+      { c2xx: 900, c3xx: 0, c4xx: 300, c5xx: 0 },
+      [{ key: "gobuster/3.6", count: 700 }, { key: "curl/8.4.0", count: 120 }],
+    ),
+    kube: null,
+    anomalies: [],
+    correlations: [],
+    timeline: [],
+    fingerprints: [],
+    logs: null,
+    previousLogs: null,
+    wafHistory: [],
+    deployHistory: [],
+    verifications: [],
+    wafRecommendations: [],
+  };
+  const q = toQPrompt(empty);
+  check("top paths are labelled with their count", q.includes("Top 경로 3/3"), true);
+  check("a served path is marked 지정 in the list", q.includes("1. [지정] /v1/user — 900건 (차단 12)"), true);
+  check("an unserved path is marked 미지정 in the list", q.includes("2. [미지정] /login — 300건 (차단 300)"), true);
+  check("health-check paths stay flagged as excluded", q.includes("헬스체크 제외 대상"), true);
+  check("top user-agents are labelled with their count", q.includes("Top User-Agent 2/2"), true);
+  check("user-agents are ranked", q.includes("1. gobuster/3.6 — 700건"), true);
+  check("the request list points Q at the two top lists", q.includes("[F]의 Top 경로·Top User-Agent"), true);
+
+  // A long tail is cut to the top N, and the header says so.
+  const many = {
+    ...empty,
+    httpSummary: summary(
+      Array.from({ length: 25 }, (_, i) => p(`/p${i}`, 100 - i)),
+      { c2xx: 100, c3xx: 0, c4xx: 0, c5xx: 0 },
+      Array.from({ length: 20 }, (_, i) => ({ key: `ua-${i}`, count: 100 - i })),
+    ),
+  };
+  const qm = toQPrompt(many);
+  check("a long path tail is cut to 10 and disclosed", qm.includes("Top 경로 10/25"), true);
+  check("the 11th path is not included", qm.includes("11. ["), false);
+  check("a long UA tail is cut to 8 and disclosed", qm.includes("Top User-Agent 8/20"), true);
+  check("the 9th user-agent is not included", qm.includes("ua-8"), false);
+}
+
+// --- No traffic at all: the lists are absent, not emitted empty ---
+{
+  const q = toQPrompt({
+    timestamp: "t", metrics: [], httpSummary: null, kube: null, anomalies: [],
+    correlations: [], timeline: [], fingerprints: [], logs: null, previousLogs: null,
+    wafHistory: [], deployHistory: [], verifications: [], wafRecommendations: [],
+  });
+  // The [B] request list names both lists, so match the list header itself.
+  check("no traffic means no empty Top 경로 list", q.includes("- Top 경로 "), false);
+  check("no traffic means no empty Top User-Agent list", q.includes("- Top User-Agent "), false);
 }
 
 // --- The Amazon Q prompt fits, and leads with the judgement criteria ---

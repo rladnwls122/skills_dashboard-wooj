@@ -17,6 +17,7 @@ import {
   contractLines,
   evaluateContract,
   packToLimit,
+  pathScopeLabel,
   responseGuidance,
   type QSection,
 } from "./gateway";
@@ -235,6 +236,35 @@ export function toJson(s: IncidentSnapshot): string {
 // analysis is left out — raw pod log tails, the full timeline, and the rule
 // JSON bodies (which alone run past the budget). What stays is grouped into
 // labelled categories so each block can be read, or dropped, on its own.
+// Top paths and top user-agents are the two lists an analyst opens first, so
+// they are labelled and ranked rather than left as loose bullets. Each path
+// carries its [A] side: a status code means nothing until you know whether the
+// path is one the gateway serves. Counts are stated as shown/total so a reader
+// can tell a short tail from a truncated list.
+const TOP_PATHS = 10;
+const TOP_UAS = 8;
+
+function topPathLines(h: HttpSummary): string[] {
+  if (h.byPath.length === 0) return [];
+  return [
+    `- Top 경로 ${Math.min(TOP_PATHS, h.byPath.length)}/${h.byPath.length} (요청순, [지정]/[미지정]은 [A] 기준):`,
+    ...h.byPath
+      .slice(0, TOP_PATHS)
+      .map(
+        (p, i) =>
+          `  ${i + 1}. [${pathScopeLabel(p.path)}] ${p.path} — ${p.count}건 (차단 ${p.blocked}${p.lowPriority ? ", 헬스체크 제외 대상" : ""})`,
+      ),
+  ];
+}
+
+function topUaLines(h: HttpSummary): string[] {
+  if (h.byUa.length === 0) return [];
+  return [
+    `- Top User-Agent ${Math.min(TOP_UAS, h.byUa.length)}/${h.byUa.length} (요청순):`,
+    ...h.byUa.slice(0, TOP_UAS).map((u, i) => `  ${i + 1}. ${maskText(u.key)} — ${u.count}건`),
+  ];
+}
+
 export function toQPrompt(s: IncidentSnapshot): string {
   const m = (t: string): string => maskText(t);
   const header = [
@@ -249,6 +279,7 @@ export function toQPrompt(s: IncidentSnapshot): string {
     `2. 실제 문제에 대해 근본 원인 가설을 근거와 함께 제시할 것 (확정 진단 금지).`,
     `3. [G]의 규칙 후보를 검토하고, 필요하면 응답 코드(403/404)까지 지정해 보완할 것.`,
     `4. 4XX/403/404 증가 자체를 장애로 판정하지 말 것 — [A]에서 정상 동작임.`,
+    `5. [F]의 Top 경로·Top User-Agent에서 스캐너/정찰 패턴을 식별하고, [미지정] 경로에 몰린 요청은 [A]의 404 정책으로 설명할 것.`,
   ];
 
   const sections: QSection[] = [];
@@ -299,10 +330,8 @@ export function toQPrompt(s: IncidentSnapshot): string {
                 `- 상태 분포(분당): 2xx=${h.statusDist.c2xx} 3xx=${h.statusDist.c3xx} 4xx=${h.statusDist.c4xx} 5xx=${h.statusDist.c5xx}`,
               ]
             : []),
-          ...h.byPath
-            .slice(0, 8)
-            .map((p) => `- ${p.path}: ${p.count}건 (차단 ${p.blocked})`),
-          ...h.byUa.slice(0, 3).map((u) => `- UA ${m(u.key)}: ${u.count}건`),
+          ...topPathLines(h),
+          ...topUaLines(h),
         ]
       : [],
   });
