@@ -437,9 +437,25 @@ export interface TestRequest {
   // false marks a deliberately malicious example — blocking it is a true
   // positive, not a false positive.
   benign: boolean;
+  // Headers beyond User-Agent (Cookie, Host, X-Forwarded-For, …). Absent
+  // headers evaluate as a definite no-match, so only what is listed exists.
+  headers?: Record<string, string>;
+  // request body, inspected by Body / JsonBody / SizeConstraint statements
+  body?: string;
+  // labels already on the request, for LabelMatchStatement
+  labels?: string[];
 }
 
-export type RuleTestOutcome = "PASS" | "BLOCKED" | "COUNTED" | "CAUGHT" | "UNKNOWN";
+export type RuleTestAction = "Block" | "Count" | "Allow" | "Captcha" | "Challenge" | "(none)";
+
+export type RuleTestOutcome =
+  | "PASS"
+  | "BLOCKED"
+  | "COUNTED"
+  | "CAUGHT"
+  | "CHALLENGED"
+  | "MATCHED"
+  | "UNKNOWN";
 
 export interface RuleTestRow {
   requestId: string;
@@ -447,17 +463,27 @@ export interface RuleTestRow {
   matched: boolean | null;
   outcome: RuleTestOutcome;
   reason: string;
+  // the rule that decided this request; null when nothing matched
+  ruleName: string | null;
 }
 
 export interface RuleTestResult {
   ruleName: string;
-  action: "Block" | "Count" | "Allow" | "(none)";
+  action: RuleTestAction;
+  // how many rules the pasted JSON contained
+  ruleCount: number;
   // statement types encountered that cannot be evaluated locally
   unsupported: string[];
+  // statement types answered by a local approximation of AWS behaviour
+  approximated: string[];
   rows: RuleTestRow[];
   passed: number;
   blocked: number;
   counted: number;
+  // matched by a Captcha/Challenge rule
+  challenged: number;
+  // matched by a rule that carries no action
+  matched: number;
   // malicious examples the rule blocked (true positives)
   caught: number;
   // malicious examples the rule let through

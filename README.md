@@ -85,9 +85,69 @@ mise run build && mise run start   # production 빌드로 실행
 5. **보고 (Incident)** — "Generate Incident Context" 버튼으로 현재까지 수집된
    모든 정보(메트릭/로그/이벤트/조치이력)를 마스킹된 Markdown/JSON으로 생성.
    Amazon Q나 팀원에게 상황을 공유할 때 복사/다운로드해서 사용.
+6. **시험 (Sandbox)** — WAF 규칙을 적용 전에 **로컬에서만** 돌려보는 탭.
+   AWS로 아무것도 보내지 않고 WebACL도 건드리지 않는다. 자세한 내용은 아래
+   "규칙 시험 샌드박스" 참고.
 
 **원칙**: 자동 차단·자동 정책 변경 없음. WAF/Deployment 변경은 항상 사람의
 명시적 승인을 거친다.
+
+### 규칙 시험 샌드박스 (시험 탭)
+
+붙여넣은 WAF 규칙을 합성 요청 목록에 대해 로컬에서 평가한다. 네트워크 호출이
+없으므로 AWS 자격증명 없이도 동작한다.
+
+**붙여넣을 수 있는 형태** — 넷 다 그대로 인식한다.
+
+- WAFv2 Rule 하나 (`{"Name":…,"Statement":…,"Action":…}`)
+- Rule 배열 (`[{…},{…}]`)
+- WebACL JSON 전체 (`aws wafv2 get-web-acl` 출력 그대로, `WebACL` 래퍼 포함 가능)
+- Statement 본문만 (`{"ByteMatchStatement":{…}}`)
+- 위 형태를 **여러 개 그냥 이어붙인 것** — 콘솔에서 규칙을 하나씩 복사해
+  `{…}{…}` 로 붙여넣어도 되고, 사이에 쉼표가 있어도 된다.
+  손으로 남긴 주석(`//`, `/* */`)과 마지막 쉼표도 허용한다.
+
+규칙이 여러 개면 **Priority 오름차순**으로 평가하고, Block/Allow/CAPTCHA/Challenge
+에서 멈춘다(Count는 계속 진행). 결과 표의 "결정 규칙" 열이 어느 규칙이 그 요청을
+결정했는지 보여주고, 앞선 규칙의 `RuleLabels`는 뒤 규칙의 `LabelMatchStatement`가
+그대로 본다.
+
+**요청 편집** — 각 행 왼쪽 `▸`를 누르면 헤더(한 줄에 `이름: 값`), 바디, 국가 코드,
+라벨을 넣을 수 있다. 요청에 없는 헤더는 "판정 불가"가 아니라 **미매칭**으로
+평가된다. Cookie 헤더는 `Cookies` 필드로, 바디는 `Body`/`JsonBody` 필드로 자동
+파싱된다.
+
+**IP 세트·정규식 세트 참조** — ARN만으로는 내용을 알 수 없으므로, 붙여넣는 JSON
+최상위에 내용을 같이 넣으면 평가된다 (세트 이름이나 ARN 어느 쪽으로 키를 잡아도 됨):
+
+```json
+{
+  "IPSets": { "office-ips": ["10.0.2.0/24"] },
+  "RegexPatternSets": { "bad-ua": ["sqlmap", "gobuster"] },
+  "Rules": [ … ]
+}
+```
+
+**근사 평가되는 항목** — 결과 화면에 노란 배지로 표시된다. 로컬 판정이 실제 WAF와
+다를 수 있으므로 **COUNT 검증은 여전히 필수**다.
+
+| 항목 | 로컬 처리 |
+|---|---|
+| `ManagedRuleGroupStatement` | CommonRuleSet·KnownBadInputs·SQLi·Linux/Unix·Windows·PHP·WordPress·AdminProtection·BotControl을 공개된 규칙 의도대로 근사. 매칭 시 라벨도 발행 |
+| `SqliMatchStatement` / `XssMatchStatement` | AWS 내부 토크나이저 대신 시그니처 탐지 (`SensitivityLevel` 반영) |
+| `RateBasedStatement` | 스코프다운 조건만 평가 — 요청량 임계치는 합성 요청으로 재현 불가 |
+| `RuleGroupReferenceStatement` | 문장 안에 `"Rules": […]`를 넣으면 평가 |
+
+**여전히 판정 불가로 남는 것** — 로컬에 정답이 없는 것만 남긴다. IP 평판/익명 IP
+목록(공인 IP일 때. 사설 IP는 미매칭으로 확정), ATP/ACFP 규칙 그룹, 서드파티
+마켓플레이스 규칙 그룹, `ASNMatchStatement`, TLS 핑거프린트 필드, `MD5`
+TextTransformation, 내용을 못 준 IP/정규식 세트 참조. 이때도 통과가 아니라
+**판정 불가**로 표시되고 어떤 문법 때문인지 이름이 나온다.
+
+TextTransformation은 `MD5`를 뺀 WAFv2 전 종류(`URL_DECODE_UNI`, `HEX_DECODE`,
+`SQL_HEX_DECODE`, `REPLACE_COMMENTS`, `ESCAPE_SEQ_DECODE`, `CSS_DECODE`,
+`JS_DECODE`, `NORMALIZE_PATH_WIN`, `BASE64_DECODE_EXT`, `UTF8_TO_UNICODE` 등)를
+지원한다.
 
 ### 대회 전 리허설 (선택)
 
@@ -181,6 +241,13 @@ src/lib/server/                # server-only 모듈
   k8s.ts        # Pod/Event/Deployment/로그, JSON Patch + 검증
   resources.ts  # Pod/Node 리소스 사용률(metrics.k8s.io), HPA/Nodegroup 스케일링, 상태 분포
   requestlog.ts # Gin 액세스로그 파싱 → latency/상태코드/에러·경고
+  rulesim.ts    # 규칙 시험 샌드박스: 입력 파싱(Rule/배열/WebACL/Statement) + 다중 규칙 평가
+  rulejson.ts      # 연속 붙여넣기({…}{…})·주석·트레일링 콤마를 받는 관대한 JSON 리더
+  rulestatement.ts # WAFv2 Statement 평가기 (3값 논리: true/false/UNKNOWN)
+  rulerequest.ts   # 합성 요청 정규화(헤더/쿠키/쿼리인자/바디) + CIDR 매칭
+  ruletransform.ts # TextTransformation 구현 (MD5 제외 전 종류)
+  ruleinjection.ts # SQLi/XSS 로컬 시그니처 탐지
+  rulemanaged.ts   # AWS 관리형 규칙 그룹 근사 + 라벨 발행
   anomaly.ts    # 이상 감지 (오탐 방지 규칙 포함)
   correlation.ts# 상관 분석 + 타임라인
   fingerprint.ts# 오류 정규화·핑거프린트
