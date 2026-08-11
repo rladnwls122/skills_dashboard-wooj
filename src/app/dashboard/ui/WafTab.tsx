@@ -18,6 +18,26 @@ const RISK_COLOR = {
   HIGH: "text-red-400",
 } as const;
 
+// Column widths for the sampled-request table. They add up to 100% so the
+// fixed layout never needs a horizontal scrollbar; the three unbounded fields
+// (path / query / User-Agent) get the slack.
+const SAMPLE_COLUMNS = [
+  { label: "시각", width: "9%" },
+  { label: "IP", width: "10%" },
+  { label: "국가", width: "4%" },
+  { label: "메소드", width: "6%" },
+  { label: "경로", width: "13%" },
+  { label: "쿼리", width: "17%" },
+  { label: "User-Agent", width: "19%" },
+  {
+    label: "상태",
+    width: "6%",
+    hint: "WAF가 직접 응답한 요청만 기록됨 (Block+커스텀 응답, CAPTCHA). 일반 ALLOW 요청은 비어 있음 — 실제 앱 상태 코드는 아래 앱 요청 로그 참고",
+  },
+  { label: "판정", width: "7%" },
+  { label: "룰", width: "9%" },
+] as const;
+
 function StatList({
   title,
   rows,
@@ -174,23 +194,18 @@ export function WafTab({
         }
       >
         <div className="max-h-80 overflow-auto">
-          <table className="w-full text-left font-mono text-[10px]">
+          {/* Fixed layout: query strings and User-Agents are unbounded, and an
+              auto-layout table lets them widen their column until the later
+              ones overlap. Fixed columns + Truncate keeps every row readable. */}
+          <table className="w-full table-fixed text-left font-mono text-[10px]">
+            <colgroup>
+              {SAMPLE_COLUMNS.map((c) => (
+                <col key={c.label} style={{ width: c.width }} />
+              ))}
+            </colgroup>
             <thead className="sticky top-0 bg-neutral-900 text-neutral-500">
               <tr>
-                {(
-                  [
-                    { label: "시각" },
-                    { label: "IP" },
-                    { label: "국가" },
-                    { label: "메소드" },
-                    { label: "경로" },
-                    { label: "쿼리" },
-                    { label: "User-Agent" },
-                    { label: "상태", hint: "WAF가 직접 응답한 요청만 기록됨 (Block+커스텀 응답, CAPTCHA). 일반 ALLOW 요청은 비어 있음 — 실제 앱 상태 코드는 아래 앱 요청 로그 참고" },
-                    { label: "판정" },
-                    { label: "룰" },
-                  ] as const
-                ).map((h) => (
+                {SAMPLE_COLUMNS.map((h) => (
                   <th
                     key={h.label}
                     title={"hint" in h ? h.hint : undefined}
@@ -207,17 +222,21 @@ export function WafTab({
                   key={i}
                   className={`border-t border-neutral-800 ${s.action === "BLOCK" ? "bg-red-950/25 text-red-300" : "text-neutral-300"}`}
                 >
-                  <td className="px-2 py-0.5 whitespace-nowrap text-neutral-500">{fmtTs(s.ts)}</td>
-                  <td className="px-2 py-0.5 whitespace-nowrap">{s.ip}</td>
+                  <td className="px-2 py-0.5 text-neutral-500">
+                    <Truncate text={fmtTs(s.ts)} />
+                  </td>
+                  <td className="px-2 py-0.5">
+                    <Truncate text={s.ip} />
+                  </td>
                   <td className="px-2 py-0.5">{s.country}</td>
                   <td className="px-2 py-0.5">{s.method}</td>
-                  <td className="max-w-48 px-2 py-0.5">
+                  <td className="px-2 py-0.5">
                     <Truncate text={s.path} />
                   </td>
-                  <td className="max-w-40 px-2 py-0.5 text-neutral-500">
+                  <td className="px-2 py-0.5 text-neutral-500">
                     <Truncate text={s.query} />
                   </td>
-                  <td className="max-w-48 px-2 py-0.5 text-neutral-500">
+                  <td className="px-2 py-0.5 text-neutral-500">
                     <Truncate text={s.userAgent} />
                   </td>
                   <td className="px-2 py-0.5 tabular-nums whitespace-nowrap">
@@ -234,7 +253,7 @@ export function WafTab({
                   >
                     {s.action}
                   </td>
-                  <td className="max-w-32 px-2 py-0.5 text-neutral-500">
+                  <td className="px-2 py-0.5 text-neutral-500">
                     <Truncate text={s.rule} />
                   </td>
                 </tr>

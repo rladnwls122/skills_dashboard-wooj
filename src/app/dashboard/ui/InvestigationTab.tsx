@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getPodLogsAction } from "@/app/actions/dashboard";
 import type { KubePanel, MetricsPanel, PodLogsResult, WarningEvent } from "@/lib/types";
 import type { PodSelection } from "./DashboardClient";
@@ -81,6 +81,15 @@ export function InvestigationTab({
   const [onlyProblems, setOnlyProblems] = useState(false);
   const [eventDetail, setEventDetail] = useState<WarningEvent | null>(null);
 
+  // "보기" / "로그" sit far above the terminal (and on another tab, for the
+  // Overview jump), so selecting a pod without moving the viewport reads as a
+  // dead button. Bring the terminal to the user whenever the pod changes.
+  const logTerminalRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!selection?.pod) return;
+    logTerminalRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [selection?.pod]);
+
   const selectedPod = pods.find((p) => p.name === selection?.pod);
   const container =
     selection?.container && selectedPod?.containers.some((c) => c.name === selection.container)
@@ -96,6 +105,7 @@ export function InvestigationTab({
     },
     autoRefresh ? 30_000 : 3_600_000,
     Boolean(selection?.pod),
+    [selection?.pod, container, previous, tailLines],
   );
 
   const filteredLines = useMemo(() => {
@@ -391,8 +401,8 @@ export function InvestigationTab({
                     <td className={`px-2 py-1 ${e.highlighted ? "font-semibold text-amber-400" : ""}`}>
                       {e.reason}
                     </td>
-                    <td className="max-w-64 px-2 py-1 text-neutral-400">
-                      <Truncate text={e.message} />
+                    <td className="px-2 py-1 text-neutral-400">
+                      <Truncate text={e.message} className="max-w-64" />
                     </td>
                     <td className="px-2 py-1 tabular-nums">{e.count}</td>
                     <td className="px-2 py-1">
@@ -436,6 +446,7 @@ export function InvestigationTab({
         </Card>
       </div>
 
+      <div ref={logTerminalRef} className="scroll-mt-4">
       <Card
         title="Log Terminal"
         right={
@@ -545,6 +556,7 @@ export function InvestigationTab({
           })}
         </div>
       </Card>
+      </div>
 
       <Card title="요청 로그 분석 (선택 Pod — Latency / Non-2xx / Error·Warn)">
         {logs.data?.requestLog ? (

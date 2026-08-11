@@ -128,8 +128,8 @@ export function RequestLogPanel() {
                 <tr key={i} className="border-t border-neutral-800 text-neutral-300">
                   <td className="px-2 py-0.5 whitespace-nowrap text-neutral-500">{fmtTs(r.ts)}</td>
                   <td className="px-2 py-0.5">{r.method}</td>
-                  <td className="max-w-64 px-2 py-0.5">
-                    <Truncate text={r.path} />
+                  <td className="px-2 py-0.5">
+                    <Truncate text={r.path} className="max-w-64" />
                   </td>
                   <td className={`px-2 py-0.5 font-bold tabular-nums ${statusColor(r.status)}`}>
                     {r.status}

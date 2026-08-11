@@ -24,10 +24,17 @@ function describeError(e: unknown): string {
 
 // Client-side polling with an in-flight guard: a tick is skipped while the
 // previous request is still running (spec §24).
+//
+// `inputs` names the values the callback reads. The callback itself is held in
+// a ref (so a new closure every render does not restart the timer), which means
+// a changed input would otherwise sit unfetched until the next interval — an
+// hour, for the log panel with auto-refresh off. Anything the callback depends
+// on must be listed here.
 export function usePoll<T>(
   fn: () => Promise<ActionResult<T>>,
   intervalMs: number,
   enabled = true,
+  inputs: readonly unknown[] = [],
 ): PollState<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,6 +43,9 @@ export function usePoll<T>(
   const inflight = useRef(false);
   const fnRef = useRef(fn);
   fnRef.current = fn;
+  // Serialized so the effect keeps a fixed-length dependency array.
+  const inputKey = JSON.stringify(inputs);
+  const lastInputKey = useRef(inputKey);
 
   const tick = useCallback(async (): Promise<void> => {
     if (inflight.current) return;
@@ -61,10 +71,18 @@ export function usePoll<T>(
 
   useEffect(() => {
     if (!enabled) return;
+    // Inputs changed: what is on screen answers a different question, so drop
+    // it rather than label another pod's logs with the newly selected name.
+    if (lastInputKey.current !== inputKey) {
+      lastInputKey.current = inputKey;
+      setData(null);
+      setError(null);
+    }
+    setLoading(true);
     void tick();
     const id = setInterval(() => void tick(), intervalMs);
     return () => clearInterval(id);
-  }, [tick, intervalMs, enabled]);
+  }, [tick, intervalMs, enabled, inputKey]);
 
   return { data, error, loading, lastUpdated, refresh: () => void tick() };
 }
@@ -278,8 +296,13 @@ export function fmtTs(iso: string): string {
   }
 }
 
-// Truncated inline text with a hover tooltip that shows the full value in a
+// Truncated text with a hover tooltip that shows the full value in a
 // translucent box, clamped so it never leaves the viewport.
+//
+// Must be a block: an inline box ignores overflow and width, so `truncate` on
+// an inline span clips nothing and long values spill across neighbouring
+// columns. `min-w-0` lets it shrink inside a flex row, and the width itself
+// comes from the caller (a max-w-* class) or from a fixed-layout table column.
 export function Truncate({ text, className = "" }: { text: string; className?: string }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
 
@@ -291,7 +314,10 @@ export function Truncate({ text, className = "" }: { text: string; className?: s
 
   return (
     <span
-      className={`truncate ${className}`}
+      className={`block min-w-0 max-w-full truncate ${className}`}
+      // Native tooltip as a fallback for touch/keyboard and for the moment
+      // before the styled one renders.
+      title={text || undefined}
       onMouseEnter={show}
       onMouseMove={pos ? undefined : show}
       onMouseLeave={hide}
