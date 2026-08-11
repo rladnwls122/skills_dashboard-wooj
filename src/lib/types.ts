@@ -399,6 +399,9 @@ export interface PodLogsResult {
 export interface IncidentContextResult {
   markdown: string;
   json: string;
+  // Category-separated hand-off packed to Amazon Q's 10,000-character prompt
+  // limit — see MAX_Q_PROMPT_CHARS.
+  qPrompt: string;
   generatedAt: string;
 }
 

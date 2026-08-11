@@ -12,6 +12,14 @@ import type {
 } from "@/lib/types";
 import { maskText } from "./mask";
 import { listDeployHistory, listWafHistory, saveIncidentSnapshot } from "./db";
+import {
+  MAX_Q_PROMPT_CHARS,
+  contractLines,
+  evaluateContract,
+  packToLimit,
+  responseGuidance,
+  type QSection,
+} from "./gateway";
 
 export interface IncidentSnapshot {
   timestamp: string;
@@ -90,6 +98,11 @@ export function toMarkdown(s: IncidentSnapshot): string {
     `\n> 본 문서의 모든 원인 표현은 "의심/가능성"이며 확정 진단이 아님. 민감정보는 마스킹됨.`,
   );
 
+  // The interpretation key goes first: without it a reader treats the 4XX/403
+  // volume this environment produces by design as an outage.
+  md.push(`\n## 0. 게이트웨이 기대 동작 (판정 기준)`);
+  md.push(...contractLines());
+
   md.push(`\n## 1. CloudWatch Metrics (현재 vs 이전 구간)`);
   md.push(`| Metric | Previous | Current | Δ | %Change | Status |`);
   md.push(`|---|---|---|---|---|---|`);
@@ -116,6 +129,12 @@ export function toMarkdown(s: IncidentSnapshot): string {
     // is pasted into the Amazon Q handoff.
     md.push(`\n### Top User-Agents`);
     for (const u of h.byUa.slice(0, 5)) md.push(`- ${maskText(u.key)} — ${u.count}건`);
+
+    const check = evaluateContract(h);
+    md.push(`\n### 기대 동작 대비 편차 (§0 기준)`);
+    if (check.deviations.length === 0) md.push(`- 계약 위반 관측 없음`);
+    for (const d of check.deviations) md.push(`- [편차] ${d}`);
+    for (const c of check.conforming) md.push(`- [정상] ${c}`);
   }
 
   if (s.kube) {
@@ -195,6 +214,7 @@ export function toMarkdown(s: IncidentSnapshot): string {
   for (const r of s.wafRecommendations) {
     md.push(`### [${r.kind}] ${r.targetPattern}`);
     md.push(`- ${r.reason} (confidence: ${r.confidence}, 오탐위험: ${r.falsePositiveRisk})`);
+    md.push(`- 응답 코드: ${responseGuidance(r.criteria.path)}`);
     md.push("```json");
     md.push(r.ruleJson);
     md.push("```");
@@ -205,4 +225,131 @@ export function toMarkdown(s: IncidentSnapshot): string {
 
 export function toJson(s: IncidentSnapshot): string {
   return maskText(JSON.stringify(s, null, 2));
+}
+
+// ---------------------------------------------------------------------------
+// Amazon Q prompt
+// ---------------------------------------------------------------------------
+// A different artifact from the full markdown, not a shortened copy of it. Q's
+// prompt box holds 10,000 characters, so everything that does not change the
+// analysis is left out — raw pod log tails, the full timeline, and the rule
+// JSON bodies (which alone run past the budget). What stays is grouped into
+// labelled categories so each block can be read, or dropped, on its own.
+export function toQPrompt(s: IncidentSnapshot): string {
+  const m = (t: string): string => maskText(t);
+  const header = [
+    `# WAF/게이트웨이 인시던트 분석 요청`,
+    `수집 시각: ${s.timestamp}`,
+    ``,
+    `[A] 판정 기준 — 게이트웨이 기대 동작`,
+    ...contractLines(),
+    ``,
+    `[B] 요청 사항`,
+    `1. [C]의 이상 징후 중 [A] 계약으로 설명되는 것과 실제 문제를 구분할 것.`,
+    `2. 실제 문제에 대해 근본 원인 가설을 근거와 함께 제시할 것 (확정 진단 금지).`,
+    `3. [G]의 규칙 후보를 검토하고, 필요하면 응답 코드(403/404)까지 지정해 보완할 것.`,
+    `4. 4XX/403/404 증가 자체를 장애로 판정하지 말 것 — [A]에서 정상 동작임.`,
+  ];
+
+  const sections: QSection[] = [];
+
+  const contract = s.httpSummary ? evaluateContract(s.httpSummary) : { conforming: [], deviations: [] };
+  sections.push({
+    title: `[C] 이상 징후 (심각도순)`,
+    lines:
+      s.anomalies.length === 0
+        ? [`- 탐지된 이상 징후 없음`]
+        : s.anomalies.map(
+            (a) =>
+              `- [${a.severity}/${a.type}] ${m(a.title)}: ${m(a.detail)} (confidence ${a.confidence}) | 근거 ${a.evidence
+                .slice(0, 2)
+                .map((e) => m(e))
+                .join("; ")}`,
+          ),
+  });
+
+  sections.push({
+    title: `[D] 기대 동작 대비 편차 ([A] 기준)`,
+    lines: [
+      ...(contract.deviations.length === 0
+        ? [`- 계약 위반 관측 없음`]
+        : contract.deviations.map((d) => `- [편차] ${m(d)}`)),
+      ...contract.conforming.map((c) => `- [정상] ${m(c)}`),
+    ],
+  });
+
+  sections.push({
+    title: `[E] 근거 — 메트릭 (이전 → 현재)`,
+    lines: s.metrics
+      .filter((x) => x.status !== "NORMAL")
+      .map((x) => `- ${x.label}: ${x.previous} → ${x.current} (${x.percentChange ?? "N/A"}%, ${x.status})`)
+      .concat(
+        s.metrics.every((x) => x.status === "NORMAL") ? [`- 임계치 초과 메트릭 없음`] : [],
+      ),
+  });
+
+  const h = s.httpSummary;
+  sections.push({
+    title: `[F] 근거 — 트래픽`,
+    lines: h
+      ? [
+          `- 출처: ${h.source} / 샘플 ${h.totalSampled}건 / ${h.windowLabel}`,
+          ...(h.statusDist
+            ? [
+                `- 상태 분포(분당): 2xx=${h.statusDist.c2xx} 3xx=${h.statusDist.c3xx} 4xx=${h.statusDist.c4xx} 5xx=${h.statusDist.c5xx}`,
+              ]
+            : []),
+          ...h.byPath
+            .slice(0, 8)
+            .map((p) => `- ${p.path}: ${p.count}건 (차단 ${p.blocked})`),
+          ...h.byUa.slice(0, 3).map((u) => `- UA ${m(u.key)}: ${u.count}건`),
+        ]
+      : [],
+  });
+
+  sections.push({
+    title: `[G] WAF 규칙 후보 (JSON 본문은 별도 산출물)`,
+    lines:
+      s.wafRecommendations.length === 0
+        ? [`- 추천 없음`]
+        : s.wafRecommendations.map(
+            (r) =>
+              `- [${r.kind}/${r.action}] ${m(r.targetPattern)} — ${m(r.reason)} (confidence ${r.confidence}, 오탐위험 ${r.falsePositiveRisk}) | 응답: ${responseGuidance(r.criteria.path)}`,
+          ),
+  });
+
+  sections.push({
+    title: `[H] 근거 — 애플리케이션/쿠버네티스`,
+    lines: [
+      ...(s.kube
+        ? [
+            `- 노드 ${s.kube.nodesReady}/${s.kube.nodesTotal} Ready`,
+            ...s.kube.pods
+              .filter((p) => p.statusLabel !== "Running" || p.recentRestartIncrease > 0)
+              .slice(0, 6)
+              .map(
+                (p) =>
+                  `- Pod ${p.name}: ${p.statusLabel}, ready ${p.ready}, 재시작 ${p.totalRestarts} (+${p.recentRestartIncrease})`,
+              ),
+          ]
+        : []),
+      ...s.fingerprints.slice(0, 5).map((f) => `- 반복 오류 ×${f.count}: ${m(f.fingerprint).slice(0, 120)}`),
+    ],
+  });
+
+  sections.push({
+    title: `[I] 조치 및 검증 이력`,
+    lines: [
+      ...s.deployHistory.slice(-5).map((d) => `- ${d.ts} ${d.target}: ${m(d.change)} → ${d.verdict}`),
+      ...s.wafHistory.slice(-5).map((w) => `- ${w.ts} ${w.ruleName} ${w.action} → ${w.status}`),
+      ...s.verifications.slice(-5).map((v) => `- 검증 #${v.actionId} → ${v.verdict} (${v.checkedAt})`),
+    ],
+  });
+
+  sections.push({
+    title: `[J] 상관관계 (추정, 확정 아님)`,
+    lines: s.correlations.map((c) => `- [${c.category}] ${m(c.reason)} (confidence ${c.confidence})`),
+  });
+
+  return packToLimit(header, sections, MAX_Q_PROMPT_CHARS);
 }

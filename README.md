@@ -83,8 +83,24 @@ mise run build && mise run start   # production 빌드로 실행
    적용 후 약 2분 뒤 자동으로(또는 "지금 검증" 버튼으로) 효과를 검증해
    IMPROVED/NO_CHANGE/DEGRADED/INCONCLUSIVE 중 하나로 표시.
 5. **보고 (Incident)** — "Generate Incident Context" 버튼으로 현재까지 수집된
-   모든 정보(메트릭/로그/이벤트/조치이력)를 마스킹된 Markdown/JSON으로 생성.
+   모든 정보(메트릭/로그/이벤트/조치이력)를 마스킹해서 세 가지 형식으로 생성.
    Amazon Q나 팀원에게 상황을 공유할 때 복사/다운로드해서 사용.
+   - **Amazon Q 프롬프트** (기본값) — Q의 프롬프트 입력 한도인 10,000자에 맞춰
+     `[A]`~`[J]` 카테고리로 나눠 담는다. 맨 앞 `[A]`가 게이트웨이 기대 동작
+     (아래 참고)이라 Q가 404/403 증가를 장애로 오판하지 않는다. 규칙 JSON
+     본문·Pod 로그 원문·전체 타임라인은 빠지며, 잘린 항목은 말미에 이름으로
+     남는다. 글자 수는 셀렉트 옆에 표시되고 한도를 넘으면 빨간색.
+   - **Markdown (전체)** — 위 항목을 포함한 전체 보고서.
+   - **JSON** — 스냅샷 원본.
+
+   **게이트웨이 기대 동작**: 이 환경의 게이트웨이는 미지정 경로 → `404`
+   (엔드포인트가 없는 것처럼 보이게 해 스캐닝 차단), 지정 경로 + 정상 요청 →
+   `200`, 지정 경로 + 비정상 요청(SQLi/XSS/Body 포맷 오류/차단 IP/rate limit
+   초과) → `403`으로 응답한다. 따라서 404·403 자체는 장애가 아니라 정책이
+   동작한 결과이며, **5XX와 "미지정 경로가 통과된 것"만이 계약 위반**이다.
+   보고서는 관측된 트래픽을 이 기준에 대고 `[정상]`/`[편차]`로 갈라 적고,
+   WAF 추천 규칙마다 Block 시 돌려줄 응답 코드(미지정 경로면 CustomResponse
+   404)를 함께 제안한다.
 6. **시험 (Sandbox)** — WAF 규칙을 적용 전에 **로컬에서만** 돌려보는 탭.
    AWS로 아무것도 보내지 않고 WebACL도 건드리지 않는다. 자세한 내용은 아래
    "규칙 시험 샌드박스" 참고.
@@ -251,7 +267,8 @@ src/lib/server/                # server-only 모듈
   anomaly.ts    # 이상 감지 (오탐 방지 규칙 포함)
   correlation.ts# 상관 분석 + 타임라인
   fingerprint.ts# 오류 정규화·핑거프린트
-  incident.ts   # 스냅샷 + Markdown/JSON 컨텍스트
+  incident.ts   # 스냅샷 + Markdown/JSON/Q 프롬프트 컨텍스트
+  gateway.ts    # 게이트웨이 응답 계약(404/200/403) 판정 + Q 프롬프트 길이 패킹
   mask.ts       # 민감정보 마스킹
   db.ts         # SQLite (이력/baseline/스냅샷)
   cache.ts      # TTL + in-flight dedup 캐시

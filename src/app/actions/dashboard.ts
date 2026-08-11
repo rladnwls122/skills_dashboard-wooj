@@ -43,6 +43,7 @@ import {
   buildSnapshot,
   toJson,
   toMarkdown,
+  toQPrompt,
   type IncidentSnapshot,
 } from "@/lib/server/incident";
 import {
@@ -594,6 +595,7 @@ export async function generateIncidentContextAction(): Promise<
     return ok({
       markdown: toMarkdown(snapshot),
       json: toJson(snapshot),
+      qPrompt: toQPrompt(snapshot),
       generatedAt: snapshot.timestamp,
     });
   } catch (e) {
