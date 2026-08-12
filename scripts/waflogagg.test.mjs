@@ -3,7 +3,9 @@
 // "nothing was blocked" rather than "nothing arrived", so the totals must come
 // from the full result set, not from the rows that happen to be BLOCK.
 const SRC = new URL("../src/lib/server/", import.meta.url).href;
-const { foldByAction, totals, topKeyCounts, rowCount } = await import(`${SRC}waflogagg.ts`);
+const { foldByAction, totals, topKeyCounts, rowCount, insightsAgeNote } = await import(
+  `${SRC}waflogagg.ts`
+);
 
 let failures = 0;
 const check = (name, actual, expected) => {
@@ -59,6 +61,14 @@ check("asking for more than exists returns what exists", topKeyCounts(uaRows, "u
 // A malformed count must not poison a total.
 check("a non-numeric count reads as zero", rowCount({ cnt: "abc" }), 0);
 check("a missing count reads as zero", rowCount({}), 0);
+
+// --- cached aggregation age ---
+// A cached result is served under the caller's window label, so anything a
+// minute or more behind has to say how far behind it is.
+const T = 1_700_000_000_000;
+check("a fresh aggregation adds no note", insightsAgeNote(T, T + 59_000), "");
+check("a minute behind is spelled out", insightsAgeNote(T, T + 60_000), " · 1분 전 집계");
+check("the age rounds down to whole minutes", insightsAgeNote(T, T + 179_000), " · 2분 전 집계");
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

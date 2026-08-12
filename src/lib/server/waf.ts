@@ -17,6 +17,7 @@ import {
 import { cached } from "./cache";
 import {
   ENV,
+  POLLING,
   WAF_LIMITS,
   isIpConcentrated,
   isLowPriorityPath,
@@ -28,7 +29,7 @@ import { insertWafHistory, getWafHistory, listWafHistory } from "./db";
 import { maskText } from "./mask";
 import { classifyUa, queryHasBase64Blob } from "./threatsig";
 import { runInsightsQuery } from "./logsinsights";
-import { foldByAction, topKeyCounts, totals } from "./waflogagg";
+import { foldByAction, insightsAgeNote, topKeyCounts, totals } from "./waflogagg";
 import { errMsg } from "./cloudwatch";
 import type {
   ApplyHistoryEntry,
@@ -202,11 +203,11 @@ export async function buildHttpSummary(
   // follow the selected window.
   if (ENV.wafLogGroup) {
     try {
-      const agg = await fetchWafLogInsights(win);
+      const agg = await fetchWafLogInsightsCached(win);
       return {
         totalSampled: agg.total,
         windowLabel: win.label,
-        source: `WAF 로그 Logs Insights(${ENV.wafLogGroup}) · 구간 ${win.label} · 스캔 ${fmtBytes(agg.bytesScanned)} · 표본이 아닌 전수 집계`,
+        source: `WAF 로그 Logs Insights(${ENV.wafLogGroup}) · 구간 ${win.label} · 스캔 ${fmtBytes(agg.bytesScanned)} · 표본이 아닌 전수 집계${insightsAgeNote(agg.coveredEndMs, Date.now())}`,
         byPath: agg.byPath,
         byIp: agg.byIp,
         byUa: agg.byUa,
@@ -358,6 +359,21 @@ interface WafLogAggregation {
   total: number;
   blockedTotal: number;
   bytesScanned: number;
+  // End of the span these numbers actually cover — a cached result is older
+  // than the window the caller resolved, and the panel has to say so.
+  coveredEndMs: number;
+}
+
+// Keyed by span alone: the aggregation groups by key, never by time bucket, so
+// the interval does not change the result, and keying on the exact end would
+// miss on every poll and defeat the cache.
+function fetchWafLogInsightsCached(win: ResolvedWindow): Promise<WafLogAggregation> {
+  return cached(
+    `waf:insights:${ENV.wafLogGroup}:${win.windowMin}`,
+    POLLING.wafInsightsTtlMs,
+    () => fetchWafLogInsights(win),
+    POLLING.logFailTtlMs,
+  );
 }
 
 async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregation> {
@@ -445,6 +461,7 @@ async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregati
     total,
     blockedTotal,
     bytesScanned,
+    coveredEndMs: win.endMs,
   };
 }
 

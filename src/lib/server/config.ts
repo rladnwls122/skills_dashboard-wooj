@@ -196,6 +196,11 @@ export const POLLING = {
   logAutoRefreshMs: 30_000,
   logCacheTtlMs: 30_000,
   logFailTtlMs: 10_000,
+  // The WAF-log aggregation is five Insights queries over the whole window —
+  // hundreds of MB scanned per refresh. At the 25s metrics tier that is a scan
+  // every half minute for numbers that barely move, so it refreshes on its own
+  // slower tier and the panel says how old the aggregation is.
+  wafInsightsTtlMs: 120_000,
   verificationDelayMs: 120_000,
 } as const;
 

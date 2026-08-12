@@ -48,6 +48,15 @@ export function totals(folded: Map<string, Folded>): { total: number; blockedTot
   return { total, blockedTotal };
 }
 
+// A cached aggregation covers the window it was run for, not the one the panel
+// is labelled with. Once that gap is a minute or more the difference shows in
+// the numbers, so it is spelled out next to the window label rather than left
+// for the operator to discover by comparing panels.
+export function insightsAgeNote(coveredEndMs: number, nowMs: number): string {
+  const min = Math.floor((nowMs - coveredEndMs) / 60_000);
+  return min >= 1 ? ` · ${min}분 전 집계` : "";
+}
+
 export function topKeyCounts(
   rows: InsightsRow[],
   keyField: string,

@@ -310,7 +310,9 @@ export function toQPrompt(s: IncidentSnapshot): string {
     title: `[F] 근거 — 트래픽`,
     lines: h
       ? [
-          `- 출처: ${h.source} / 샘플 ${h.totalSampled}건 / ${h.windowLabel}`,
+          // Not "샘플 N건": with a WAF log group this is a full count, and the
+          // source string already says which of the two it is.
+          `- 출처: ${h.source} / ${h.totalSampled}건 / ${h.windowLabel}`,
           ...(h.statusDist
             ? [
                 `- 상태 분포(분당): 2xx=${h.statusDist.c2xx} 3xx=${h.statusDist.c3xx} 4xx=${h.statusDist.c4xx} 5xx=${h.statusDist.c5xx}`,
