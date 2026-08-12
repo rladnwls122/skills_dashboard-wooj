@@ -308,7 +308,10 @@ export function LogTab({
         )}
       </Card>
 
-      <Card title="Top Errors / Fingerprints (선택 Pod 기준)">
+      <Card
+        title="Top Errors / Fingerprints (선택 Pod 기준)"
+        basis="조회된 로그에서 집계 · 반복 횟수 상위 20개만 표시"
+      >
         {kube.loading && !logs.data ? (
           <SectionLoading />
         ) : (

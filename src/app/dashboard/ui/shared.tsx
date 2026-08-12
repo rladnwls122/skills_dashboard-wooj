@@ -108,22 +108,94 @@ export function Card({
   right,
   children,
   className = "",
+  basis,
+  zoomable = true,
 }: {
   title: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
+  // What the panel's numbers were counted over, when the list is capped or the
+  // population is not obvious. A count that quietly drops rows reads as a total
+  // otherwise.
+  basis?: string;
+  zoomable?: boolean;
 }) {
+  const [zoomed, setZoomed] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
+
+  // Native <dialog> gives ESC, focus containment and an inert background for
+  // free; showModal() is the only way to get them, so the open state is pushed
+  // into the element rather than rendered as an attribute.
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    if (zoomed && !d.open) d.showModal();
+    if (!zoomed && d.open) d.close();
+  }, [zoomed]);
+
+  const header = (inDialog: boolean): React.ReactNode => (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-neutral-800 px-3 py-2">
+      <h3 className="flex shrink-0 items-center gap-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
+        <span aria-hidden className="h-3 w-0.5 shrink-0 bg-sky-500/70" />
+        {title}
+      </h3>
+      <div className="flex min-w-0 items-center gap-2">
+        {right}
+        {zoomable && (
+          <button
+            type="button"
+            onClick={() => setZoomed(!inDialog)}
+            aria-label={inDialog ? `${title} 축소` : `${title} 확대`}
+            title={inDialog ? "닫기 (ESC)" : "크게 보기"}
+            className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+          >
+            {inDialog ? "✕" : "⤢"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+
+  // The card and the dialog render the same children through the same code
+  // path, only in different containers — so the two can never drift into
+  // showing different rows or a different count for the same panel.
+  const body = (
+    <div className="p-3">
+      {basis && <div className="mb-1.5 font-mono text-[10px] text-neutral-600">기준: {basis}</div>}
+      {children}
+    </div>
+  );
+
   return (
     <div className={`rounded-[4px] border border-neutral-800 bg-neutral-900/70 ${className}`}>
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-neutral-800 px-3 py-2">
-        <h3 className="flex shrink-0 items-center gap-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
-          <span aria-hidden className="h-3 w-0.5 shrink-0 bg-sky-500/70" />
-          {title}
-        </h3>
-        <div className="min-w-0">{right}</div>
-      </div>
-      <div className="p-3">{children}</div>
+      {header(false)}
+      {zoomed ? (
+        <div className="p-3 text-center font-mono text-[10px] text-neutral-600">크게 보는 중…</div>
+      ) : (
+        body
+      )}
+      {zoomable && (
+        <dialog
+          ref={dialogRef}
+          onClose={() => setZoomed(false)}
+          // A click that lands on the dialog element itself is a backdrop
+          // click; anything inside the panel stops at the panel.
+          onClick={(e) => {
+            if (e.target === dialogRef.current) setZoomed(false);
+          }}
+          // m-auto restores the centering a modal <dialog> gets by default —
+          // the CSS reset zeroes every margin, which pins it to the top left.
+          className="m-auto w-[92vw] max-w-6xl rounded-[4px] border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 backdrop:bg-black/70"
+        >
+          {zoomed && (
+            <div className="max-h-[85vh] overflow-y-auto">
+              {header(true)}
+              {body}
+            </div>
+          )}
+        </dialog>
+      )}
     </div>
   );
 }

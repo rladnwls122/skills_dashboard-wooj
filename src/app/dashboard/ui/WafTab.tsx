@@ -159,6 +159,7 @@ export function WafTab({
 
       <Card
         title={`샘플 요청 원본 (${filteredSamples.length}/${samples.data?.length ?? 0})`}
+        basis="WAF GetSampledRequests 최신 300건 · 앞의 수는 화면 필터 적용 결과"
         right={
           <div className="flex items-center gap-2 text-[11px]">
             <ErrorNote error={samples.error} />
@@ -304,7 +305,7 @@ export function WafTab({
           </div>
         </Card>
 
-        <Card title="적용 이력 / 롤백">
+        <Card title="적용 이력 / 롤백" basis="최근 50건만 보관">
           <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
             {(waf.data?.history ?? []).map((h) => (
               <div key={h.id} className="flex items-center justify-between rounded bg-neutral-950 px-2 py-1">
@@ -336,7 +337,14 @@ export function WafTab({
         </Card>
       </div>
 
-      <Card title="WAF 로그 통계 (경로/쿼리/헤더/메소드/차단)">
+      <Card
+        title="WAF 로그 통계 (경로/쿼리/헤더/메소드/차단)"
+        basis={
+          metrics.data?.httpSummary
+            ? `${metrics.data.httpSummary.source} · 경로는 요청순 상위 20개, IP·UA·쿼리·헤더는 상위 10개 (차단 건수는 잘리지 않은 전체 기준)`
+            : undefined
+        }
+      >
         {metrics.data?.httpSummary ? (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             {/* The path list carries two server-decided marks the other stat
