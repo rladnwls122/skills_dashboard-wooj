@@ -4,5 +4,8 @@ data/
 *.db
 .env
 .env.local
+# generate-env.sh writes a timestamped backup next to .env; it holds the same
+# keys and must never be committed.
+.env.bak.*
 next-env.d.ts
 *.tsbuildinfo

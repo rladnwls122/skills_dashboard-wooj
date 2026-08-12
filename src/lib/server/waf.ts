@@ -211,6 +211,9 @@ export async function buildHttpSummary(
         blockedTotal: agg.blockedTotal,
         statusDist,
         detailedStatus: null,
+        notes: [
+          "헤더 패턴은 WAF 로그 집계에서 수집하지 않음 — 헤더는 요청마다 순서가 달라 인덱스로 집계할 수 없다. 샘플 모드(WAF_LOG_GROUP 미설정)에서만 나온다.",
+        ],
       };
     } catch (e) {
       // Fall through to sampling, but say why the better source is missing.
@@ -302,6 +305,7 @@ export async function buildHttpSummary(
     blockedTotal,
     statusDist,
     detailedStatus: null,
+    notes: [],
   };
 }
 

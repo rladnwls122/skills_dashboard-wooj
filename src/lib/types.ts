@@ -157,6 +157,9 @@ export interface HttpSummary {
   blockedTotal: number;
   statusDist: StatusDistribution | null;
   detailedStatus: KeyCount[] | null;
+  // What this source cannot tell you. An empty list that reads as "none
+  // observed" when it actually means "not collected" is worse than no panel.
+  notes: string[];
 }
 
 // What the client asks for; the server validates and resolves it.

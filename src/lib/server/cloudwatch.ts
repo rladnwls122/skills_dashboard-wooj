@@ -14,7 +14,7 @@ import type {
   TargetGroupMetrics,
 } from "@/lib/types";
 
-interface RawSeries {
+export interface RawSeries {
   key: string;
   label: string;
   unit: string;
@@ -45,16 +45,21 @@ function toSeries(
 // does not, and a Sum over three buckets is not a per-minute rate.
 const AGG_BUCKETS = 3;
 
-function summarize(s: RawSeries, win: ResolvedWindow): MetricSummary {
+export function summarize(s: RawSeries, win: ResolvedWindow): MetricSummary {
   // Drop the newest (possibly incomplete) bucket, then compare the last 3
   // complete buckets against the 3 before them.
   const pts = s.points.slice(0, Math.max(0, s.points.length - 1));
   const currentWin = pts.slice(-AGG_BUCKETS);
   const prevWin = pts.slice(-2 * AGG_BUCKETS, -AGG_BUCKETS);
-  const agg = (win: { v: number }[]): number => {
-    if (win.length === 0) return 0;
-    const sum = win.reduce((a, p) => a + p.v, 0);
-    return s.stat === "Average" ? sum / win.length : sum;
+  // A Sum metric is normalised to a per-minute rate rather than left as a
+  // bucket total. Thresholds are absolute numbers, so a raw total would make
+  // the alert depend on the chosen interval — the same traffic reads as 3
+  // minutes' worth at a 1m interval and 3 hours' worth at 60m, and merely
+  // widening the window would trip CRITICAL. The unit already says req/min.
+  const agg = (w: { v: number }[]): number => {
+    if (w.length === 0) return 0;
+    const sum = w.reduce((a, p) => a + p.v, 0);
+    return s.stat === "Average" ? sum / w.length : sum / (w.length * win.intervalMin);
   };
   const current = round(agg(currentWin));
   const previous = round(agg(prevWin));
@@ -74,7 +79,7 @@ function summarize(s: RawSeries, win: ResolvedWindow): MetricSummary {
     points,
     basis:
       s.stat === "Sum"
-        ? `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 합계 · 직전 동일 구간과 비교`
+        ? `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 합계를 분당으로 환산 · 직전 동일 구간과 비교`
         : `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 평균 · 직전 동일 구간과 비교`,
   };
 }

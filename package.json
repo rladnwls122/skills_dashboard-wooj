@@ -9,7 +9,7 @@
     "build:clean": "pnpm clean && pnpm build",
     "start": "next start -p 3100",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm test:ddos && pnpm test:applog && pnpm test:rulestatement && pnpm test:rulesim && pnpm test:threatsig && pnpm test:gateway && pnpm test:ruleassemble && pnpm test:window && pnpm test:waflogagg",
+    "test": "pnpm test:ddos && pnpm test:applog && pnpm test:rulestatement && pnpm test:rulesim && pnpm test:threatsig && pnpm test:gateway && pnpm test:ruleassemble && pnpm test:window && pnpm test:waflogagg && pnpm test:metricsummary",
     "test:ruleassemble": "node --import ./scripts/testing/register.mjs scripts/ruleassemble.test.mjs",
     "test:ddos": "node --import ./scripts/testing/register.mjs scripts/ddos-policy.test.mjs",
     "test:applog": "node --import ./scripts/testing/register.mjs scripts/applogquery.test.mjs",
@@ -18,7 +18,8 @@
     "test:threatsig": "node --import ./scripts/testing/register.mjs scripts/threatsig.test.mjs",
     "test:gateway": "node --import ./scripts/testing/register.mjs scripts/gateway.test.mjs",
     "test:window": "node --import ./scripts/testing/register.mjs scripts/window.test.mjs",
-    "test:waflogagg": "node --import ./scripts/testing/register.mjs scripts/waflogagg.test.mjs"
+    "test:waflogagg": "node --import ./scripts/testing/register.mjs scripts/waflogagg.test.mjs",
+    "test:metricsummary": "node --import ./scripts/testing/register.mjs scripts/metricsummary.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.716.0",

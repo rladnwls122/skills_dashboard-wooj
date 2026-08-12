@@ -397,10 +397,30 @@ export function WafTab({
               title="QueryString 패턴"
               rows={metrics.data.httpSummary.queryPatterns.map((q) => ({ key: q.key, count: q.count }))}
             />
-            <StatList
-              title="Header 패턴"
-              rows={metrics.data.httpSummary.headerPatterns.map((h) => ({ key: h.key, count: h.count }))}
-            />
+            <div>
+              <div className="mb-1 text-[11px] text-neutral-500">Header 패턴</div>
+              {metrics.data.httpSummary.headerPatterns.length === 0 &&
+              metrics.data.httpSummary.notes.length > 0 ? (
+                <div className="rounded bg-neutral-950 px-1.5 py-1 text-[11px] text-neutral-500">
+                  {metrics.data.httpSummary.notes[0]}
+                </div>
+              ) : (
+                <div className="max-h-40 space-y-0.5 overflow-y-auto text-[11px]">
+                  {metrics.data.httpSummary.headerPatterns.map((h, i) => (
+                    <div
+                      key={i}
+                      className="flex justify-between gap-2 rounded bg-neutral-950 px-1.5 py-0.5 text-neutral-300"
+                    >
+                      <span className="truncate">{h.key || "(empty)"}</span>
+                      <span className="tabular-nums text-neutral-500">{h.count}</span>
+                    </div>
+                  ))}
+                  {metrics.data.httpSummary.headerPatterns.length === 0 && (
+                    <div className="text-neutral-600">데이터 없음</div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         ) : (
           <div className="text-xs text-neutral-500">{metrics.data?.httpSummaryError ?? "수집 중…"}</div>

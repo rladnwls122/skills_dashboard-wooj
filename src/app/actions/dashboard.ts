@@ -101,6 +101,7 @@ const EMPTY_SUMMARY = {
   blockedTotal: 0,
   statusDist: null,
   detailedStatus: null,
+  notes: [],
 };
 
 const VISIBLE_METRICS = [
