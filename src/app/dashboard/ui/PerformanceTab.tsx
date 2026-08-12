@@ -79,24 +79,35 @@ function UsageCharts({
 
   if (loading && now.length === 0) return <SectionLoading />;
 
-  return (
-    <div className="space-y-2">
-      {cpu.length === 0 && mem.length === 0 ? (
+  // "No line" has two causes and they call for opposite actions. A percentage
+  // needs a limit to divide by, so a container with no limit set can never have
+  // one — that is a manifest to fix, not a gap to wait out. Saying "데이터가
+  // 없습니다" for both sends the operator looking for the wrong thing.
+  const missing = (metric: "cpu" | "mem"): string | null => {
+    const values = now.map((r) => (metric === "cpu" ? r.cpuPct : r.memPct));
+    if (values.length > 0 && values.every((v) => v === null)) {
+      return `${metric === "cpu" ? "CPU" : "Memory"} limit 이 설정된 컨테이너가 없어 비율을 낼 수 없습니다 — 사용량 자체는 아래 현재값에 있습니다.`;
+    }
+    return "이 구간에 기록된 값이 없습니다 — 사용률은 대시보드가 켜져 있는 동안에만 기록됩니다.";
+  };
+
+  const chart = (label: string, metric: "cpu" | "mem", list: NamedSeries[]) => (
+    <div>
+      <div className="mb-1 font-mono text-[10px] text-neutral-500">{label}</div>
+      {list.length === 0 ? (
         <div className="rounded border border-neutral-800 bg-neutral-950 px-2 py-3 text-center text-[11px] text-neutral-500">
-          이 구간에 기록된 사용률이 없습니다 — 대시보드가 켜져 있는 동안에만 기록됩니다.
+          {missing(metric)}
         </div>
       ) : (
-        <>
-          <div>
-            <div className="mb-1 font-mono text-[10px] text-neutral-500">CPU 사용률 (%)</div>
-            <TimeChart height={150} syncKey="perf" series={paint(cpu)} />
-          </div>
-          <div>
-            <div className="mb-1 font-mono text-[10px] text-neutral-500">Memory 사용률 (%)</div>
-            <TimeChart height={150} syncKey="perf" series={paint(mem)} />
-          </div>
-        </>
+        <TimeChart height={150} syncKey="perf" series={paint(list)} />
       )}
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      {chart("CPU 사용률 (%)", "cpu", cpu)}
+      {chart("Memory 사용률 (%)", "mem", mem)}
 
       <div className="max-h-32 space-y-0.5 overflow-y-auto text-[11px]">
         <div className="text-neutral-500">현재값</div>
@@ -338,7 +349,7 @@ export function PerformanceTab({
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card
           title="Pod 리소스 사용률 (CPU/Memory)"
-          basis="metrics.k8s.io 는 이력을 남기지 않아, 이 대시보드가 켜져 있는 동안 3초마다 기록한 값 · limit 이 없는 컨테이너는 비율을 낼 수 없어 선이 없음"
+          basis="이 대시보드가 켜져 있는 동안 기록한 값 (metrics.k8s.io 는 이력을 남기지 않음) · 비율은 limit 대비"
           right={<ErrorNote error={kube.data?.podResourceError ?? history.error} />}
         >
           <UsageCharts
@@ -356,7 +367,7 @@ export function PerformanceTab({
 
         <Card
           title="Node 리소스 사용률 (CPU/Memory)"
-          basis="metrics.k8s.io 는 이력을 남기지 않아, 이 대시보드가 켜져 있는 동안 3초마다 기록한 값 · 선이 끊긴 구간은 사용량 0 이 아니라 대시보드가 꺼져 있던 구간"
+          basis="이 대시보드가 켜져 있는 동안 기록한 값 · 선이 끊긴 구간은 사용량 0 이 아니라 꺼져 있던 구간"
           right={<ErrorNote error={kube.data?.nodeResourceError ?? history.error} />}
         >
           <UsageCharts
