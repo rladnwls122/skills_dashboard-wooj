@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { assembleRuleAction } from "@/app/actions/dashboard";
-import type { AssembledRule, AssembleKind } from "@/lib/types";
+import type { AssembledRule, AssembleKind, WindowSelection } from "@/lib/types";
 import { Card, ErrorNote } from "./shared";
 import { IncidentTab } from "./IncidentTab";
 
@@ -30,7 +30,15 @@ const KINDS: { kind: AssembleKind; label: string; sub: string; field: string }[]
 // Generates one regex rule per purpose out of what the environment is seeing,
 // and hands the incident snapshot to Amazon Q. Nothing here touches the WebACL:
 // the output is JSON to read, test in the 시험 tab, then apply by hand.
-export function AiTab({ onSendToSandbox }: { onSendToSandbox: (ruleJson: string) => void }) {
+export function AiTab({
+  onSendToSandbox,
+  window: win,
+}: {
+  onSendToSandbox: (ruleJson: string) => void;
+  // Observed paths and UAs are read over the page's shared window, so the
+  // assembled rule describes the same span the WAF panel showed.
+  window: WindowSelection;
+}) {
   const [rules, setRules] = useState<Partial<Record<AssembleKind, AssembledRule>>>({});
   const [errors, setErrors] = useState<Partial<Record<AssembleKind, string>>>({});
   const [busy, setBusy] = useState<AssembleKind | null>(null);
@@ -38,7 +46,7 @@ export function AiTab({ onSendToSandbox }: { onSendToSandbox: (ruleJson: string)
 
   const build = async (kind: AssembleKind): Promise<void> => {
     setBusy(kind);
-    const res = await assembleRuleAction(kind);
+    const res = await assembleRuleAction(kind, win);
     if (res.ok) {
       setRules((prev) => ({ ...prev, [kind]: res.data }));
       setErrors((prev) => ({ ...prev, [kind]: undefined }));

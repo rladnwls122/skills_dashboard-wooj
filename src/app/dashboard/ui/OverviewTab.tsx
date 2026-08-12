@@ -38,6 +38,11 @@ export function OverviewTab({
     <div className="space-y-3">
       <Card
         title="Infrastructure Health"
+        basis={
+          metrics.data
+            ? `조회 구간 ${metrics.data.window.label} · ${metrics.data.metrics[0]?.basis ?? ""}`
+            : undefined
+        }
         right={
           <ErrorNote
             error={metrics.error ?? (metrics.data?.metricErrors.join(" / ") || null)}

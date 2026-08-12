@@ -19,6 +19,10 @@ export interface MetricSummary {
   percentChange: number | null;
   status: Status;
   points: MetricPoint[];
+  // What `current` actually aggregated. The unit alone does not say it: a Sum
+  // over three buckets is not a per-minute rate, and how long three buckets
+  // cover depends on the window's interval.
+  basis: string;
 }
 
 export type AnomalyType =
@@ -153,6 +157,21 @@ export interface HttpSummary {
   blockedTotal: number;
   statusDist: StatusDistribution | null;
   detailedStatus: KeyCount[] | null;
+}
+
+// What the client asks for; the server validates and resolves it.
+export interface WindowSelection {
+  windowMin: number;
+  intervalMin: number;
+}
+
+// The single window every panel on the page shares. Panels label themselves
+// with it, so two numbers on screen always cover the same span.
+export interface ResolvedWindow extends WindowSelection {
+  startMs: number;
+  endMs: number;
+  buckets: number;
+  label: string;
 }
 
 // A regex rule assembled for one purpose (see server/ruleassemble.ts).
@@ -406,6 +425,9 @@ export interface MetricsPanel {
   anomalies: Anomaly[];
   correlations: CorrelationResult[];
   timeline: TimelineEntry[];
+  // The window every number in this panel covers. Panels label themselves with
+  // it so two figures on screen are never read as the same span by accident.
+  window: ResolvedWindow;
 }
 
 export interface WafPanel {

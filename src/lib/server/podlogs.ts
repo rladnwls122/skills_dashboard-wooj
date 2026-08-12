@@ -2,6 +2,7 @@ import "server-only";
 import { ENV } from "./config";
 import { getPodLogs } from "./k8s";
 import { runInsightsQuery } from "./logsinsights";
+import type { ResolvedWindow } from "@/lib/types";
 import { maskLines } from "./mask";
 import { PARSE_FIELDS, hhmmss, toIso } from "./logfields";
 import type { RequestLogAnalysis, RequestLogEntry } from "@/lib/types";
@@ -40,25 +41,33 @@ export async function fetchPodLogsInsights(params: {
   pod: string;
   container: string;
   tailLines: number;
+  // The page's shared window. Every query below covers exactly it, so the log
+  // lines and the metric charts describe the same span.
+  win: ResolvedWindow;
 }): Promise<PodLogsFetch> {
   const scope = podScope(params.pod, params.container);
   const tail = Math.min(Math.max(params.tailLines, 10), 2000);
+  const bounds = { startMs: params.win.startMs, endMs: params.win.endMs };
 
   const [tailQ, statsQ, nonOkQ, errWarnQ] = await Promise.allSettled([
     runInsightsQuery({
       logGroup: ENV.appLogGroup,
+      ...bounds,
       query: `fields @timestamp, log | filter ${scope} | sort @timestamp desc | limit ${tail}`,
     }),
     runInsightsQuery({
       logGroup: ENV.appLogGroup,
+      ...bounds,
       query: `filter ${scope} | ${PARSE_FIELDS} | filter ispresent(path) | stats count(*) as cnt, avg(latency_ms) as avgMs, max(latency_ms) as maxMs, sum(status >= 300) as nonOk by path | sort cnt desc | limit 1000`,
     }),
     runInsightsQuery({
       logGroup: ENV.appLogGroup,
+      ...bounds,
       query: `filter ${scope} | ${PARSE_FIELDS} | filter status >= 300 | display @timestamp, method, path, status, latency_ms | sort @timestamp desc | limit 100`,
     }),
     runInsightsQuery({
       logGroup: ENV.appLogGroup,
+      ...bounds,
       query: `fields @timestamp, log | filter ${scope} and log like /(?i)(error|warn)/ | sort @timestamp desc | limit 100`,
     }),
   ]);

@@ -6,7 +6,13 @@ import {
   getMetricsPanelAction,
   getWafPanelAction,
 } from "@/app/actions/dashboard";
-import type { KubePanel, MetricsPanel, Status, WafPanel } from "@/lib/types";
+import type {
+  KubePanel,
+  MetricsPanel,
+  Status,
+  WafPanel,
+  WindowSelection,
+} from "@/lib/types";
 import { usePoll, type PollState } from "./shared";
 import { OverviewTab } from "./OverviewTab";
 import { PerformanceTab } from "./PerformanceTab";
@@ -152,20 +158,47 @@ function Clock() {
 
 const REFRESH_CHOICES = [5, 10, 15, 20, 25, 30] as const;
 
+// Mirrors server/window.ts. The server validates and corrects whatever arrives,
+// so a mismatch here degrades to a corrected window rather than an error — but
+// offering an invalid pair would still be a lie about what the page can show.
+const WINDOW_CHOICES = [15, 30, 60, 120, 240] as const;
+const INTERVAL_CHOICES = [1, 5, 10, 60] as const;
+
+function intervalsFor(windowMin: number): number[] {
+  return INTERVAL_CHOICES.filter((i) => {
+    if (windowMin % i !== 0) return false;
+    const buckets = windowMin / i;
+    return buckets >= 4 && buckets <= 250;
+  });
+}
+
+function windowLabel(min: number): string {
+  return min % 60 === 0 ? `${min / 60}시간` : `${min}분`;
+}
+
 export function DashboardClient() {
   const [tab, setTab] = useState<Tab>("Overview");
   const [podSelection, setPodSelection] = useState<PodSelection | null>(null);
   const [refreshSec, setRefreshSec] = useState<number>(5);
   const [incomingRule, setIncomingRule] = useState<{ id: number; ruleJson: string } | null>(null);
+  // One window for the whole page. Every panel that reads a time range reads
+  // this one, so two numbers on screen always cover the same span.
+  const [win, setWin] = useState<WindowSelection>({ windowMin: 60, intervalMin: 1 });
 
   // User-selected auto-refresh interval drives all panels; server-side TTL
   // caps upstream AWS/K8s calls, so faster polling stays safe.
   const kube: PollState<KubePanel> = usePoll(getKubePanelAction, refreshSec * 1000);
-  const metrics: PollState<MetricsPanel> = usePoll(getMetricsPanelAction, refreshSec * 1000);
+  const metrics: PollState<MetricsPanel> = usePoll(
+    () => getMetricsPanelAction(win),
+    refreshSec * 1000,
+    true,
+    [win.windowMin, win.intervalMin],
+  );
   const waf: PollState<WafPanel> = usePoll(
-    getWafPanelAction,
+    () => getWafPanelAction(win),
     Math.max(refreshSec, 30) * 1000,
     tab === "WAF" || tab === "Overview" || tab === "Sandbox",
+    [win.windowMin, win.intervalMin],
   );
 
   const refreshAll = (): void => {
@@ -252,6 +285,7 @@ export function DashboardClient() {
           <div>K8S {kube.lastUpdated ?? "--"}</div>
           <div>CW&nbsp; {metrics.lastUpdated ?? "--"}</div>
           <div>WAF {waf.lastUpdated ?? "--"}</div>
+          <div className="mt-1 text-neutral-500">구간 {metrics.data?.window.label ?? "--"}</div>
         </div>
       </aside>
 
@@ -267,6 +301,43 @@ export function DashboardClient() {
               <Annunciator segments={segments} />
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              <label className="flex items-center gap-1 font-mono text-[10px] text-neutral-500">
+                구간
+                <select
+                  value={win.windowMin}
+                  onChange={(e) => {
+                    const windowMin = Number(e.target.value);
+                    const allowed = intervalsFor(windowMin);
+                    // Keep the interval when it is still offered; otherwise take
+                    // the finest one the new span allows.
+                    const intervalMin = allowed.includes(win.intervalMin)
+                      ? win.intervalMin
+                      : (allowed[0] ?? 1);
+                    setWin({ windowMin, intervalMin });
+                  }}
+                  className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-1.5 py-1 font-mono text-[11px] text-neutral-300"
+                >
+                  {WINDOW_CHOICES.map((m) => (
+                    <option key={m} value={m}>
+                      {windowLabel(m)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-1 font-mono text-[10px] text-neutral-500">
+                간격
+                <select
+                  value={win.intervalMin}
+                  onChange={(e) => setWin({ ...win, intervalMin: Number(e.target.value) })}
+                  className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-1.5 py-1 font-mono text-[11px] text-neutral-300"
+                >
+                  {intervalsFor(win.windowMin).map((m) => (
+                    <option key={m} value={m}>
+                      {m}분
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label className="flex items-center gap-1 font-mono text-[10px] text-neutral-500">
                 갱신
                 <select
@@ -311,10 +382,15 @@ export function DashboardClient() {
           )}
           {tab === "WAF" && <WafTab waf={waf} metrics={metrics} />}
           {tab === "Logs" && (
-            <LogTab kube={kube} selection={podSelection} onSelect={setPodSelection} />
+            <LogTab
+              kube={kube}
+              selection={podSelection}
+              onSelect={setPodSelection}
+              window={win}
+            />
           )}
           {tab === "Sandbox" && <SandboxTab waf={waf} incomingRule={incomingRule} />}
-          {tab === "AI" && <AiTab onSendToSandbox={sendToSandbox} />}
+          {tab === "AI" && <AiTab onSendToSandbox={sendToSandbox} window={win} />}
         </main>
       </div>
     </div>

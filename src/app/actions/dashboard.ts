@@ -18,6 +18,7 @@ import {
 import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
 import { defaultTestRequests, maliciousExampleRequests, testRule } from "@/lib/server/rulesim";
 import { assembleRule } from "@/lib/server/ruleassemble";
+import { resolveWindow, windowKey } from "@/lib/server/window";
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -58,6 +59,7 @@ import type {
   ApplyHistoryEntry,
   AssembledRule,
   AssembleKind,
+  WindowSelection,
   DeployChangeEntry,
   DeploymentInfo,
   FingerprintEntry,
@@ -170,10 +172,13 @@ export async function getKubePanelAction(): Promise<ActionResult<KubePanel>> {
 // Metrics + analysis panel — 30s tier
 // ---------------------------------------------------------------------------
 
-export async function getMetricsPanelAction(): Promise<ActionResult<MetricsPanel>> {
+export async function getMetricsPanelAction(
+  sel?: WindowSelection,
+): Promise<ActionResult<MetricsPanel>> {
   try {
-    const data = await cached("panel:metrics", POLLING.metricsTtlMs, async () => {
-      const { summaries: metricsSettled, errors: metricErrors } = await fetchCoreMetrics();
+    const win = resolveWindow(sel, Date.now());
+    const data = await cached(`panel:metrics:${windowKey(win)}`, POLLING.metricsTtlMs, async () => {
+      const { summaries: metricsSettled, errors: metricErrors } = await fetchCoreMetrics(win);
       const byKey = new Map(metricsSettled.map((m) => [m.key, m]));
       const statusDist: StatusDistribution | null = byKey.has("http2xx")
         ? (() => {
@@ -188,7 +193,7 @@ export async function getMetricsPanelAction(): Promise<ActionResult<MetricsPanel
       let httpSummary: MetricsPanel["httpSummary"] = null;
       let httpSummaryError: string | null = null;
       try {
-        httpSummary = await buildHttpSummary(statusDist);
+        httpSummary = await buildHttpSummary(statusDist, win);
       } catch (e) {
         httpSummaryError = errMsg(e);
       }
@@ -196,7 +201,7 @@ export async function getMetricsPanelAction(): Promise<ActionResult<MetricsPanel
       let targetGroupMetrics: MetricsPanel["targetGroupMetrics"] = [];
       let targetGroupError: string | null = null;
       try {
-        targetGroupMetrics = await fetchTargetGroupMetrics();
+        targetGroupMetrics = await fetchTargetGroupMetrics(win);
       } catch (e) {
         targetGroupError = errMsg(e);
       }
@@ -227,6 +232,7 @@ export async function getMetricsPanelAction(): Promise<ActionResult<MetricsPanel
         anomalies,
         correlations,
         timeline,
+        window: win,
       };
       return panel;
     });
@@ -249,15 +255,17 @@ export async function getPodLogsAction(params: {
   container: string;
   previous: boolean;
   tailLines: number;
+  window?: WindowSelection;
 }): Promise<ActionResult<PodLogsResult>> {
   try {
+    const win = resolveWindow(params.window, Date.now());
     const fetched = await cached(
-      `logs:${params.pod}:${params.container}:${params.previous}:${params.tailLines}`,
+      `logs:${params.pod}:${params.container}:${params.previous}:${params.tailLines}:${windowKey(win)}`,
       POLLING.logCacheTtlMs,
       async () => {
         if (params.previous) return fetchPodLogsKube(params);
         try {
-          return await fetchPodLogsInsights(params);
+          return await fetchPodLogsInsights({ ...params, win });
         } catch {
           return fetchPodLogsKube(params);
         }
@@ -296,9 +304,12 @@ export async function getPodLogsAction(params: {
 // WAF panel — 30s tier
 // ---------------------------------------------------------------------------
 
-export async function getWafPanelAction(): Promise<ActionResult<WafPanel>> {
+export async function getWafPanelAction(
+  sel?: WindowSelection,
+): Promise<ActionResult<WafPanel>> {
   try {
-    const data = await cached("panel:waf", POLLING.wafTtlMs, async () => {
+    const win = resolveWindow(sel, Date.now());
+    const data = await cached(`panel:waf:${windowKey(win)}`, POLLING.wafTtlMs, async () => {
       const metrics = peekCached<MetricsPanel>("panel:metrics");
       const wafStatus =
         metrics?.metrics.find((m) => m.key === "wafBlocked")?.status ?? "NORMAL";
@@ -307,7 +318,7 @@ export async function getWafPanelAction(): Promise<ActionResult<WafPanel>> {
 
       const [acl, recs] = await Promise.allSettled([
         getAclInfo(),
-        generateRecommendations(wafStatus, http4xxStatus),
+        generateRecommendations(wafStatus, http4xxStatus, win),
       ]);
       const panel: WafPanel = {
         acl: acl.status === "fulfilled" ? acl.value : null,
@@ -395,9 +406,12 @@ export async function generateQHandoffAction(
 export async function getRequestLogRowsAction(params: {
   statusClass: StatusClass;
   pathContains: string;
+  window?: WindowSelection;
 }): Promise<ActionResult<RequestLogQueryResult>> {
   try {
-    return ok(await fetchRequestLogRows(params));
+    return ok(
+      await fetchRequestLogRows({ ...params, win: resolveWindow(params.window, Date.now()) }),
+    );
   } catch (e) {
     return fail(e);
   }
@@ -649,12 +663,13 @@ export async function getMaliciousExampleRequestsAction(): Promise<ActionResult<
 // rule JSON the operator reads, tests in the sandbox, then applies by hand.
 export async function assembleRuleAction(
   kind: AssembleKind,
+  sel?: WindowSelection,
 ): Promise<ActionResult<AssembledRule>> {
   try {
     // SQLi is a fixed signature set, so it must not fail when the WAF summary
     // is unavailable — only the observed kinds need live traffic.
     if (kind === "sqli") return ok(assembleRule("sqli", EMPTY_SUMMARY));
-    return ok(assembleRule(kind, await buildHttpSummary(null)));
+    return ok(assembleRule(kind, await buildHttpSummary(null, resolveWindow(sel, Date.now()))));
   } catch (e) {
     return fail(e);
   }

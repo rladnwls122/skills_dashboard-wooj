@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { getRequestLogRowsAction } from "@/app/actions/dashboard";
-import type { RequestLogQueryResult } from "@/lib/types";
+import type { RequestLogQueryResult, WindowSelection } from "@/lib/types";
 import { Card, ErrorNote, SectionLoading, Truncate, fmtTs } from "./shared";
 
 const CLASSES = ["ALL", "2xx", "3xx", "4xx", "5xx"] as const;
@@ -31,7 +31,7 @@ function statusColor(status: number): string {
   return "text-emerald-400";
 }
 
-export function RequestLogPanel() {
+export function RequestLogPanel({ window: win }: { window: WindowSelection }) {
   const [statusClass, setStatusClass] = useState<StatusClass>("ALL");
   const [pathInput, setPathInput] = useState("");
   const [pathQuery, setPathQuery] = useState("");
@@ -48,7 +48,7 @@ export function RequestLogPanel() {
 
   const run = useCallback(async (cls: StatusClass, path: string): Promise<void> => {
     setLoading(true);
-    const res = await getRequestLogRowsAction({ statusClass: cls, pathContains: path });
+    const res = await getRequestLogRowsAction({ statusClass: cls, pathContains: path, window: win });
     if (res.ok) {
       setData(res.data);
       setError(null);

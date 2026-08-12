@@ -20,12 +20,16 @@ import { logsClient, wafClient } from "./aws";
 import { insertWafHistory, getWafHistory, listWafHistory } from "./db";
 import { maskText } from "./mask";
 import { classifyUa, queryHasBase64Blob } from "./threatsig";
+import { runInsightsQuery } from "./logsinsights";
+import { foldByAction, topKeyCounts, totals } from "./waflogagg";
+import { errMsg } from "./cloudwatch";
 import type {
   ApplyHistoryEntry,
   HttpSummary,
   IpStat,
   KeyCount,
   PathStat,
+  ResolvedWindow,
   SimulationResult,
   StatusDistribution,
   WafAclInfo,
@@ -89,6 +93,17 @@ export async function getAclInfo(): Promise<WafAclInfo> {
               : "GROUP",
     })),
   };
+}
+
+// Why the Insights path was skipped on the most recent call, so the fallback's
+// source line can say it instead of silently reading as the intended source.
+let insightsFallbackReason: string | null = null;
+
+function fmtBytes(n: number): string {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)}GB`;
+  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
+  return `${n}B`;
 }
 
 export interface SampleSet {
@@ -174,7 +189,35 @@ function topCounts(map: Map<string, number>, n: number): KeyCount[] {
 
 export async function buildHttpSummary(
   statusDist: StatusDistribution | null,
+  win: ResolvedWindow,
 ): Promise<HttpSummary> {
+  // Real counts over the shared window when WAF logs are available; the
+  // sampled-requests path below is the fallback and says so, because its
+  // numbers are a 500-per-rule sample over WAF's own 3-hour ceiling and cannot
+  // follow the selected window.
+  if (ENV.wafLogGroup) {
+    try {
+      const agg = await fetchWafLogInsights(win);
+      return {
+        totalSampled: agg.total,
+        windowLabel: win.label,
+        source: `WAF 로그 Logs Insights(${ENV.wafLogGroup}) · 구간 ${win.label} · 스캔 ${fmtBytes(agg.bytesScanned)} · 표본이 아닌 전수 집계`,
+        byPath: agg.byPath,
+        byIp: agg.byIp,
+        byUa: agg.byUa,
+        byMethod: agg.byMethod,
+        queryPatterns: agg.queryPatterns,
+        headerPatterns: [],
+        blockedTotal: agg.blockedTotal,
+        statusDist,
+        detailedStatus: null,
+      };
+    } catch (e) {
+      // Fall through to sampling, but say why the better source is missing.
+      insightsFallbackReason = errMsg(e);
+    }
+  }
+
   const { samples, windowMinutes } = await fetchSampledRequests();
   const byPath = new Map<string, { count: number; blocked: number }>();
   const byIp = new Map<string, number>();
@@ -222,7 +265,13 @@ export async function buildHttpSummary(
     .sort((a, b) => b.count - a.count)
     .slice(0, 20);
 
-  let source = `WAF GetSampledRequests (최근 ${windowMinutes}분, 샘플 ${total}건)`;
+  let source = `WAF GetSampledRequests (최근 ${windowMinutes}분, 샘플 ${total}건 — 규칙당 500건 상한이라 전수가 아님, 선택한 구간을 따르지 않음)`;
+  if (insightsFallbackReason) {
+    source += ` · WAF 로그 집계 실패로 폴백: ${insightsFallbackReason}`;
+    insightsFallbackReason = null;
+  } else if (!ENV.wafLogGroup) {
+    source += " · WAF_LOG_GROUP 을 설정하면 선택 구간의 전수 집계로 바뀜";
+  }
   if (ENV.wafLogGroup) {
     try {
       const logAgg = await fetchWafLogAggregation();
@@ -253,6 +302,108 @@ export async function buildHttpSummary(
     blockedTotal,
     statusDist,
     detailedStatus: null,
+  };
+}
+
+// --- WAF logs via Logs Insights -------------------------------------------
+//
+// GetSampledRequests returns at most 500 requests per rule over at most three
+// hours, so every count derived from it is a sample, not a total, and it cannot
+// honour a window the operator chose. When a WAF log group is configured the
+// same aggregates come from Logs Insights over the shared window instead —
+// real counts, and the scanned bytes are reported so the cost is visible.
+//
+// Counts are grouped by (key, action) rather than filtered to blocks: a list of
+// blocked paths alone cannot distinguish "nothing was blocked" from "nothing
+// arrived", and folding the pair into one row costs no extra scan.
+
+interface WafLogAggregation {
+  byPath: PathStat[];
+  byIp: IpStat[];
+  byUa: KeyCount[];
+  byMethod: KeyCount[];
+  queryPatterns: KeyCount[];
+  total: number;
+  blockedTotal: number;
+  bytesScanned: number;
+}
+
+async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregation> {
+  const bounds = { logGroup: ENV.wafLogGroup, startMs: win.startMs, endMs: win.endMs };
+  // The User-Agent lives inside httpRequest.headers[], whose index varies per
+  // request, so it is pulled off the raw message rather than a JSON field.
+  const [pathRes, ipRes, uaRes, methodRes, argsRes] = await Promise.all([
+    runInsightsQuery({
+      ...bounds,
+      query:
+        "stats count(*) as cnt by httpRequest.uri as path, action | sort cnt desc | limit 200",
+    }),
+    runInsightsQuery({
+      ...bounds,
+      query:
+        "stats count(*) as cnt by httpRequest.clientIp as ip, action | sort cnt desc | limit 100",
+    }),
+    runInsightsQuery({
+      ...bounds,
+      query:
+        'parse @message /"name":"(?i)user-agent","value":"(?<ua>[^"]*)"/ | stats count(*) as cnt by ua | sort cnt desc | limit 20',
+    }),
+    runInsightsQuery({
+      ...bounds,
+      query: "stats count(*) as cnt by httpRequest.httpMethod as method | sort cnt desc | limit 10",
+    }),
+    runInsightsQuery({
+      ...bounds,
+      query:
+        "filter httpRequest.args != '' | stats count(*) as cnt by httpRequest.args as args | sort cnt desc | limit 20",
+    }),
+  ]);
+
+  const pathFolded = foldByAction(pathRes.rows, "path");
+  const { total, blockedTotal } = totals(pathFolded);
+
+  const byPath: PathStat[] = [...pathFolded.entries()]
+    .map(([path, v]) => ({
+      path,
+      count: v.count,
+      blocked: v.blocked,
+      lowPriority: isLowPriorityPath(path),
+      suspicious: isPathSuspicious(path, v.count, total),
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+
+  const ipFolded = foldByAction(ipRes.rows, "ip");
+  const byIp: IpStat[] = [...ipFolded.entries()]
+    .map(([key, v]) => ({
+      key,
+      count: v.count,
+      sharePct: Math.round((v.count / Math.max(total, 1)) * 100),
+      concentrated: isIpConcentrated(v.count, total),
+    }))
+    .filter((r) => r.key.length > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  const bytesScanned =
+    pathRes.bytesScanned +
+    ipRes.bytesScanned +
+    uaRes.bytesScanned +
+    methodRes.bytesScanned +
+    argsRes.bytesScanned;
+
+  return {
+    byPath,
+    byIp,
+    byUa: topKeyCounts(uaRes.rows, "ua", 10),
+    byMethod: topKeyCounts(methodRes.rows, "method", 8),
+    queryPatterns: topKeyCounts(argsRes.rows, "args", 10).map((r) => ({
+      key: r.key.slice(0, 120),
+      count: r.count,
+    })),
+    total,
+    blockedTotal,
+    bytesScanned,
   };
 }
 
@@ -314,8 +465,9 @@ function utf8(s: string): Uint8Array {
 export async function generateRecommendations(
   wafBlockedStatus: string,
   http4xxStatus: string,
+  win: ResolvedWindow,
 ): Promise<WafRecommendation[]> {
-  const summary = await buildHttpSummary(null);
+  const summary = await buildHttpSummary(null, win);
   const recs: StoredRecommendation[] = [];
   const total = Math.max(summary.totalSampled, 1);
 

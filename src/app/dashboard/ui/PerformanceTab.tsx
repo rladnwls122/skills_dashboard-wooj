@@ -251,6 +251,7 @@ export function PerformanceTab({
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card
           title="Target Group별 지표"
+          basis={metrics.data ? `조회 구간 ${metrics.data.window.label}` : undefined}
           right={<ErrorNote error={metrics.data?.targetGroupError ?? null} />}
         >
           <div className="overflow-x-auto">
@@ -289,7 +290,14 @@ export function PerformanceTab({
           </div>
         </Card>
 
-        <Card title="Status Code 분포 (분당)">
+        <Card
+          title="Status Code 분포"
+          basis={
+            metrics.data
+              ? `ALB 메트릭 · ${metrics.data.metrics[0]?.basis ?? ""} · 조회 구간 ${metrics.data.window.label}`
+              : undefined
+          }
+        >
           {statusDist ? (
             <div className="space-y-2 text-[11px]">
               {(

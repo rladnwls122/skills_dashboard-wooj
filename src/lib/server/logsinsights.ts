@@ -48,14 +48,24 @@ export async function runInsightsQuery(params: {
   logGroup: string;
   query: string;
   windowMs?: number;
+  // Explicit bounds from the page's shared window. Given these, the query
+  // covers exactly the span every other panel covers — a lookback computed
+  // from "now" at call time would drift panel by panel.
+  startMs?: number;
+  endMs?: number;
   deadlineMs?: number;
 }): Promise<InsightsResult> {
+  const deadlineMs = params.deadlineMs ?? INSIGHTS_LIMITS.queryDeadlineMs;
+  const explicit = params.startMs !== undefined && params.endMs !== undefined;
+  // The cap applies either way: it is what bounds bytes scanned, and a caller
+  // asking for more than four hours is asking for an unbounded bill.
   const windowMs = Math.min(
-    params.windowMs ?? INSIGHTS_LIMITS.defaultWindowMs,
+    explicit
+      ? (params.endMs as number) - (params.startMs as number)
+      : (params.windowMs ?? INSIGHTS_LIMITS.defaultWindowMs),
     INSIGHTS_LIMITS.maxWindowMs,
   );
-  const deadlineMs = params.deadlineMs ?? INSIGHTS_LIMITS.queryDeadlineMs;
-  const endSec = Math.floor(Date.now() / 1000);
+  const endSec = Math.floor((explicit ? (params.endMs as number) : Date.now()) / 1000);
   const startSec = endSec - Math.floor(windowMs / 1000);
   const windowLabel = `${Math.round(windowMs / 60_000)}m`;
 

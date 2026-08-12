@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPodLogsAction } from "@/app/actions/dashboard";
-import type { KubePanel, PodLogsResult } from "@/lib/types";
+import type { KubePanel, PodLogsResult, WindowSelection } from "@/lib/types";
 import type { PodSelection } from "./DashboardClient";
 import { RequestLogPanel } from "./RequestLogPanel";
 import { Card, SectionLoading, Truncate, fmtTs, usePoll, type PollState } from "./shared";
@@ -44,10 +44,14 @@ export function LogTab({
   kube,
   selection,
   onSelect,
+  window: win,
 }: {
   kube: PollState<KubePanel>;
   selection: PodSelection | null;
   onSelect: (s: PodSelection | null) => void;
+  // The page's shared window — the log queries cover exactly the span the
+  // metric charts do, so a spike and the lines around it line up.
+  window: WindowSelection;
 }) {
   const pods = kube.data?.pods ?? [];
   const [previous, setPrevious] = useState(false);
@@ -76,11 +80,17 @@ export function LogTab({
       if (!selection?.pod || !container) {
         return { ok: false as const, error: "Pod를 선택하세요" };
       }
-      return getPodLogsAction({ pod: selection.pod, container, previous, tailLines });
+      return getPodLogsAction({
+        pod: selection.pod,
+        container,
+        previous,
+        tailLines,
+        window: win,
+      });
     },
     autoRefresh ? 30_000 : 3_600_000,
     Boolean(selection?.pod),
-    [selection?.pod, container, previous, tailLines],
+    [selection?.pod, container, previous, tailLines, win.windowMin, win.intervalMin],
   );
 
   const filteredLines = useMemo(() => {
@@ -334,7 +344,7 @@ export function LogTab({
         )}
       </Card>
 
-      <RequestLogPanel />
+      <RequestLogPanel window={win} />
     </div>
   );
 }

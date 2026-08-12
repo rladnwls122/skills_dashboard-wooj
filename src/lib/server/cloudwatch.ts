@@ -7,10 +7,12 @@ import {
 import { cloudWatch, cloudWatchForWaf, discoverAlb } from "./aws";
 import { ENV, statusFor } from "./config";
 import { saveMetricSamples } from "./db";
-import type { MetricPoint, MetricSummary, TargetGroupMetrics } from "@/lib/types";
-
-const WINDOW_MINUTES = 14;
-const BUCKET_SECONDS = 60;
+import type {
+  MetricPoint,
+  MetricSummary,
+  ResolvedWindow,
+  TargetGroupMetrics,
+} from "@/lib/types";
 
 interface RawSeries {
   key: string;
@@ -19,12 +21,6 @@ interface RawSeries {
   stat: "Average" | "Sum";
   points: { t: number; v: number }[];
   thresholdKey?: string;
-}
-
-function floorToMinute(d: Date): Date {
-  const t = new Date(d);
-  t.setSeconds(0, 0);
-  return t;
 }
 
 function toSeries(
@@ -43,12 +39,18 @@ function toSeries(
   return { key, label, unit, stat, points, thresholdKey };
 }
 
-function summarize(s: RawSeries): MetricSummary {
+// AGG_BUCKETS buckets are aggregated into the headline number to smooth a
+// single noisy bucket. The span that covers depends on the chosen interval, so
+// every summary carries a basis saying what it counted — the unit alone ("req/min")
+// does not, and a Sum over three buckets is not a per-minute rate.
+const AGG_BUCKETS = 3;
+
+function summarize(s: RawSeries, win: ResolvedWindow): MetricSummary {
   // Drop the newest (possibly incomplete) bucket, then compare the last 3
   // complete buckets against the 3 before them.
   const pts = s.points.slice(0, Math.max(0, s.points.length - 1));
-  const currentWin = pts.slice(-3);
-  const prevWin = pts.slice(-6, -3);
+  const currentWin = pts.slice(-AGG_BUCKETS);
+  const prevWin = pts.slice(-2 * AGG_BUCKETS, -AGG_BUCKETS);
   const agg = (win: { v: number }[]): number => {
     if (win.length === 0) return 0;
     const sum = win.reduce((a, p) => a + p.v, 0);
@@ -70,6 +72,10 @@ function summarize(s: RawSeries): MetricSummary {
     percentChange,
     status: statusFor(s.thresholdKey ?? s.key, current, percentChange),
     points,
+    basis:
+      s.stat === "Sum"
+        ? `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 합계 · 직전 동일 구간과 비교`
+        : `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 평균 · 직전 동일 구간과 비교`,
   };
 }
 
@@ -82,9 +88,10 @@ export interface CoreMetricsResult {
   errors: string[];
 }
 
-export async function fetchCoreMetrics(): Promise<CoreMetricsResult> {
-  const end = floorToMinute(new Date());
-  const start = new Date(end.getTime() - WINDOW_MINUTES * 60_000);
+export async function fetchCoreMetrics(win: ResolvedWindow): Promise<CoreMetricsResult> {
+  const end = new Date(win.endMs);
+  const start = new Date(win.startMs);
+  const periodSec = win.intervalMin * 60;
 
   const results: RawSeries[] = [];
   const errors: string[] = [];
@@ -94,14 +101,14 @@ export async function fetchCoreMetrics(): Promise<CoreMetricsResult> {
     const alb = await discoverAlb();
     const albDim = [{ Name: "LoadBalancer", Value: alb.loadBalancer }];
     const queries: MetricDataQuery[] = [
-      q("trt", "AWS/ApplicationELB", "TargetResponseTime", albDim, "Average"),
-      q("c4xx", "AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", albDim, "Sum"),
-      q("c5xx", "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", albDim, "Sum"),
-      q("c2xx", "AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", albDim, "Sum"),
-      q("c3xx", "AWS/ApplicationELB", "HTTPCode_Target_3XX_Count", albDim, "Sum"),
-      q("reqs", "AWS/ApplicationELB", "RequestCount", albDim, "Sum"),
-      q("rdscc", "AWS/RDS", "ClientConnections", [{ Name: "ProxyName", Value: ENV.rdsProxyName }], "Average"),
-      q("rdsdc", "AWS/RDS", "DatabaseConnections", [{ Name: "ProxyName", Value: ENV.rdsProxyName }], "Average"),
+      q("trt", "AWS/ApplicationELB", "TargetResponseTime", albDim, "Average", periodSec),
+      q("c4xx", "AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", albDim, "Sum", periodSec),
+      q("c5xx", "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", albDim, "Sum", periodSec),
+      q("c2xx", "AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", albDim, "Sum", periodSec),
+      q("c3xx", "AWS/ApplicationELB", "HTTPCode_Target_3XX_Count", albDim, "Sum", periodSec),
+      q("reqs", "AWS/ApplicationELB", "RequestCount", albDim, "Sum", periodSec),
+      q("rdscc", "AWS/RDS", "ClientConnections", [{ Name: "ProxyName", Value: ENV.rdsProxyName }], "Average", periodSec),
+      q("rdsdc", "AWS/RDS", "DatabaseConnections", [{ Name: "ProxyName", Value: ENV.rdsProxyName }], "Average", periodSec),
     ];
     const res = await cloudWatch().send(
       new GetMetricDataCommand({ StartTime: start, EndTime: end, MetricDataQueries: queries }),
@@ -139,8 +146,8 @@ export async function fetchCoreMetrics(): Promise<CoreMetricsResult> {
         StartTime: start,
         EndTime: end,
         MetricDataQueries: [
-          q("wafb", "AWS/WAFV2", "BlockedRequests", dims, "Sum"),
-          q("wafa", "AWS/WAFV2", "AllowedRequests", dims, "Sum"),
+          q("wafb", "AWS/WAFV2", "BlockedRequests", dims, "Sum", periodSec),
+          q("wafa", "AWS/WAFV2", "AllowedRequests", dims, "Sum", periodSec),
         ],
       }),
     );
@@ -165,16 +172,19 @@ export async function fetchCoreMetrics(): Promise<CoreMetricsResult> {
     }
   }
 
-  return { summaries: results.map(summarize), errors };
+  return { summaries: results.map((r) => summarize(r, win)), errors };
 }
 
 // Per-Target-Group ALB metrics (spec item 3) — each TG's CloudWatch dimension
 // pair is [LoadBalancer, TargetGroup]; path labels come from listener rules
 // (discoverAlb), matching this environment's /v1/user, /v1/product, /v1/stress
 // routing.
-export async function fetchTargetGroupMetrics(): Promise<TargetGroupMetrics[]> {
-  const end = floorToMinute(new Date());
-  const start = new Date(end.getTime() - WINDOW_MINUTES * 60_000);
+export async function fetchTargetGroupMetrics(
+  win: ResolvedWindow,
+): Promise<TargetGroupMetrics[]> {
+  const end = new Date(win.endMs);
+  const start = new Date(win.startMs);
+  const periodSec = win.intervalMin * 60;
   const alb = await discoverAlb();
   if (alb.targetGroups.length === 0) return [];
 
@@ -185,9 +195,9 @@ export async function fetchTargetGroupMetrics(): Promise<TargetGroupMetrics[]> {
       { Name: "TargetGroup", Value: tg.tgDim },
     ];
     queries.push(
-      q(`tg${i}trt`, "AWS/ApplicationELB", "TargetResponseTime", dims, "Average"),
-      q(`tg${i}c4`, "AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", dims, "Sum"),
-      q(`tg${i}c5`, "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", dims, "Sum"),
+      q(`tg${i}trt`, "AWS/ApplicationELB", "TargetResponseTime", dims, "Average", periodSec),
+      q(`tg${i}c4`, "AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", dims, "Sum", periodSec),
+      q(`tg${i}c5`, "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", dims, "Sum", periodSec),
     );
   });
   const res = await cloudWatch().send(
@@ -205,12 +215,15 @@ export async function fetchTargetGroupMetrics(): Promise<TargetGroupMetrics[]> {
         byId.get(`tg${i}trt`),
         "targetResponseTime",
       ),
+      win,
     );
     const c4 = summarize(
       toSeries(`tg-${tg.name}-4xx`, "4XX", "req/min", "Sum", byId.get(`tg${i}c4`), "http4xx"),
+      win,
     );
     const c5 = summarize(
       toSeries(`tg-${tg.name}-5xx`, "5XX", "req/min", "Sum", byId.get(`tg${i}c5`), "http5xx"),
+      win,
     );
     return { name: tg.name, pathPattern: tg.pathPattern, responseTime: trt, c4xx: c4, c5xx: c5 };
   });
@@ -222,12 +235,13 @@ function q(
   metricName: string,
   dims: { Name: string; Value: string }[],
   stat: "Average" | "Sum",
+  periodSec: number,
 ): MetricDataQuery {
   return {
     Id: id,
     MetricStat: {
       Metric: { Namespace: namespace, MetricName: metricName, Dimensions: dims },
-      Period: BUCKET_SECONDS,
+      Period: periodSec,
       Stat: stat,
     },
     ReturnData: true,
