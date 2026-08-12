@@ -165,7 +165,7 @@ check(
 
 // Query-string-only SQLi misses the POST body, which is where an injection
 // usually sits once a form is involved.
-const sqliStmt = JSON.parse(sqli.ruleJson).Rules[0].Statement;
+const sqliStmt = JSON.parse(sqli.ruleJson).Statement;
 check(
   "sqli inspects both the query string and the body",
   sqliStmt.OrStatement.Statements.map((s) => Object.keys(s.RegexPatternSetReferenceStatement.FieldToMatch)[0]),
@@ -178,14 +178,8 @@ check(
 );
 
 // --- the rule JSON the sandbox has to be able to read back ---
-const parsed = JSON.parse(sqli.ruleJson);
-check("rule json inlines the pattern set", Object.keys(parsed.RegexPatternSets).length, 1);
-check(
-  "the rule references the inlined set by name",
-  parsed.RegexPatternSets[sqliStmt.OrStatement.Statements[0].RegexPatternSetReferenceStatement.ARN] !==
-    undefined,
-  true,
-);
+check("세트는 규칙과 별개 산출물로 나옴", sqli.sets.length, 1);
+check("세트 생성 CLI 에 스코프가 들어감", sqli.sets[0].createCli.includes("--scope"), true);
 check(
   "transform priorities are 0..n in order",
   sqliStmt.OrStatement.Statements[0].RegexPatternSetReferenceStatement.TextTransformations.map(
@@ -196,7 +190,7 @@ check(
 // A single-field kind stays a bare statement rather than a one-armed Or.
 check(
   "a single-field rule is not wrapped in OrStatement",
-  JSON.parse(uas.ruleJson).Rules[0].Statement.RegexPatternSetReferenceStatement !== undefined,
+  JSON.parse(uas.ruleJson).Statement.RegexPatternSetReferenceStatement !== undefined,
   true,
 );
 
@@ -216,8 +210,8 @@ const everyRule = [
 ];
 
 for (const [label, rule] of everyRule) {
-  const sets = Object.values(JSON.parse(rule.ruleJson).RegexPatternSets);
-  const stmt = JSON.parse(rule.ruleJson).Rules[0].Statement;
+  const sets = rule.sets.map((s) => s.patterns);
+  const stmt = JSON.parse(rule.ruleJson).Statement;
   const refs = stmt.OrStatement ? stmt.OrStatement.Statements : [stmt];
 
   // 1. LOWERCASE runs first, so an uppercase letter could never match.
@@ -244,17 +238,39 @@ for (const [label, rule] of everyRule) {
   // Every emitted pattern belongs to exactly one set, and every referenced set
   // exists — a split must not lose or duplicate a pattern.
   check(`[${label}] 패턴이 전부 세트에 담김`, sets.flat().length, rule.patterns.length);
-  check(`[${label}] 참조된 세트가 전부 존재`,
-    refs.every((r) => JSON.parse(rule.ruleJson).RegexPatternSets[
-      r.RegexPatternSetReferenceStatement.ARN] !== undefined), true);
+  // The console rule must reference an ARN placeholder, never a bare set name:
+  // AWS rejects a name in the ARN field, and it would fail only after the
+  // operator pasted it.
+  const names = new Set(rule.sets.map((s) => s.name));
+  check(`[${label}] ARN 자리에 세트 이름이 들어가지 않음`,
+    refs.some((r) => names.has(r.RegexPatternSetReferenceStatement.ARN)), false);
+  check(`[${label}] 모든 ARN 이 자리표시자`,
+    refs.every((r) => rule.sets.some((s) => s.arnPlaceholder === r.RegexPatternSetReferenceStatement.ARN)),
+    true);
+  check(`[${label}] 콘솔용 규칙에는 패턴이 인라인되지 않음`,
+    JSON.parse(rule.ruleJson).RegexPatternSets, undefined);
+  // The sandbox copy is the opposite: patterns inline, referenced by name, so a
+  // rule can be judged before the set exists.
+  const sandbox = JSON.parse(rule.sandboxRuleJson);
+  const sbStmt = sandbox.Rules[0].Statement;
+  const sbRefs = sbStmt.OrStatement ? sbStmt.OrStatement.Statements : [sbStmt];
+  check(`[${label}] 샌드박스용은 패턴을 인라인으로 담음`,
+    Object.keys(sandbox.RegexPatternSets).length, rule.sets.length);
+  check(`[${label}] 샌드박스용은 이름으로 참조`,
+    sbRefs.every((r) => sandbox.RegexPatternSets[r.RegexPatternSetReferenceStatement.ARN] !== undefined),
+    true);
+  // Creating the set is the operator's step, so the command must be shown.
+  check(`[${label}] 세트마다 생성 CLI 가 있음`,
+    rule.sets.every((s) => s.createCli.includes("create-regex-pattern-set") && s.createCli.includes(s.name)),
+    true);
 }
 
 // Splitting must add sets rather than drop patterns.
 const many = everyRule.find(([l]) => l === "path-many")[1];
 check("23개 패턴은 버려지지 않음", many.patterns.length, 23);
-check("세트 3개로 쪼개짐", Object.keys(JSON.parse(many.ruleJson).RegexPatternSets).length, 3);
-check("세트 이름이 서로 다름",
-  new Set(Object.keys(JSON.parse(many.ruleJson).RegexPatternSets)).size, 3);
+check("세트 3개로 쪼개짐", many.sets.length, 3);
+check("세트 이름이 서로 다름", new Set(many.sets.map((s) => s.name)).size, 3);
+check("세트마다 ARN 자리표시자가 다름", new Set(many.sets.map((s) => s.arnPlaceholder)).size, 3);
 check("쪼개진 사실이 판단 기준에 적힘",
   many.notes.some((n) => n.includes("세트 3개")), true);
 

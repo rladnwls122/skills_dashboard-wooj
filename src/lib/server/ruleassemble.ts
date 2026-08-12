@@ -20,7 +20,7 @@ import "server-only";
 //     COMPRESS_WHITE_SPACE) run before the match so %20, &#x2f; and /./ style
 //     evasion is normalised away rather than pattern-matched.
 
-import { isAppTrafficPath, isLowPriorityPath, normalizePath } from "./config";
+import { ENV, WAF_REGION, isAppTrafficPath, isLowPriorityPath, normalizePath } from "./config";
 import { classifyUa, spoofedUaPatterns } from "./threatsig";
 import type { AssembledRule, AssembleKind, HttpSummary } from "@/lib/types";
 
@@ -123,54 +123,93 @@ const SPEC: Record<AssembleKind, KindSpec> = {
   },
 };
 
-function buildRuleJson(spec: KindSpec, patterns: string[], action: "BLOCK" | "COUNT"): string {
-  // Plain JSON: every value here is already a string, so none of waf.ts's
-  // SearchString byte decoding is needed — and this keeps the module free of
-  // the AWS SDK import chain.
-  const transforms = spec.transforms.map((Type, Priority) => ({ Priority, Type }));
-
-  // One set per MAX_PATTERNS_PER_SET patterns. A single chunk keeps the plain
-  // set name so the common case reads unchanged.
+// A regex pattern set is its own AWS resource: it is created first, gets an
+// ARN, and the rule references that ARN. So the two artefacts are produced
+// separately — the set contents to create, and the rule that points at them.
+//
+// The rule handed to the console therefore carries an ARN placeholder, not the
+// set name: a name in the ARN field is rejected at creation time, and would
+// have failed only after the operator pasted it. The sandbox is the one place
+// that takes patterns inline, so it gets its own copy of the JSON.
+function chunkSets(spec: KindSpec, patterns: string[]): { name: string; patterns: string[] }[] {
   const chunks: string[][] = [];
   for (let i = 0; i < patterns.length; i += MAX_PATTERNS_PER_SET) {
     chunks.push(patterns.slice(i, i + MAX_PATTERNS_PER_SET));
   }
-  const named = chunks.map((pats, i) => ({
+  return chunks.map((pats, i) => ({
     name: chunks.length === 1 ? spec.setName : `${spec.setName}-${i + 1}`,
     patterns: pats,
   }));
+}
+
+// What stands in for a set's ARN until the operator creates it and pastes the
+// real one back. Shaped like an ARN so the placeholder is obviously not a value
+// to leave in place.
+export function placeholder(setName: string): string {
+  return `<${setName}-ARN>`;
+}
+
+// The CLI that creates one set. Printed rather than run: creating resources is
+// the operator's call, and the command is reviewable before it happens.
+function createSetCli(setName: string, patterns: string[]): string {
+  const list = JSON.stringify(patterns.map((RegexString) => ({ RegexString })));
+  return [
+    "aws wafv2 create-regex-pattern-set",
+    `--name ${setName}`,
+    `--scope ${ENV.wafScope}`,
+    `--region ${WAF_REGION}`,
+    `--regular-expression-list '${list}'`,
+  ].join(" ");
+}
+
+// `arnFor` decides what goes in the ARN field: a placeholder for the console
+// copy, the bare set name for the sandbox (its evaluator resolves inline sets
+// by name).
+function buildRule(
+  spec: KindSpec,
+  sets: { name: string; patterns: string[] }[],
+  action: "BLOCK" | "COUNT",
+  arnFor: (setName: string) => string,
+  inlineSets: boolean,
+): string {
+  const transforms = spec.transforms.map((Type, Priority) => ({ Priority, Type }));
 
   // Every (set × field) pair gets its own reference statement; they are OR'd
   // because a match in any set on any field is the same finding.
-  const refs = named.flatMap((set) =>
+  const refs = sets.flatMap((set) =>
     spec.fields.map((FieldToMatch) => ({
       RegexPatternSetReferenceStatement: {
-        ARN: set.name,
+        ARN: arnFor(set.name),
         FieldToMatch,
         TextTransformations: transforms,
       },
     })),
   );
 
-  return JSON.stringify({
-    // The sandbox reads inline pattern sets from the top level; the WAF console
-    // wants a real RegexPatternSet ARN instead, so this doubles as the list to
-    // create there — one entry per set to create.
-    RegexPatternSets: Object.fromEntries(named.map((s) => [s.name, s.patterns])),
-    Rules: [
-      {
-        Name: spec.name,
-        Priority: 100,
-        Statement: refs.length === 1 ? refs[0] : { OrStatement: { Statements: refs } },
-        Action: action === "BLOCK" ? { Block: {} } : { Count: {} },
-        VisibilityConfig: {
-          SampledRequestsEnabled: true,
-          CloudWatchMetricsEnabled: true,
-          MetricName: spec.name,
-        },
-      },
-    ],
-  }, null, 2);
+  const rule = {
+    Name: spec.name,
+    Priority: 100,
+    Statement: refs.length === 1 ? refs[0] : { OrStatement: { Statements: refs } },
+    Action: action === "BLOCK" ? { Block: {} } : { Count: {} },
+    VisibilityConfig: {
+      SampledRequestsEnabled: true,
+      CloudWatchMetricsEnabled: true,
+      MetricName: spec.name,
+    },
+  };
+
+  return JSON.stringify(
+    inlineSets
+      ? {
+          // Sandbox-only: the local evaluator reads pattern sets from the top
+          // level, which is how a rule can be judged before the set exists.
+          RegexPatternSets: Object.fromEntries(sets.map((s) => [s.name, s.patterns])),
+          Rules: [rule],
+        }
+      : rule,
+    null,
+    2,
+  );
 }
 
 // Builds the rule for one purpose. `summary` is only read for the observed
@@ -246,7 +285,8 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
   // A pattern set holds at most MAX_PATTERNS_PER_SET records, so more patterns
   // than that become more sets — nothing is dropped. Each set is referenced by
   // its own statement and the statements are OR'd together.
-  const setCount = Math.ceil(patterns.length / MAX_PATTERNS_PER_SET);
+  const sets = chunkSets(spec, patterns);
+  const setCount = sets.length;
   const capNote =
     setCount > 1
       ? [
@@ -263,7 +303,14 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
     kind,
     name: spec.name,
     patterns,
-    ruleJson: buildRuleJson(spec, patterns, action),
+    sets: sets.map((set) => ({
+      name: set.name,
+      patterns: set.patterns,
+      createCli: createSetCli(set.name, set.patterns),
+      arnPlaceholder: placeholder(set.name),
+    })),
+    ruleJson: buildRule(spec, sets, action, placeholder, false),
+    sandboxRuleJson: buildRule(spec, sets, action, (n) => n, true),
     evidence,
     notes: [
       ...spec.notes,

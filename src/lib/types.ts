@@ -180,13 +180,33 @@ export interface ResolvedWindow extends WindowSelection {
 // A regex rule assembled for one purpose (see server/ruleassemble.ts).
 export type AssembleKind = "path" | "ua" | "sqli";
 
+// A regex pattern set is a separate AWS resource, created before the rule that
+// references it. Both artefacts are produced here so neither has to be
+// hand-written from the other.
+export interface RegexSetSpec {
+  name: string;
+  // One regex per line — the set's RegularExpressionList.
+  patterns: string[];
+  // The CLI that creates this set. Shown, never run.
+  createCli: string;
+  // The token standing in for this set's ARN inside ruleJson.
+  arnPlaceholder: string;
+}
+
 export interface AssembledRule {
   kind: AssembleKind;
   name: string;
-  // One regex per line — the RegexPatternSet's RegularExpressionList.
+  // Every pattern across all sets, in order — what the panel lists.
   patterns: string[];
-  // A complete Rule plus the inline pattern set, ready for the sandbox.
+  // The pattern sets to create first. More than one when the pattern count
+  // exceeds the per-set quota.
+  sets: RegexSetSpec[];
+  // The Rule to paste into the console AFTER the sets exist. References them by
+  // ARN placeholder; a set name in the ARN field is rejected by AWS.
   ruleJson: string;
+  // The same rule with the patterns inlined, which is the only form the local
+  // sandbox can evaluate before the sets exist.
+  sandboxRuleJson: string;
   // What each pattern came from, so an operator can judge it before applying.
   evidence: string[];
   // Why this field/transform combination, in the operator's language.

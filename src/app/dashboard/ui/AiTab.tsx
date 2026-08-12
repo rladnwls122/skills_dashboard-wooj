@@ -42,7 +42,11 @@ export function AiTab({
   const [rules, setRules] = useState<Partial<Record<AssembleKind, AssembledRule>>>({});
   const [errors, setErrors] = useState<Partial<Record<AssembleKind, string>>>({});
   const [busy, setBusy] = useState<AssembleKind | null>(null);
-  const [copied, setCopied] = useState<AssembleKind | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  // ARNs the operator pastes back after creating each set, keyed by set name.
+  // Until then the rule shows placeholders, because a set name in the ARN field
+  // is rejected by AWS rather than quietly matching nothing.
+  const [arns, setArns] = useState<Record<string, string>>({});
 
   const build = async (kind: AssembleKind): Promise<void> => {
     setBusy(kind);
@@ -57,11 +61,25 @@ export function AiTab({
     setBusy(null);
   };
 
-  const copy = async (kind: AssembleKind, text: string): Promise<void> => {
+  const copy = async (key: string, text: string): Promise<void> => {
     await navigator.clipboard.writeText(text);
-    setCopied(kind);
+    setCopied(key);
     setTimeout(() => setCopied(null), 1500);
   };
+
+  // Substitutes whatever ARNs have been pasted so far. Anything still missing
+  // stays a visible placeholder rather than being silently dropped.
+  const withArns = (rule: AssembledRule): string =>
+    rule.sets.reduce(
+      (json, set) =>
+        arns[set.name]?.trim()
+          ? json.replaceAll(set.arnPlaceholder, arns[set.name]!.trim())
+          : json,
+      rule.ruleJson,
+    );
+
+  const pendingArns = (rule: AssembledRule): number =>
+    rule.sets.filter((set) => !arns[set.name]?.trim()).length;
 
   return (
     <div className="space-y-3">
@@ -101,16 +119,73 @@ export function AiTab({
               <ErrorNote error={error ?? null} />
 
               {rule && (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="text-[11px]">
-                    <div className="mb-0.5 text-neutral-500">패턴 {rule.patterns.length}줄</div>
-                    <div className="max-h-32 overflow-auto rounded bg-black p-2 font-mono text-[10px] leading-4 text-emerald-300">
-                      {rule.patterns.map((p, i) => (
-                        <div key={i} className="break-all">
-                          {p}
-                        </div>
-                      ))}
+                    <div className="mb-1 font-semibold text-neutral-300">
+                      ① 정규식 패턴 세트 {rule.sets.length > 1 ? `${rule.sets.length}개` : ""} 먼저 생성
                     </div>
+                    <div className="mb-1 text-neutral-500">
+                      패턴 세트는 규칙과 별개의 리소스입니다. 먼저 만들어 ARN 을 받은 뒤 ②의 규칙이
+                      그 ARN 을 참조합니다.
+                    </div>
+                    {rule.sets.map((set) => (
+                      <div key={set.name} className="mb-2 rounded border border-neutral-800 p-2">
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className="font-mono text-neutral-300">{set.name}</span>
+                          <span className="text-neutral-600">정규식 {set.patterns.length}줄</span>
+                        </div>
+                        <div className="max-h-28 overflow-auto rounded bg-black p-2 font-mono text-[10px] leading-4 text-emerald-300">
+                          {set.patterns.map((p, i) => (
+                            <div key={i} className="break-all">
+                              {p}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="mt-1 flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void copy(`pat-${set.name}`, set.patterns.join("\n"))}
+                            className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+                          >
+                            {copied === `pat-${set.name}` ? "복사됨!" : "패턴 복사"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void copy(`cli-${set.name}`, set.createCli)}
+                            className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+                          >
+                            {copied === `cli-${set.name}` ? "복사됨!" : "생성 CLI 복사"}
+                          </button>
+                        </div>
+                        <input
+                          value={arns[set.name] ?? ""}
+                          onChange={(e) => setArns((prev) => ({ ...prev, [set.name]: e.target.value }))}
+                          placeholder="생성 후 받은 ARN 을 붙여넣으면 ②에 채워집니다"
+                          spellCheck={false}
+                          className="mt-1 w-full rounded border border-neutral-800 bg-neutral-950 px-1.5 py-0.5 font-mono text-[10px] text-neutral-200"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="text-[11px]">
+                    <div className="mb-1 font-semibold text-neutral-300">② 규칙 JSON</div>
+                    {pendingArns(rule) > 0 && (
+                      <div className="mb-1 rounded border border-amber-800/60 bg-amber-950/20 px-2 py-1 text-amber-300">
+                        ARN {pendingArns(rule)}개가 아직 자리표시자입니다 — 그대로 붙여넣으면 AWS 가
+                        거부합니다. 위에서 세트를 만들고 ARN 을 넣으세요.
+                      </div>
+                    )}
+                    <pre className="max-h-56 overflow-auto rounded bg-black p-2 font-mono text-[10px] leading-4 whitespace-pre-wrap text-neutral-300">
+                      {withArns(rule)}
+                    </pre>
+                    <button
+                      type="button"
+                      onClick={() => void copy(`rule-${k.kind}`, withArns(rule))}
+                      className="mt-1 rounded bg-neutral-800 px-2 py-0.5 text-neutral-300 hover:bg-neutral-700"
+                    >
+                      {copied === `rule-${k.kind}` ? "복사됨!" : "규칙 JSON 복사"}
+                    </button>
                   </div>
 
                   <div className="text-[11px]">
@@ -133,30 +208,17 @@ export function AiTab({
                     </ul>
                   </div>
 
-                  <details className="text-[11px]">
-                    <summary className="cursor-pointer text-neutral-400 hover:text-neutral-200">
-                      규칙 JSON 보기
-                    </summary>
-                    <pre className="mt-1 max-h-56 overflow-auto rounded bg-black p-2 font-mono text-[10px] leading-4 whitespace-pre-wrap text-neutral-300">
-                      {rule.ruleJson}
-                    </pre>
-                  </details>
-
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 text-[11px]">
                     <button
                       type="button"
-                      onClick={() => onSendToSandbox(rule.ruleJson)}
-                      className="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200 hover:bg-neutral-700"
+                      onClick={() => onSendToSandbox(rule.sandboxRuleJson)}
+                      className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-200 hover:bg-neutral-700"
                     >
                       시험 탭으로 보내기
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => void copy(k.kind, rule.ruleJson)}
-                      className="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-700"
-                    >
-                      {copied === k.kind ? "복사됨!" : "복사"}
-                    </button>
+                    <span className="text-neutral-600">
+                      시험에는 패턴을 담은 형태로 보냅니다 (세트를 만들기 전에도 판정 가능)
+                    </span>
                   </div>
                 </div>
               )}
