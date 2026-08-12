@@ -17,6 +17,7 @@ import {
 } from "@/lib/server/k8s";
 import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
 import { defaultTestRequests, maliciousExampleRequests, testRule } from "@/lib/server/rulesim";
+import { assembleRule } from "@/lib/server/ruleassemble";
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -55,6 +56,8 @@ import {
 import type {
   ActionResult,
   ApplyHistoryEntry,
+  AssembledRule,
+  AssembleKind,
   DeployChangeEntry,
   DeploymentInfo,
   FingerprintEntry,
@@ -81,6 +84,22 @@ function ok<T>(data: T): ActionResult<T> {
 function fail<T>(e: unknown): ActionResult<T> {
   return { ok: false, error: errMsg(e) };
 }
+
+// Stand-in summary for the one assembly kind that reads no traffic at all.
+const EMPTY_SUMMARY = {
+  totalSampled: 0,
+  windowLabel: "",
+  source: "",
+  byPath: [],
+  byIp: [],
+  byUa: [],
+  byMethod: [],
+  queryPatterns: [],
+  headerPatterns: [],
+  blockedTotal: 0,
+  statusDist: null,
+  detailedStatus: null,
+};
 
 const VISIBLE_METRICS = [
   "targetResponseTime",
@@ -157,12 +176,13 @@ export async function getMetricsPanelAction(): Promise<ActionResult<MetricsPanel
       const { summaries: metricsSettled, errors: metricErrors } = await fetchCoreMetrics();
       const byKey = new Map(metricsSettled.map((m) => [m.key, m]));
       const statusDist: StatusDistribution | null = byKey.has("http2xx")
-        ? {
-            c2xx: byKey.get("http2xx")?.current ?? 0,
-            c3xx: byKey.get("http3xx")?.current ?? 0,
-            c4xx: byKey.get("http4xx")?.current ?? 0,
-            c5xx: byKey.get("http5xx")?.current ?? 0,
-          }
+        ? (() => {
+            const c2xx = byKey.get("http2xx")?.current ?? 0;
+            const c3xx = byKey.get("http3xx")?.current ?? 0;
+            const c4xx = byKey.get("http4xx")?.current ?? 0;
+            const c5xx = byKey.get("http5xx")?.current ?? 0;
+            return { c2xx, c3xx, c4xx, c5xx, total: c2xx + c3xx + c4xx + c5xx };
+          })()
         : null;
 
       let httpSummary: MetricsPanel["httpSummary"] = null;
@@ -619,6 +639,22 @@ export async function getDefaultTestRequestsAction(): Promise<ActionResult<TestR
 export async function getMaliciousExampleRequestsAction(): Promise<ActionResult<TestRequest[]>> {
   try {
     return ok(maliciousExampleRequests());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// Assembles a regex rule for one purpose (suspicious paths / threat UAs /
+// SQLi) out of the current traffic summary. Nothing is applied — the result is
+// rule JSON the operator reads, tests in the sandbox, then applies by hand.
+export async function assembleRuleAction(
+  kind: AssembleKind,
+): Promise<ActionResult<AssembledRule>> {
+  try {
+    // SQLi is a fixed signature set, so it must not fail when the WAF summary
+    // is unavailable — only the observed kinds need live traffic.
+    if (kind === "sqli") return ok(assembleRule("sqli", EMPTY_SUMMARY));
+    return ok(assembleRule(kind, await buildHttpSummary(null)));
   } catch (e) {
     return fail(e);
   }

@@ -4,7 +4,13 @@
 import { readFile } from "node:fs/promises";
 
 const SRC = new URL("../src/lib/server/", import.meta.url).href;
-const { isAppTrafficPath, APP_TRAFFIC_PATHS } = await import(`${SRC}config.ts`);
+const {
+  isAppTrafficPath,
+  APP_TRAFFIC_PATHS,
+  isPathSuspicious,
+  isIpConcentrated,
+  isLowPriorityPath,
+} = await import(`${SRC}config.ts`);
 const { detectAnomalies } = await import(`${SRC}anomaly.ts`);
 
 let failures = 0;
@@ -25,6 +31,25 @@ for (const p of ["/v1/user", "/v1/product", "/v1/stress", "/v1/image", "/v1/user
 for (const p of ["/admin.php", "/v1", "/v1/userx", "/.env", "/wp-login.php"]) {
   check(`isAppTrafficPath("${p}")`, isAppTrafficPath(p), false);
 }
+
+// A served-path prefix must not launder a traversal into "ordinary app
+// traffic" — the path is resolved before the prefix test, the way WAF's
+// NORMALIZE_PATH does it.
+for (const p of ["/v1/image/../../etc/passwd", "/v1/user/../../../admin", "/v1/./../admin"]) {
+  check(`traversal escapes the served surface: ${p}`, isAppTrafficPath(p), false);
+}
+check("a plain served path still matches", isAppTrafficPath("/v1/image/logo.png"), true);
+check("health check with a dot segment is still a health check", isLowPriorityPath("/health/./x"), true);
+
+// The single suspicious-path rule both UI tabs and the anomaly detector share.
+check("off-surface + concentrated is suspicious", isPathSuspicious("/wp-login.php", 990, 1000), true);
+check("served path is never suspicious", isPathSuspicious("/v1/user", 990, 1000), false);
+check("health check is never suspicious", isPathSuspicious("/healthcheck", 990, 1000), false);
+check("off-surface below share is not suspicious", isPathSuspicious("/.env", 40, 1000), false);
+check("off-surface below count is not suspicious", isPathSuspicious("/x", 20, 30), false);
+check("concentrated IP", isIpConcentrated(400, 1000), true);
+check("low-share IP is not concentrated", isIpConcentrated(200, 1000), false);
+check("low-count IP is not concentrated", isIpConcentrated(19, 20), false);
 
 const summary = (byPath, byUa) => ({
   totalSampled: 1000,

@@ -9,19 +9,22 @@ import {
 import type { KubePanel, MetricsPanel, Status, WafPanel } from "@/lib/types";
 import { usePoll, type PollState } from "./shared";
 import { OverviewTab } from "./OverviewTab";
-import { InvestigationTab } from "./InvestigationTab";
+import { PerformanceTab } from "./PerformanceTab";
 import { WafTab } from "./WafTab";
-import { ActionTab } from "./ActionTab";
-import { IncidentTab } from "./IncidentTab";
+import { LogTab } from "./LogTab";
 import { SandboxTab } from "./SandboxTab";
+import { AiTab } from "./AiTab";
 
+// One tab per job: what is happening (요약), how the workload performs and how
+// to change it (성능), what the firewall sees and does (방화벽), what the logs
+// say (로그), whether a rule is safe (시험), and what to hand to Amazon Q (AI).
 const TABS = [
   { id: "Overview", ko: "요약" },
-  { id: "Investigation", ko: "조사" },
+  { id: "Performance", ko: "성능" },
   { id: "WAF", ko: "방화벽" },
-  { id: "Action", ko: "조치" },
-  { id: "Incident", ko: "보고" },
+  { id: "Logs", ko: "로그" },
   { id: "Sandbox", ko: "시험" },
+  { id: "AI", ko: "규칙생성" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -153,6 +156,7 @@ export function DashboardClient() {
   const [tab, setTab] = useState<Tab>("Overview");
   const [podSelection, setPodSelection] = useState<PodSelection | null>(null);
   const [refreshSec, setRefreshSec] = useState<number>(5);
+  const [incomingRule, setIncomingRule] = useState<{ id: number; ruleJson: string } | null>(null);
 
   // User-selected auto-refresh interval drives all panels; server-side TTL
   // caps upstream AWS/K8s calls, so faster polling stays safe.
@@ -172,7 +176,14 @@ export function DashboardClient() {
 
   const jumpToLogs = (pod: string, container: string): void => {
     setPodSelection({ pod, container });
-    setTab("Investigation");
+    setTab("Logs");
+  };
+
+  // The AI tab builds a rule; the sandbox is where it gets judged. The id
+  // makes a repeat send a new value, so the editor refills either way.
+  const sendToSandbox = (ruleJson: string): void => {
+    setIncomingRule({ id: Date.now(), ruleJson });
+    setTab("Sandbox");
   };
 
   const anomalyCount = metrics.data?.anomalies.length ?? 0;
@@ -182,11 +193,11 @@ export function DashboardClient() {
   const navButton = (t: (typeof TABS)[number], compact: boolean): React.ReactNode => {
     const active = tab === t.id;
     const badge =
-      t.id === "Investigation" && anomalyCount > 0 ? (
+      t.id === "Overview" && anomalyCount > 0 ? (
         <span className="rounded-[3px] bg-red-900 px-1 font-mono text-[9px] text-red-200">
           {anomalyCount}
         </span>
-      ) : t.id === "Investigation" && warningCount > 0 ? (
+      ) : t.id === "Performance" && warningCount > 0 ? (
         <span className="rounded-[3px] bg-amber-900 px-1 font-mono text-[9px] text-amber-200">
           {warningCount}
         </span>
@@ -295,18 +306,15 @@ export function DashboardClient() {
           {tab === "Overview" && (
             <OverviewTab kube={kube} metrics={metrics} waf={waf} onJumpToLogs={jumpToLogs} />
           )}
-          {tab === "Investigation" && (
-            <InvestigationTab
-              kube={kube}
-              metrics={metrics}
-              selection={podSelection}
-              onSelect={setPodSelection}
-            />
+          {tab === "Performance" && (
+            <PerformanceTab kube={kube} metrics={metrics} onJumpToLogs={jumpToLogs} />
           )}
           {tab === "WAF" && <WafTab waf={waf} metrics={metrics} />}
-          {tab === "Action" && <ActionTab kube={kube} />}
-          {tab === "Incident" && <IncidentTab />}
-          {tab === "Sandbox" && <SandboxTab waf={waf} />}
+          {tab === "Logs" && (
+            <LogTab kube={kube} selection={podSelection} onSelect={setPodSelection} />
+          )}
+          {tab === "Sandbox" && <SandboxTab waf={waf} incomingRule={incomingRule} />}
+          {tab === "AI" && <AiTab onSendToSandbox={sendToSandbox} />}
         </main>
       </div>
     </div>

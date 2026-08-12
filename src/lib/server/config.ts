@@ -33,8 +33,29 @@ export const LOW_PRIORITY_PATHS = [
   "/healthcheck",
 ];
 
+// Resolves "." and ".." segments and collapses repeated slashes, the way WAF's
+// NORMALIZE_PATH transform does. Without this, "/v1/image/../../etc/passwd"
+// reads as the served path it is prefixed with, and a traversal attempt is
+// classified as ordinary application traffic — the prefix becomes an evasion.
+export function normalizePath(path: string): string {
+  const raw = path.split("?")[0] ?? path;
+  const out: string[] = [];
+  for (const seg of raw.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      out.pop();
+      continue;
+    }
+    out.push(seg);
+  }
+  const joined = `/${out.join("/")}`;
+  // A trailing slash on the input is preserved so "/admin/" and "/admin" stay
+  // the same path, which is what both callers below already assume.
+  return joined;
+}
+
 export function isLowPriorityPath(path: string): boolean {
-  const p = path.split("?")[0] ?? path;
+  const p = normalizePath(path);
   return LOW_PRIORITY_PATHS.some((h) => p === h || p.startsWith(`${h}/`));
 }
 
@@ -51,8 +72,30 @@ export const APP_TRAFFIC_PATHS = (
   .filter((p) => p.length > 0);
 
 export function isAppTrafficPath(path: string): boolean {
-  const p = path.split("?")[0] ?? path;
+  const p = normalizePath(path);
   return APP_TRAFFIC_PATHS.some((a) => p === a || p.startsWith(`${a}/`));
+}
+
+// Concentration thresholds behind every "suspicious"/"concentrated" flag. One
+// definition so the WAF summary, the anomaly detector, and both UI tabs agree
+// on the rule instead of each re-deciding it with its own numbers.
+export const SUSPICION = {
+  pathMinCount: 30,
+  pathMinShare: 0.5,
+  ipMinCount: 20,
+  ipMinShare: 0.3,
+} as const;
+
+// A path is suspicious when it is off the served surface (not a health check,
+// not an app-traffic path) and concentrated enough to read as probing.
+export function isPathSuspicious(path: string, count: number, total: number): boolean {
+  if (isLowPriorityPath(path) || isAppTrafficPath(path)) return false;
+  return count >= SUSPICION.pathMinCount && count / Math.max(total, 1) >= SUSPICION.pathMinShare;
+}
+
+// An IP is concentrated when it is both frequent and a large share of traffic.
+export function isIpConcentrated(count: number, total: number): boolean {
+  return count >= SUSPICION.ipMinCount && count / Math.max(total, 1) >= SUSPICION.ipMinShare;
 }
 
 export interface MetricThreshold {

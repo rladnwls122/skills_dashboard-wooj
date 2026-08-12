@@ -15,7 +15,7 @@ import {
   StartQueryCommand,
 } from "@aws-sdk/client-cloudwatch-logs";
 import { cached } from "./cache";
-import { ENV, WAF_LIMITS, isLowPriorityPath } from "./config";
+import { ENV, WAF_LIMITS, isIpConcentrated, isLowPriorityPath, isPathSuspicious } from "./config";
 import { logsClient, wafClient } from "./aws";
 import { insertWafHistory, getWafHistory, listWafHistory } from "./db";
 import { maskText } from "./mask";
@@ -23,6 +23,7 @@ import { classifyUa, queryHasBase64Blob } from "./threatsig";
 import type {
   ApplyHistoryEntry,
   HttpSummary,
+  IpStat,
   KeyCount,
   PathStat,
   SimulationResult,
@@ -205,17 +206,23 @@ export async function buildHttpSummary(
     }
   }
 
+  const total = samples.length;
+  // Full-population blocked count, taken before byPath is truncated to 20.
+  let blockedTotal = 0;
+  for (const v of byPath.values()) blockedTotal += v.blocked;
+
   const pathStats: PathStat[] = [...byPath.entries()]
     .map(([path, v]) => ({
       path,
       count: v.count,
       blocked: v.blocked,
       lowPriority: isLowPriorityPath(path),
+      suspicious: isPathSuspicious(path, v.count, total),
     }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 20);
 
-  let source = `WAF GetSampledRequests (최근 ${windowMinutes}분, 샘플 ${samples.length}건)`;
+  let source = `WAF GetSampledRequests (최근 ${windowMinutes}분, 샘플 ${total}건)`;
   if (ENV.wafLogGroup) {
     try {
       const logAgg = await fetchWafLogAggregation();
@@ -226,16 +233,24 @@ export async function buildHttpSummary(
     }
   }
 
+  const ipStats: IpStat[] = topCounts(byIp, 10).map((r) => ({
+    key: r.key,
+    count: r.count,
+    sharePct: Math.round((r.count / Math.max(total, 1)) * 100),
+    concentrated: isIpConcentrated(r.count, total),
+  }));
+
   return {
-    totalSampled: samples.length,
+    totalSampled: total,
     windowLabel: `${windowMinutes}m`,
     source,
     byPath: pathStats,
-    byIp: topCounts(byIp, 10),
+    byIp: ipStats,
     byUa: topCounts(byUa, 10),
     byMethod: topCounts(byMethod, 8),
     queryPatterns: topCounts(byQuery, 10),
     headerPatterns: topCounts(byHeader, 10),
+    blockedTotal,
     statusDist,
     detailedStatus: null,
   };
@@ -391,6 +406,12 @@ export async function generateRecommendations(
   for (const ua of summary.byUa) {
     const hit = classifyUa(ua.key);
     if (!hit || seenSig.has(hit.label)) continue;
+    // ByteMatch needs a literal that actually occurs in the header. SCANNER and
+    // RECON labels are the tool name itself; a SPOOFED label ("base64-ua",
+    // "injection-in-ua") is a category name that appears nowhere in the UA, so
+    // a ByteMatch built from it would match nothing. Those need a regex — the
+    // 규칙생성 탭 assembles one from threatsig.spoofedUaPatterns.
+    if (hit.category === "SPOOFED") continue;
     seenSig.add(hit.label);
     const needle = hit.label;
     const id = `bytematch-threat-${Math.abs(hash(needle))}`;

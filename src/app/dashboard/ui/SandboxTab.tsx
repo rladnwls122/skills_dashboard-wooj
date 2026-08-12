@@ -78,7 +78,15 @@ function textToHeaders(text: string): Record<string, string> {
   return out;
 }
 
-export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
+export function SandboxTab({
+  waf,
+  incomingRule,
+}: {
+  waf: PollState<WafPanel>;
+  // A rule handed over from the AI tab. It arrives with a fresh id each time so
+  // sending the same JSON twice still refills the editor.
+  incomingRule: { id: number; ruleJson: string } | null;
+}) {
   const [ruleJson, setRuleJson] = useState("");
   const [requests, setRequests] = useState<TestRequest[] | null>(null);
   const [headerText, setHeaderText] = useState<Record<string, string>>({});
@@ -94,6 +102,12 @@ export function SandboxTab({ waf }: { waf: PollState<WafPanel> }) {
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!incomingRule) return;
+    setRuleJson(incomingRule.ruleJson);
+    setResult(null);
+  }, [incomingRule]);
 
   useEffect(() => {
     void (async () => {

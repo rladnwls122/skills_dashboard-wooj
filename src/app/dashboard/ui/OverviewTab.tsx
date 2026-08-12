@@ -11,6 +11,7 @@ import {
   Truncate,
   WarningEventDetailModal,
   fmtDelta,
+  fmtTs,
   type PollState,
 } from "./shared";
 
@@ -28,6 +29,9 @@ export function OverviewTab({
   const pods = kube.data?.pods ?? [];
   const badPods = pods.filter((p) => p.statusLabel !== "Running");
   const restartPods = pods.filter((p) => p.recentRestartIncrease > 0);
+  // Healthy-pod count comes from the server's own classification, so this card
+  // and the 성능 tab's breakdown can never disagree.
+  const breakdown = kube.data?.statusBreakdown;
   const [eventDetail, setEventDetail] = useState<WarningEvent | null>(null);
 
   return (
@@ -88,7 +92,7 @@ export function OverviewTab({
               <div className="flex justify-between text-neutral-400">
                 <span>정상 Pod</span>
                 <span className="tabular-nums text-emerald-400">
-                  {pods.length - badPods.length}/{pods.length}
+                  {breakdown?.running ?? 0}/{breakdown?.total ?? 0}
                 </span>
               </div>
               {badPods.map((p) => (
@@ -157,13 +161,83 @@ export function OverviewTab({
               )}
               {waf.data && waf.data.recommendations.length > 0 && (
                 <div className="rounded bg-sky-950/40 px-2 py-1 text-sky-300">
-                  WAF 규칙 추천 {waf.data.recommendations.length}건 — WAF 탭 확인
+                  WAF 규칙 추천 {waf.data.recommendations.length}건 — 방화벽 탭 확인
                 </div>
               )}
             </div>
           )}
         </Card>
       </div>
+
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Card title="이상 상세 (근거 포함)" right={<ErrorNote error={metrics.error} />}>
+          <div className="max-h-56 space-y-2 overflow-y-auto text-[11px]">
+            {(metrics.data?.anomalies ?? []).map((a) => (
+              <div key={a.id} className="rounded border border-neutral-800 bg-neutral-950 p-2">
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={a.severity} />
+                  <span className="font-semibold text-neutral-200">{a.title}</span>
+                  <span className="text-neutral-600">신뢰도 {a.confidence}</span>
+                </div>
+                <p className="mt-1 text-neutral-400">{a.detail}</p>
+                <ul className="mt-1 list-inside list-disc text-neutral-500">
+                  {a.evidence.map((ev, i) => (
+                    <li key={i}>{ev}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+            {(metrics.data?.anomalies.length ?? 0) === 0 && (
+              <div className="text-neutral-500">감지된 이상 없음</div>
+            )}
+          </div>
+        </Card>
+
+        <Card title="Correlation (추정 원인 — 확정 아님)">
+          <div className="max-h-56 space-y-2 overflow-y-auto text-[11px]">
+            {(metrics.data?.correlations ?? []).map((c, i) => (
+              <div key={i} className="rounded border border-sky-900/50 bg-sky-950/20 p-2">
+                <div className="font-semibold text-sky-300">
+                  {c.category} <span className="text-neutral-500">({c.confidence})</span>
+                </div>
+                <p className="mt-1 text-neutral-400">{c.reason}</p>
+                <ul className="mt-1 list-inside list-disc text-neutral-500">
+                  {c.evidence.slice(0, 5).map((ev, j) => (
+                    <li key={j}>{ev}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+            {(metrics.data?.correlations.length ?? 0) === 0 && (
+              <div className="text-neutral-500">상관관계 결과 없음</div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <Card title="Incident Timeline">
+        <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
+          {(metrics.data?.timeline ?? []).slice(-30).map((t, i) => (
+            <div key={i} className="flex gap-2">
+              <span className="whitespace-nowrap tabular-nums text-neutral-600">{fmtTs(t.ts)}</span>
+              <span
+                className={
+                  t.severity === "CRITICAL"
+                    ? "text-red-400"
+                    : t.severity === "WARNING"
+                      ? "text-amber-400"
+                      : "text-neutral-400"
+                }
+              >
+                [{t.source}] {t.text}
+              </span>
+            </div>
+          ))}
+          {(metrics.data?.timeline.length ?? 0) === 0 && (
+            <div className="text-neutral-500">타임라인 이벤트 없음</div>
+          )}
+        </div>
+      </Card>
 
       {eventDetail && (
         <WarningEventDetailModal

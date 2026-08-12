@@ -2,7 +2,7 @@
 // Go's own client is bypassed (REQ-01), and ordinary browsers/libraries do NOT
 // classify — a false positive here would block legitimate AI traffic.
 const SRC = new URL("../src/lib/server/", import.meta.url).href;
-const { classifyUa, queryHasBase64Blob } = await import(`${SRC}threatsig.ts`);
+const { classifyUa, queryHasBase64Blob, spoofedUaPatterns } = await import(`${SRC}threatsig.ts`);
 
 let failures = 0;
 const check = (name, actual, expected) => {
@@ -52,6 +52,38 @@ check("base64 blob in query is flagged", queryHasBase64Blob("cmd=Z2V0fHBvc3RfZGF
 check("ordinary query is not flagged", queryHasBase64Blob("id=3&name=kim"), false);
 check("short token is not a blob", queryHasBase64Blob("id=YWJj"), false);
 check("empty query is not flagged", queryHasBase64Blob(""), false);
+
+// --- A SPOOFED label is a category name, so it needs a real regex ---
+// A rule that used the label as a literal would match nothing at all. Each
+// spoofed classification must hand back patterns that match the UA that
+// produced it, and leave ordinary browsers alone.
+const BROWSER =
+  "mozilla/5.0 (windows nt 10.0; win64; x64) applewebkit/537.36 (khtml, like gecko) chrome/120";
+const spoofedHits = (ua) => {
+  const label = classifyUa(ua)?.label ?? "";
+  return spoofedUaPatterns(label).some((p) => new RegExp(p).test(ua.toLowerCase()));
+};
+check("jndi UA is matched by its own patterns", spoofedHits("${jndi:ldap://x/a}"), true);
+check("SQLi-in-UA is matched by its own patterns", spoofedHits("Mozilla/5.0' OR 1=1--"), true);
+check("base64 UA is matched by its own patterns", spoofedHits("Z2V0fHBvc3RfZGF0YV9leGZpbA=="), true);
+check(
+  "gibberish Mozilla is matched by its own patterns",
+  spoofedHits("Mozilla/5.0 (asdfghjklqwertyuiopzxcvbnm)"),
+  true,
+);
+for (const label of ["injection-in-ua", "base64-ua", "malformed-mozilla"]) {
+  check(
+    `${label} patterns do not fire on a real browser`,
+    spoofedUaPatterns(label).some((p) => new RegExp(p).test(BROWSER)),
+    false,
+  );
+  check(
+    `${label} patterns are lowercase-only`,
+    spoofedUaPatterns(label).every((p) => !/[A-Z]/.test(p)),
+    true,
+  );
+}
+check("an unknown label yields no patterns", spoofedUaPatterns("sqlmap"), []);
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -1,0 +1,262 @@
+// The pattern conventions the assembled rules depend on: lowercase-only
+// patterns (a LOWERCASE transform runs first), escaped literals, one regex per
+// line, RE2 syntax, and no served path ever turned into a block pattern.
+const SRC = new URL("../src/lib/server/", import.meta.url).href;
+const {
+  assembleRule,
+  escapeLiteral,
+  pathPattern,
+  uaPattern,
+  SQLI_PATTERNS,
+  MAX_PATTERNS_PER_SET,
+  MAX_PATTERN_CHARS,
+} = await import(`${SRC}ruleassemble.ts`);
+
+let failures = 0;
+const check = (name, actual, expected) => {
+  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  if (!ok) failures += 1;
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  ${name}` +
+      (ok ? "" : `\n        expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`),
+  );
+};
+
+const summary = (byPath = [], byUa = []) => ({
+  totalSampled: 1000,
+  windowLabel: "15m",
+  source: "test",
+  byPath,
+  byIp: [],
+  byUa,
+  byMethod: [],
+  queryPatterns: [],
+  headerPatterns: [],
+  blockedTotal: 0,
+  statusDist: null,
+  detailedStatus: null,
+});
+const p = (path, count = 50, suspicious = true) => ({
+  path,
+  count,
+  blocked: 0,
+  lowPriority: false,
+  suspicious,
+});
+
+// --- escaping ---
+check("dot is escaped", escapeLiteral("/wp-login.php"), "\\/wp-login\\.php");
+check("parens and plus are escaped", escapeLiteral("a(b)+c"), "a\\(b\\)\\+c");
+check("brackets are escaped", escapeLiteral("x[1]?"), "x\\[1\\]\\?");
+
+// --- path patterns ---
+check("path anchors and bounds the segment", pathPattern("/admin"), "^\\/admin(/|$)");
+check("path is lowercased", pathPattern("/Admin/Panel"), "^\\/admin\\/panel(/|$)");
+check("query string is dropped", pathPattern("/x?a=1"), "^\\/x(/|$)");
+check("trailing slash is dropped", pathPattern("/admin/"), "^\\/admin(/|$)");
+
+// --- UA patterns ---
+check("ua pattern is bounded and lowercase", uaPattern("SQLMap"), "(^|[^a-z0-9])sqlmap([^a-z0-9]|$)");
+
+// A pattern set only ever matches lowercase input, so an uppercase letter in a
+// pattern is dead weight that silently never fires.
+const noUppercase = (pats) => pats.every((s) => !/[A-Z]/.test(s));
+// RE2 rejects POSIX classes; \s+ is the portable spelling.
+const noPosixClass = (pats) => pats.every((s) => !s.includes("[[:"));
+
+// --- SQLi: fixed set, independent of traffic ---
+const sqli = assembleRule("sqli", summary());
+check("sqli needs no observed traffic", sqli.patterns.length, SQLI_PATTERNS.length);
+check("sqli patterns carry no uppercase", noUppercase(sqli.patterns), true);
+check("sqli patterns use no POSIX class", noPosixClass(sqli.patterns), true);
+check("sqli patterns all compile", sqli.patterns.every((s) => { try { new RegExp(s); return true; } catch { return false; } }), true);
+check("sqli blocks", sqli.ruleJson.includes('"Block"'), true);
+check("sqli decodes html entities before matching", sqli.ruleJson.includes("HTML_ENTITY_DECODE"), true);
+
+const sqliMatches = (q) => sqli.patterns.some((s) => new RegExp(s).test(q));
+check("union select is caught", sqliMatches("id=1 union select password from users"), true);
+check("or 1=1 is caught", sqliMatches("id=1 or 1=1"), true);
+check("sleep() is caught", sqliMatches("id=1;sleep(5)"), true);
+check("ordinary query is not caught", sqliMatches("id=3&name=kim&sort=asc"), false);
+check("a word containing 'or' is not caught", sqliMatches("color=red&order=1"), false);
+
+// --- path: off-surface only ---
+const paths = assembleRule(
+  "path",
+  summary([p("/wp-login.php"), p("/v1/user", 900, false), p("/healthcheck", 400, false), p("/.env")]),
+);
+check("served path is never patterned", paths.patterns.some((s) => s.includes("v1")), false);
+check("health check is never patterned", paths.patterns.some((s) => s.includes("healthcheck")), false);
+check("off-surface paths are patterned", paths.patterns.length, 2);
+check("path patterns carry no uppercase", noUppercase(paths.patterns), true);
+// A path list is a sample, so it instruments rather than blocks.
+check("path rule counts rather than blocks", paths.ruleJson.includes('"Count"'), true);
+
+const pathMatches = (path) => paths.patterns.some((s) => new RegExp(s).test(path));
+check("the observed path matches", pathMatches("/wp-login.php"), true);
+check("a subpath matches", pathMatches("/.env/x"), true);
+check("a prefix-sharing path does not match", pathMatches("/wp-login.php.bak"), false);
+check("a served path does not match", pathMatches("/v1/user"), false);
+
+let threw = null;
+try {
+  assembleRule("path", summary([p("/v1/user", 900, false)]));
+} catch (e) {
+  threw = e.message;
+}
+check("no off-surface path is an error, not an empty rule", threw !== null, true);
+
+// --- ua: classified signatures only ---
+const uas = assembleRule(
+  "ua",
+  summary([], [
+    { key: "sqlmap/1.7.2", count: 60 },
+    { key: "Go-http-client/2.0", count: 900 },
+    { key: "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120", count: 300 },
+  ]),
+);
+check("only the scanner UA is patterned", uas.patterns.length, 1);
+check("ua patterns carry no uppercase", noUppercase(uas.patterns), true);
+check("ua rule blocks", uas.ruleJson.includes('"Block"'), true);
+const uaMatches = (ua) => uas.patterns.some((s) => new RegExp(s).test(ua.toLowerCase()));
+check("the scanner UA matches", uaMatches("sqlmap/1.7.2#stable"), true);
+check("the Go client does not match", uaMatches("Go-http-client/2.0"), false);
+check("a name containing the tool does not match", uaMatches("sqlmapper-client/1.0"), false);
+
+let uaThrew = null;
+try {
+  assembleRule("ua", summary([], [{ key: "Mozilla/5.0 Chrome/120 AppleWebKit/537.36", count: 900 }]));
+} catch (e) {
+  uaThrew = e.message;
+}
+check("no threat UA is an error, not an empty rule", uaThrew !== null, true);
+
+// A SPOOFED classification's label ("injection-in-ua", "base64-ua") is a
+// category name, not text found in the UA. Turning it into a literal builds a
+// rule that matches nothing, so those must come out as real regexes.
+const spoofed = assembleRule(
+  "ua",
+  summary([], [
+    { key: "${jndi:ldap://x/a}", count: 40 },
+    { key: "Z2V0fHBvc3RfZGF0YV9leGZpbGw=", count: 20 },
+  ]),
+);
+check(
+  "a spoofed label never becomes a literal pattern",
+  spoofed.patterns.some((s) => s.includes("injection-in-ua") || s.includes("base64-ua")),
+  false,
+);
+const spoofedMatches = (ua) => spoofed.patterns.some((s) => new RegExp(s).test(ua.toLowerCase()));
+check("the jndi UA it was built from is matched", spoofedMatches("${jndi:ldap://x/a}"), true);
+check("the base64 UA it was built from is matched", spoofedMatches("Z2V0fHBvc3RfZGF0YV9leGZpbGw="), true);
+check("a real browser UA is not matched", spoofedMatches(
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120",
+), false);
+
+// A served-path prefix must not launder a traversal: NORMALIZE_PATH resolves it
+// before the served/off-surface decision, so the pattern describes the target.
+const traversal = assembleRule("path", summary([p("/v1/image/../../etc/passwd")]));
+check("traversal under a served prefix is still patterned", traversal.patterns, ["^\\/etc\\/passwd(/|$)"]);
+check(
+  "the evidence shows the resolved path",
+  traversal.evidence[0]?.includes("→ /etc/passwd"),
+  true,
+);
+
+// Query-string-only SQLi misses the POST body, which is where an injection
+// usually sits once a form is involved.
+const sqliStmt = JSON.parse(sqli.ruleJson).Rules[0].Statement;
+check(
+  "sqli inspects both the query string and the body",
+  sqliStmt.OrStatement.Statements.map((s) => Object.keys(s.RegexPatternSetReferenceStatement.FieldToMatch)[0]),
+  ["QueryString", "Body"],
+);
+check(
+  "both fields share one pattern set",
+  new Set(sqliStmt.OrStatement.Statements.map((s) => s.RegexPatternSetReferenceStatement.ARN)).size,
+  1,
+);
+
+// --- the rule JSON the sandbox has to be able to read back ---
+const parsed = JSON.parse(sqli.ruleJson);
+check("rule json inlines the pattern set", Object.keys(parsed.RegexPatternSets).length, 1);
+check(
+  "the rule references the inlined set by name",
+  parsed.RegexPatternSets[sqliStmt.OrStatement.Statements[0].RegexPatternSetReferenceStatement.ARN] !==
+    undefined,
+  true,
+);
+check(
+  "transform priorities are 0..n in order",
+  sqliStmt.OrStatement.Statements[0].RegexPatternSetReferenceStatement.TextTransformations.map(
+    (t) => t.Priority,
+  ),
+  [0, 1, 2, 3],
+);
+// A single-field kind stays a bare statement rather than a one-armed Or.
+check(
+  "a single-field rule is not wrapped in OrStatement",
+  JSON.parse(uas.ruleJson).Rules[0].Statement.RegexPatternSetReferenceStatement !== undefined,
+  true,
+);
+
+// --- the written standard, enforced over every rule this module can emit ---
+// Each check below is one of the conventions the patterns are written to, so a
+// future edit that breaks one fails here instead of at the WAF console.
+const everyRule = [
+  ["sqli", sqli],
+  ["ua", uas],
+  ["path", paths],
+  ["ua-spoofed", spoofed],
+  ["path-traversal", traversal],
+  // Enough off-surface paths to need more than one pattern set.
+  ["path-many", assembleRule("path", summary(
+    Array.from({ length: 23 }, (_, i) => p(`/probe-${i}`, 100 - i)),
+  ))],
+];
+
+for (const [label, rule] of everyRule) {
+  const sets = Object.values(JSON.parse(rule.ruleJson).RegexPatternSets);
+  const stmt = JSON.parse(rule.ruleJson).Rules[0].Statement;
+  const refs = stmt.OrStatement ? stmt.OrStatement.Statements : [stmt];
+
+  // 1. LOWERCASE runs first, so an uppercase letter could never match.
+  check(`[${label}] 패턴에 대문자 없음`, rule.patterns.every((s) => !/[A-Z]/.test(s)), true);
+  // 2. RE2: no POSIX classes, and every pattern must actually compile.
+  check(`[${label}] POSIX 클래스 없음`, rule.patterns.every((s) => !s.includes("[[:")), true);
+  check(`[${label}] 전부 컴파일됨`, rule.patterns.every((s) => {
+    try { new RegExp(s); return true; } catch { return false; }
+  }), true);
+  // 3. Decoding transforms run before the match, and LOWERCASE runs last so the
+  //    decoded output is what gets folded.
+  for (const ref of refs) {
+    const t = ref.RegexPatternSetReferenceStatement.TextTransformations;
+    check(`[${label}] 변환 Priority 가 0..n 연속`, t.map((x) => x.Priority), t.map((_, i) => i));
+    check(`[${label}] URL_DECODE 가 맨 앞`, t[0].Type, "URL_DECODE");
+    check(`[${label}] LOWERCASE 가 맨 뒤`, t[t.length - 1].Type, "LOWERCASE");
+    check(`[${label}] 변환 10개 한도 이내`, t.length <= 10, true);
+  }
+  // 4. AWS fixed quotas: 10 patterns per set, 200 chars per pattern.
+  check(`[${label}] 세트당 정규식 ${MAX_PATTERNS_PER_SET}개 이하`,
+    sets.every((s) => s.length <= MAX_PATTERNS_PER_SET), true);
+  check(`[${label}] 정규식 ${MAX_PATTERN_CHARS}자 이하`,
+    rule.patterns.every((s) => s.length <= MAX_PATTERN_CHARS), true);
+  // Every emitted pattern belongs to exactly one set, and every referenced set
+  // exists — a split must not lose or duplicate a pattern.
+  check(`[${label}] 패턴이 전부 세트에 담김`, sets.flat().length, rule.patterns.length);
+  check(`[${label}] 참조된 세트가 전부 존재`,
+    refs.every((r) => JSON.parse(rule.ruleJson).RegexPatternSets[
+      r.RegexPatternSetReferenceStatement.ARN] !== undefined), true);
+}
+
+// Splitting must add sets rather than drop patterns.
+const many = everyRule.find(([l]) => l === "path-many")[1];
+check("23개 패턴은 버려지지 않음", many.patterns.length, 23);
+check("세트 3개로 쪼개짐", Object.keys(JSON.parse(many.ruleJson).RegexPatternSets).length, 3);
+check("세트 이름이 서로 다름",
+  new Set(Object.keys(JSON.parse(many.ruleJson).RegexPatternSets)).size, 3);
+check("쪼개진 사실이 판단 기준에 적힘",
+  many.notes.some((n) => n.includes("세트 3개")), true);
+
+console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
+process.exit(failures === 0 ? 0 : 1);

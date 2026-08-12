@@ -111,6 +111,9 @@ export interface PathStat {
   count: number;
   blocked: number;
   lowPriority: boolean;
+  // Server-decided (config.isPathSuspicious). Both UI tabs read this instead of
+  // re-applying the concentration rule with their own thresholds.
+  suspicious: boolean;
 }
 
 export interface KeyCount {
@@ -118,11 +121,21 @@ export interface KeyCount {
   count: number;
 }
 
+export interface IpStat {
+  key: string;
+  count: number;
+  sharePct: number;
+  // Server-decided (config.isIpConcentrated).
+  concentrated: boolean;
+}
+
 export interface StatusDistribution {
   c2xx: number;
   c3xx: number;
   c4xx: number;
   c5xx: number;
+  // Sum of the four buckets, computed server-side so panels don't re-add them.
+  total: number;
 }
 
 export interface HttpSummary {
@@ -130,13 +143,32 @@ export interface HttpSummary {
   windowLabel: string;
   source: string;
   byPath: PathStat[];
-  byIp: KeyCount[];
+  byIp: IpStat[];
   byUa: KeyCount[];
   byMethod: KeyCount[];
   queryPatterns: KeyCount[];
   headerPatterns: KeyCount[];
+  // Blocked count over the FULL sample, not the truncated byPath list — the two
+  // have different populations, so summing byPath in the view under-counts.
+  blockedTotal: number;
   statusDist: StatusDistribution | null;
   detailedStatus: KeyCount[] | null;
+}
+
+// A regex rule assembled for one purpose (see server/ruleassemble.ts).
+export type AssembleKind = "path" | "ua" | "sqli";
+
+export interface AssembledRule {
+  kind: AssembleKind;
+  name: string;
+  // One regex per line — the RegexPatternSet's RegularExpressionList.
+  patterns: string[];
+  // A complete Rule plus the inline pattern set, ready for the sandbox.
+  ruleJson: string;
+  // What each pattern came from, so an operator can judge it before applying.
+  evidence: string[];
+  // Why this field/transform combination, in the operator's language.
+  notes: string[];
 }
 
 export type WafRuleKind =

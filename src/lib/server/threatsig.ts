@@ -43,6 +43,38 @@ function isMalformedMozilla(ua: string): boolean {
   return !hasEngine && /[a-z]{20,}/i.test(ua);
 }
 
+// What a classification looks like as a WAF regex, for the SPOOFED categories
+// whose label is a category name rather than text found in the UA. A rule built
+// by treating "injection-in-ua" as a literal would match nothing at all, so
+// anything turning a classification into a rule must come through here.
+//
+// RE2 syntax, lowercase only: the rules that use these apply LOWERCASE (and
+// COMPRESS_WHITE_SPACE) before matching, so an uppercase letter here could
+// never fire and \s+ is already collapsed to single spaces.
+const SPOOFED_PATTERNS: Record<string, string[]> = {
+  "injection-in-ua": [
+    "\\$\\{jndi:",
+    "union\\s+select",
+    "['\"]\\s*or\\s+1\\s*=\\s*1",
+    ";\\s*(cat|wget|curl|nc|bash|sh)\\b",
+  ],
+  // Base64 folds to lowercase under the transform, so the class is a-z0-9+/.
+  "base64-ua": ["(^|[^a-z0-9+/])[a-z0-9+/]{24,}={0,2}([^a-z0-9+/=]|$)"],
+  // RE2 has no lookahead, so "starts like a browser but names no engine" can't
+  // be written directly. This takes the other half of the signal — the long
+  // unbroken letter run right after the mozilla token — which real browser UAs
+  // never have (their next token is "windows", "macintosh", "x11"…).
+  "malformed-mozilla": ["^mozilla/[0-9.]+\\s*\\(?[a-z]{20,}"],
+};
+
+// The regexes that express a classification. SCANNER and RECON labels are the
+// tool name as it appears in the UA, so the caller can use the label itself as
+// a literal; SPOOFED labels need these instead. Returns [] when the label is
+// unknown.
+export function spoofedUaPatterns(label: string): string[] {
+  return SPOOFED_PATTERNS[label] ?? [];
+}
+
 export function classifyUa(ua: string): { category: ThreatCategory; label: string } | null {
   const scan = SCANNER_RE.exec(ua);
   if (scan) return { category: "SCANNER", label: (scan[2] ?? "scanner").toLowerCase() };

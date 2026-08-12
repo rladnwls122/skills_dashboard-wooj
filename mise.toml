@@ -17,9 +17,17 @@ description = "Rehearsal traffic generator (--target <url> required, --dry to pr
 run = "pnpm dev"
 description = "Run dev server on :3100"
 
+[tasks.clean]
+run = "pnpm clean"
+description = "Delete the .next build cache"
+
 [tasks.build]
 run = "pnpm build"
 description = "Production build"
+
+[tasks.build-clean]
+run = "pnpm build:clean"
+description = "Production build after clearing the .next cache"
 
 [tasks.start]
 run = "pnpm start"

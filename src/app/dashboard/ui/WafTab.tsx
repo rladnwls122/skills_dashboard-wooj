@@ -9,7 +9,6 @@ import {
   simulateRuleAction,
 } from "@/app/actions/dashboard";
 import type { MetricsPanel, SimulationResult, WafPanel, WafSampleRow } from "@/lib/types";
-import { RequestLogPanel } from "./RequestLogPanel";
 import { Card, ErrorNote, SectionLoading, Truncate, fmtTs, usePoll, type PollState } from "./shared";
 
 const RISK_COLOR = {
@@ -268,8 +267,6 @@ export function WafTab({
         </div>
       </Card>
 
-      <RequestLogPanel />
-
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card title="WAF 이상 요약" right={<ErrorNote error={waf.error} />}>
           <div className="space-y-1 text-xs text-neutral-400">
@@ -342,22 +339,46 @@ export function WafTab({
       <Card title="WAF 로그 통계 (경로/쿼리/헤더/메소드/차단)">
         {metrics.data?.httpSummary ? (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <StatList
-              title={`Path (총 ${metrics.data.httpSummary.totalSampled}건, 차단 ${metrics.data.httpSummary.byPath.reduce((a, p) => a + p.blocked, 0)}건)`}
-              rows={metrics.data.httpSummary.byPath.map((p) => ({
-                key: `${p.path || "/"}${p.blocked > 0 ? ` (차단 ${p.blocked})` : ""}`,
-                count: p.count,
-                warn: p.blocked > 0,
-              }))}
-            />
+            {/* The path list carries two server-decided marks the other stat
+                lists have no use for: 의심 (off-surface and concentrated) and
+                헬스체크 (excluded from anomaly scoring). */}
+            <div>
+              <div className="mb-1 text-[11px] text-neutral-500">
+                Path (총 {metrics.data.httpSummary.totalSampled}건, 차단{" "}
+                {metrics.data.httpSummary.blockedTotal}건)
+              </div>
+              <div className="max-h-40 space-y-0.5 overflow-y-auto text-[11px]">
+                {metrics.data.httpSummary.byPath.map((p) => (
+                  <div
+                    key={p.path}
+                    className={`flex justify-between gap-2 rounded px-1.5 py-0.5 ${p.blocked > 0 ? "bg-red-950/30" : "bg-neutral-950"}`}
+                  >
+                    <span className={`truncate ${p.lowPriority ? "text-neutral-600" : "text-neutral-300"}`}>
+                      {p.suspicious && (
+                        <span className="mr-1 rounded-[3px] bg-red-900 px-1 font-mono text-[9px] font-bold text-red-200">
+                          의심
+                        </span>
+                      )}
+                      {p.path || "/"}
+                      {p.lowPriority && " (헬스체크)"}
+                    </span>
+                    <span className="tabular-nums text-neutral-500">
+                      {p.count}
+                      {p.blocked > 0 && <span className="text-red-400"> · 차단 {p.blocked}</span>}
+                    </span>
+                  </div>
+                ))}
+                {metrics.data.httpSummary.byPath.length === 0 && (
+                  <div className="text-neutral-600">데이터 없음</div>
+                )}
+              </div>
+            </div>
             <StatList
               title="IP (점유율 30%↑ 강조)"
               rows={metrics.data.httpSummary.byIp.map((ip) => ({
                 key: ip.key,
                 count: ip.count,
-                warn:
-                  ip.count >= 20 &&
-                  ip.count / Math.max(metrics.data!.httpSummary!.totalSampled, 1) >= 0.3,
+                warn: ip.concentrated,
               }))}
             />
             <StatList

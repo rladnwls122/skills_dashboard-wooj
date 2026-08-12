@@ -1,5 +1,5 @@
 import "server-only";
-import { isAppTrafficPath } from "./config";
+import { isAppTrafficPath, isPathSuspicious } from "./config";
 import { classifyUa, queryHasBase64Blob } from "./threatsig";
 import type {
   Anomaly,
@@ -135,7 +135,7 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
     const offSurfaceCount = offSurface.reduce((a, p) => a + p.count, 0);
     const concentrated: string[] = [];
     const topOff = offSurface[0];
-    if (topOff && topOff.count >= 30 && topOff.count / total >= 0.5) {
+    if (topOff && isPathSuspicious(topOff.path, topOff.count, total)) {
       concentrated.push(`경로 ${topOff.path}: 샘플 ${topOff.count}/${total}건 (서비스 경로 외)`);
     }
     const topUa = input.httpSummary.byUa[0];
