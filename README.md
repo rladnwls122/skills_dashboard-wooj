@@ -44,10 +44,16 @@ mise run env               # task-3 런북 값(skills-eks/skills-alb/skills-db-p
 ```bash
 mise run dev               # http://localhost:3100/dashboard (개발 모드)
 # 또는
-mise run build && mise run start   # production 빌드로 실행
+mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드로 실행
 ```
 
 브라우저에서 `http://localhost:3100/dashboard` 접속. 별도 로그인 없음.
+
+**빌드 전에는 캐시를 지운다.** `mise run build-clean`(= `pnpm build:clean`)은
+`.next`를 지우고 빌드한다. 캐시를 남긴 채 빌드하면 소스가 정상인데도
+`Cannot find module for page: /` 처럼 컴파일은 성공하고 페이지 수집만 실패하는
+일이 있다 — 탭을 추가·삭제하거나 파일을 옮긴 뒤에 특히 그렇다. 캐시만 지우려면
+`mise run clean`.
 
 ### 4. 종료
 
@@ -243,6 +249,9 @@ mise run attack-sim -- --target https://<host> --scenario mixed --duration 60 --
   컨텍스트가 올바른 클러스터를 가리키는지 `kubectl config current-context`로 확인.
 - **Pod/Node 리소스 사용률이 항상 비어있음** — 클러스터에 metrics-server가
   설치되어 있는지 `kubectl top nodes`로 확인.
+- **빌드가 `Cannot find module for page: /` 로 실패** (`✓ Compiled successfully`
+  가 먼저 찍히는데도) — `.next` 캐시가 낡은 것. `mise run clean` 후 다시 빌드하거나
+  처음부터 `mise run build-clean`을 쓴다. 소스 문제가 아니다.
 
 ---
 
