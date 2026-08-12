@@ -199,6 +199,57 @@ export interface ProbeResult {
   finalUrl: string | null;
 }
 
+// --- settings (see server/settings.ts) -------------------------------------
+
+// Where a value in force actually came from. A dashboard that shows
+// "skills-waf" without saying whether that is the operator's choice, the .env
+// file, or a built-in default cannot be debugged when it points at the wrong
+// account's resources.
+export type SettingSource = "screen" | "env" | "default";
+
+// Which AWS listing can fill a field in, when one can.
+export type DiscoverKind = "webacl" | "waflog" | "alb" | "eks" | "rdsproxy" | "loggroup";
+
+export interface SettingSpec {
+  key: string;
+  label: string;
+  hint: string;
+  discover: DiscoverKind | null;
+}
+
+export interface SettingRow extends SettingSpec {
+  value: string;
+  source: SettingSource;
+  // What .env alone would have produced, so an operator can see what a screen
+  // override is shadowing before they clear it.
+  envValue: string;
+  defaultValue: string;
+}
+
+export interface SettingsView {
+  rows: SettingRow[];
+  // The overridden values as .env lines, for making a screen change permanent.
+  envText: string;
+}
+
+// One candidate from an AWS listing.
+export interface DiscoveredResource {
+  // The value that would be written into the setting.
+  id: string;
+  // What to show beside it — an ARN, a scope, a state.
+  detail: string;
+  // Set when this candidate is the one already in force.
+  current?: boolean;
+}
+
+export interface DiscoveryResult {
+  kind: DiscoverKind;
+  resources: DiscoveredResource[];
+  // What was tried and what could not be reached. A short list that says
+  // nothing about a denied call reads as "the account has none of these".
+  notes: string[];
+}
+
 // What the client asks for; the server validates and resolves it.
 export interface WindowSelection {
   windowMin: number;

@@ -4,7 +4,7 @@ import {
   StartQueryCommand,
   StopQueryCommand,
 } from "@aws-sdk/client-cloudwatch-logs";
-import { logsClientRegional } from "./aws";
+import { logsClientFor, logsClientRegional } from "./aws";
 import { INSIGHTS_LIMITS } from "./config";
 
 export interface InsightsRow {
@@ -54,6 +54,12 @@ export async function runInsightsQuery(params: {
   startMs?: number;
   endMs?: number;
   deadlineMs?: number;
+  // Which region's Logs endpoint holds this group. The application log lives in
+  // the workload region, but a CLOUDFRONT-scope WAF log group only exists in
+  // us-east-1 — querying it from the workload region returns
+  // ResourceNotFoundException, which reads as "logging is off" and sends the
+  // operator to fix something that is not broken.
+  region?: string;
 }): Promise<InsightsResult> {
   const deadlineMs = params.deadlineMs ?? INSIGHTS_LIMITS.queryDeadlineMs;
   const explicit = params.startMs !== undefined && params.endMs !== undefined;
@@ -69,7 +75,7 @@ export async function runInsightsQuery(params: {
   const startSec = endSec - Math.floor(windowMs / 1000);
   const windowLabel = `${Math.round(windowMs / 60_000)}m`;
 
-  const client = logsClientRegional();
+  const client = params.region ? logsClientFor(params.region) : logsClientRegional();
   await acquire();
   try {
     const started = await client.send(

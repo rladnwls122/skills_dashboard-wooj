@@ -22,6 +22,7 @@ import { LogTab } from "./LogTab";
 import { SandboxTab } from "./SandboxTab";
 import { AiTab } from "./AiTab";
 import { CheckTab } from "./CheckTab";
+import { SettingsTab } from "./SettingsTab";
 
 // One tab per job: what is happening (요약), how the workload performs and how
 // to change it (성능), what the firewall sees and does (방화벽), what the logs
@@ -35,6 +36,7 @@ const TABS = [
   { id: "Check", ko: "점검" },
   { id: "Sandbox", ko: "시험" },
   { id: "AI", ko: "규칙생성" },
+  { id: "Settings", ko: "설정" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -337,6 +339,7 @@ export function DashboardClient() {
           {tab === "Check" && <CheckTab />}
           {tab === "Sandbox" && <SandboxTab waf={waf} incomingRule={incomingRule} />}
           {tab === "AI" && <AiTab onSendToSandbox={sendToSandbox} window={win} />}
+          {tab === "Settings" && <SettingsTab />}
         </main>
       </div>
     </div>

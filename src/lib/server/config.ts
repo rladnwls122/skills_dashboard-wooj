@@ -1,26 +1,61 @@
 import "server-only";
 import type { Status } from "@/lib/types";
+import { value } from "./settings";
 
+// The environment as every module sees it.
+//
+// Getters, not frozen values: the 설정 screen writes overrides to SQLite and
+// they have to take effect on the next request, not the next restart. Reading
+// through `settings.value` keeps every existing `ENV.x` call site working
+// unchanged while moving the resolution one layer down.
+//
+// DB_PATH is the exception — it is where the overrides themselves live, so it
+// cannot be overridable without a cycle.
 export const ENV = {
-  region: process.env.AWS_REGION ?? "ap-northeast-2",
-  wafScope: (process.env.WAF_SCOPE === "REGIONAL" ? "REGIONAL" : "CLOUDFRONT") as
-    | "REGIONAL"
-    | "CLOUDFRONT",
-  wafWebAclName: process.env.WAF_WEB_ACL_NAME ?? "skills-waf",
-  albName: process.env.ALB_NAME ?? "skills-alb",
-  eksClusterName: process.env.EKS_CLUSTER_NAME ?? "skills-eks",
-  rdsProxyName: process.env.RDS_PROXY_NAME ?? "skills-db-proxy",
-  wafLogGroup: process.env.WAF_LOG_GROUP ?? "",
-  targetNamespace: process.env.TARGET_NAMESPACE ?? "default",
-  maxReplicas: Number(process.env.MAX_REPLICAS ?? "20"),
-  dbPath: process.env.DB_PATH ?? "./data/dashboard.db",
-  appLogGroup:
-    process.env.APP_LOG_GROUP ??
-    `/aws/containerinsights/${process.env.EKS_CLUSTER_NAME ?? "skills-eks"}/application`,
-} as const;
+  get region(): string {
+    return value("AWS_REGION");
+  },
+  get wafScope(): "REGIONAL" | "CLOUDFRONT" {
+    return value("WAF_SCOPE") === "REGIONAL" ? "REGIONAL" : "CLOUDFRONT";
+  },
+  get wafWebAclName(): string {
+    return value("WAF_WEB_ACL_NAME");
+  },
+  get albName(): string {
+    return value("ALB_NAME");
+  },
+  get eksClusterName(): string {
+    return value("EKS_CLUSTER_NAME");
+  },
+  get rdsProxyName(): string {
+    return value("RDS_PROXY_NAME");
+  },
+  get wafLogGroup(): string {
+    return value("WAF_LOG_GROUP");
+  },
+  get targetNamespace(): string {
+    return value("TARGET_NAMESPACE");
+  },
+  get maxReplicas(): number {
+    const n = Number(value("MAX_REPLICAS"));
+    return Number.isFinite(n) && n > 0 ? n : 20;
+  },
+  get dbPath(): string {
+    return process.env.DB_PATH ?? "./data/dashboard.db";
+  },
+  get appLogGroup(): string {
+    return value("APP_LOG_GROUP");
+  },
+};
 
 // WAF metrics/API for CLOUDFRONT scope live in us-east-1 only.
-export const WAF_REGION = ENV.wafScope === "CLOUDFRONT" ? "us-east-1" : ENV.region;
+//
+// A function rather than a constant: the scope is now settable at runtime, and
+// a value captured at module load would keep pointing at the old region after a
+// change — the kind of staleness that shows up as "the WebACL does not exist".
+export function wafRegion(): string {
+  return ENV.wafScope === "CLOUDFRONT" ? "us-east-1" : ENV.region;
+}
 
 // Paths excluded (or down-weighted) from anomaly scoring. `/healthcheck` is the
 // task-3 app's ALB health check path.

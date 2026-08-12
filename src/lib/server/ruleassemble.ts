@@ -20,7 +20,7 @@ import "server-only";
 //     COMPRESS_WHITE_SPACE) run before the match so %20, &#x2f; and /./ style
 //     evasion is normalised away rather than pattern-matched.
 
-import { ENV, WAF_REGION, isBenignPath, normalizePath } from "./config";
+import { ENV, isBenignPath, normalizePath, wafRegion } from "./config";
 import { classifyUa, spoofedUaPatterns, type ThreatCategory } from "./threatsig";
 import type { AssembledRule, AssembleKind, HttpSummary } from "@/lib/types";
 
@@ -190,7 +190,7 @@ function createSetCli(setName: string, patterns: string[]): string {
     "aws wafv2 create-regex-pattern-set",
     `--name ${setName}`,
     `--scope ${ENV.wafScope}`,
-    `--region ${WAF_REGION}`,
+    `--region ${wafRegion()}`,
     `--regular-expression-list '${list}'`,
   ].join(" ");
 }

@@ -11,7 +11,7 @@ import {
 } from "@aws-sdk/client-elastic-load-balancing-v2";
 import { WAFV2Client } from "@aws-sdk/client-wafv2";
 import { cached } from "./cache";
-import { ENV, WAF_REGION } from "./config";
+import { ENV, wafRegion } from "./config";
 
 let cw: CloudWatchClient | null = null;
 let cwWaf: CloudWatchClient | null = null;
@@ -19,6 +19,23 @@ let waf: WAFV2Client | null = null;
 let elb: ElasticLoadBalancingV2Client | null = null;
 let cwl: CloudWatchLogsClient | null = null;
 let eks: EKSClient | null = null;
+let cwlRegional: CloudWatchLogsClient | null = null;
+const cwlByRegion = new Map<string, CloudWatchLogsClient>();
+
+// Every client above is built once and reused. They capture a region at
+// construction, and the region is now settable at runtime, so a settings save
+// has to throw them away — otherwise the dashboard keeps talking to the
+// previous account's region and reports "not found" for a resource that exists.
+export function resetAwsClients(): void {
+  cw = null;
+  cwWaf = null;
+  waf = null;
+  elb = null;
+  cwl = null;
+  cwlRegional = null;
+  eks = null;
+  cwlByRegion.clear();
+}
 
 export function cloudWatch(): CloudWatchClient {
   if (!cw) cw = new CloudWatchClient({ region: ENV.region });
@@ -27,12 +44,12 @@ export function cloudWatch(): CloudWatchClient {
 
 // WAF metrics for CLOUDFRONT-scope ACLs are only published in us-east-1.
 export function cloudWatchForWaf(): CloudWatchClient {
-  if (!cwWaf) cwWaf = new CloudWatchClient({ region: WAF_REGION });
+  if (!cwWaf) cwWaf = new CloudWatchClient({ region: wafRegion() });
   return cwWaf;
 }
 
 export function wafClient(): WAFV2Client {
-  if (!waf) waf = new WAFV2Client({ region: WAF_REGION });
+  if (!waf) waf = new WAFV2Client({ region: wafRegion() });
   return waf;
 }
 
@@ -42,17 +59,27 @@ export function elbClient(): ElasticLoadBalancingV2Client {
 }
 
 export function logsClient(): CloudWatchLogsClient {
-  if (!cwl) cwl = new CloudWatchLogsClient({ region: WAF_REGION });
+  if (!cwl) cwl = new CloudWatchLogsClient({ region: wafRegion() });
   return cwl;
 }
-
-let cwlRegional: CloudWatchLogsClient | null = null;
 
 // Container Insights application logs live in the cluster region, unlike the
 // CLOUDFRONT-scope WAF logs which are us-east-1 only.
 export function logsClientRegional(): CloudWatchLogsClient {
   if (!cwlRegional) cwlRegional = new CloudWatchLogsClient({ region: ENV.region });
   return cwlRegional;
+}
+
+// A Logs client for a named region. WAF logs and application logs can live in
+// different regions at the same time, so one memoised client per region rather
+// than one for "the" region.
+export function logsClientFor(region: string): CloudWatchLogsClient {
+  let c = cwlByRegion.get(region);
+  if (!c) {
+    c = new CloudWatchLogsClient({ region });
+    cwlByRegion.set(region, c);
+  }
+  return c;
 }
 
 export function eksClient(): EKSClient {

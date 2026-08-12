@@ -19,6 +19,11 @@ export function getDb(): Database.Database {
       v REAL NOT NULL,
       PRIMARY KEY (key, t)
     );
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS restart_baseline (
       pod TEXT PRIMARY KEY,
       restarts INTEGER NOT NULL,
@@ -67,6 +72,33 @@ export function saveMetricSamples(key: string, points: { t: number; v: number }[
   });
   tx(points);
   d.prepare("DELETE FROM metric_samples WHERE t < ?").run(Date.now() - 6 * 3600_000);
+}
+
+// --- settings overrides ----------------------------------------------------
+//
+// Values set on the 설정 screen. They shadow .env so a mistyped resource name
+// can be corrected without editing a file and restarting the process — which,
+// during a timed exercise, is the difference between fixing it and not.
+
+export function loadSettings(): Record<string, string> {
+  const rows = getDb().prepare("SELECT key, value FROM settings").all() as {
+    key: string;
+    value: string;
+  }[];
+  return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+}
+
+export function saveSetting(key: string, value: string): void {
+  const d = getDb();
+  // An empty value means "stop overriding", not "override with empty" — the
+  // latter would make .env unreachable from the screen.
+  if (value === "") {
+    d.prepare("DELETE FROM settings WHERE key = ?").run(key);
+    return;
+  }
+  d.prepare(
+    "INSERT INTO settings (key, value, updated) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated",
+  ).run(key, value, Date.now());
 }
 
 // Every series recorded under a prefix that still has a row in the window.

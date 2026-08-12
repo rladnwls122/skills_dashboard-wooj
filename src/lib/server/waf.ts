@@ -15,7 +15,14 @@ import {
   StartQueryCommand,
 } from "@aws-sdk/client-cloudwatch-logs";
 import { cached } from "./cache";
-import { ENV, WAF_LIMITS, isIpConcentrated, isLowPriorityPath, isPathSuspicious } from "./config";
+import {
+  ENV,
+  WAF_LIMITS,
+  isIpConcentrated,
+  isLowPriorityPath,
+  isPathSuspicious,
+  wafRegion,
+} from "./config";
 import { logsClient, wafClient } from "./aws";
 import { insertWafHistory, getWafHistory, listWafHistory } from "./db";
 import { maskText } from "./mask";
@@ -354,7 +361,16 @@ interface WafLogAggregation {
 }
 
 async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregation> {
-  const bounds = { logGroup: ENV.wafLogGroup, startMs: win.startMs, endMs: win.endMs };
+  // The region matters and is not the workload region. A CLOUDFRONT-scope WAF
+  // only writes its logs in us-east-1, so querying the workload region returns
+  // ResourceNotFoundException — which the fallback then reports as "log
+  // aggregation failed", sending the operator to fix logging that is already on.
+  const bounds = {
+    region: wafRegion(),
+    logGroup: ENV.wafLogGroup,
+    startMs: win.startMs,
+    endMs: win.endMs,
+  };
   // The User-Agent lives inside httpRequest.headers[], whose index varies per
   // request, so it is pulled off the raw message rather than a JSON field.
   const [pathRes, ipRes, uaRes, methodRes, argsRes] = await Promise.all([

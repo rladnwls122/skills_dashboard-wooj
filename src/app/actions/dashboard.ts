@@ -1,7 +1,7 @@
 "use server";
 
 import { POLLING } from "@/lib/server/config";
-import { cached, peekCached, putCached } from "@/lib/server/cache";
+import { cached, invalidateCached, peekCached, putCached } from "@/lib/server/cache";
 import { errMsg, fetchCoreMetrics, fetchTargetGroupMetrics } from "@/lib/server/cloudwatch";
 import { fetchRequestLogRows } from "@/lib/server/applog";
 import type { StatusClass } from "@/lib/server/applogquery";
@@ -22,6 +22,10 @@ import { probe } from "@/lib/server/probe";
 import { resolveWindow, windowKey } from "@/lib/server/window";
 import { fetchGradingPanel } from "@/lib/server/grading";
 import { loadResourceHistory, recordResourceSamples } from "@/lib/server/reshistory";
+import { saveSettings, settingsView } from "@/lib/server/settings";
+import { discover } from "@/lib/server/discover";
+import { resetAwsClients } from "@/lib/server/aws";
+
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -68,7 +72,10 @@ import type {
   MetricSummary,
   PodLogsResult,
   ProbeResult,
+  DiscoverKind,
+  DiscoveryResult,
   RequestLogQueryResult,
+  SettingsView,
   ResourceHistory,
   RuleTestResult,
   StatusDistribution,
@@ -349,6 +356,41 @@ export async function getResourceHistoryAction(
 ): Promise<ActionResult<ResourceHistory>> {
   try {
     return ok(loadResourceHistory(resolveWindow(sel, Date.now())));
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// --- settings --------------------------------------------------------------
+
+export async function getSettingsAction(): Promise<ActionResult<SettingsView>> {
+  try {
+    return ok(settingsView());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// Saving changes which account and region every panel is reading, so anything
+// cached against the previous selection is now describing the wrong thing, and
+// the SDK clients still hold the old region.
+export async function saveSettingsAction(
+  patch: Record<string, string>,
+): Promise<ActionResult<SettingsView>> {
+  try {
+    saveSettings(patch);
+    resetAwsClients();
+    // "" is a prefix of every key, so this clears the lot.
+    invalidateCached("");
+    return ok(settingsView());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function discoverAction(kind: DiscoverKind): Promise<ActionResult<DiscoveryResult>> {
+  try {
+    return ok(await discover(kind));
   } catch (e) {
     return fail(e);
   }
