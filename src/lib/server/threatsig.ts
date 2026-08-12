@@ -3,7 +3,10 @@ import "server-only";
 // Threat classification for a synthetic or sampled request's User-Agent and
 // query. Pure and AWS-free so it is shared by anomaly detection, the WAF
 // recommender, and the rule sandbox, and unit-tested without a cloud call.
-export type ThreatCategory = "SCANNER" | "RECON" | "SPOOFED";
+// UNKNOWN is not a signature — it is the absence of one. A named tool, an
+// injection payload and "a client nobody recognises" are three different
+// findings and the rule text has to say which it is.
+export type ThreatCategory = "SCANNER" | "RECON" | "SPOOFED" | "AUTOMATION" | "UNKNOWN";
 
 // Go's default HTTP client is the competition's load generator and the expected
 // AI-agent traffic (REQ-01): always allowed, unless an explicit tool signature
@@ -16,6 +19,50 @@ const SCANNER_TOOLS = [
   "zaproxy", "gobuster", "wpscan", "arachni", "nessus", "openvas", "commix",
 ];
 const RECON_TOOLS = ["nmap", "masscan", "zgrab", "censysinspect", "zmap"];
+
+// HTTP clients and headless browsers. None of these is an attack by itself —
+// they are how scripted traffic identifies itself, which is exactly why an
+// attacker who does not bother to forge a UA arrives wearing one. Kept separate
+// from SCANNER so the rule can say "automation, not a named weapon".
+const AUTOMATION_TOOLS = [
+  "curl", "wget", "python-requests", "python-urllib", "urllib", "libwww-perl",
+  "okhttp", "apache-httpclient", "java", "axios", "node-fetch", "got", "httpie",
+  "postmanruntime", "insomnia", "scrapy", "phantomjs", "headlesschrome",
+  "puppeteer", "playwright", "selenium", "httpclient", "restsharp", "guzzle",
+  "winhttp", "powershell", "lwp-request", "aiohttp", "httpx", "reqwest",
+];
+
+const AUTOMATION_RE = new RegExp(`(^|[^a-z])(${AUTOMATION_TOOLS.join("|")})([^a-z]|$)`, "i");
+
+// Clients this environment is expected to see. Everything else observed is
+// suspicious by default — see classifyUa.
+//
+// The inversion matters. A deny list only catches attackers who announce
+// themselves, and the ones worth catching do not: "Mozilla/5.0 (compatible)"
+// costs an attacker nothing and passes every signature above. The traffic here
+// is narrow enough to enumerate — the load generator, real browsers, and AWS's
+// own probes — so the honest test is "is this one of those", not "is this one
+// of the tools I happened to list".
+const KNOWN_GOOD_UA = [
+  // A real browser always names a rendering engine. isMalformedMozilla exists
+  // because "Mozilla/5.0" alone does not.
+  /(applewebkit|gecko|trident|khtml|presto)\b/i,
+  // The competition's load generator and expected AI-agent traffic (REQ-01).
+  /go-http-client\/|go-language/i,
+  // AWS infrastructure probes.
+  /^elb-healthchecker\//i,
+  /^amazon-route53-health-check-service/i,
+  /^amazon cloudfront/i,
+  /^kube-probe\//i,
+  // This dashboard's own traffic check (server/probe.ts) — it is deliberately
+  // named so it can be told apart, and it must not end up in a rule that then
+  // blocks the next check.
+  /^skills-dashboard\/traffic-check/i,
+];
+
+export function isKnownGoodUa(ua: string): boolean {
+  return KNOWN_GOOD_UA.some((re) => re.test(ua));
+}
 
 // Word-ish boundary: tool names sit next to /, digits, spaces or string edges.
 const SCANNER_RE = new RegExp(`(^|[^a-z])(${SCANNER_TOOLS.join("|")})([^a-z]|$)`, "i");
@@ -75,17 +122,39 @@ export function spoofedUaPatterns(label: string): string[] {
   return SPOOFED_PATTERNS[label] ?? [];
 }
 
+// The leading product token of a UA — "python-requests" out of
+// "python-requests/2.31.0", "sqlmap" out of "sqlmap/1.7#stable". It is what an
+// unrecognised client can be matched on: the version that follows changes
+// between releases, so a rule written against the whole string stops firing the
+// day the attacker upgrades.
+export function uaToken(ua: string): string {
+  const first = ua.trim().split(/[\s/(;,]/)[0] ?? "";
+  return first.toLowerCase();
+}
+
 export function classifyUa(ua: string): { category: ThreatCategory; label: string } | null {
   const scan = SCANNER_RE.exec(ua);
   if (scan) return { category: "SCANNER", label: (scan[2] ?? "scanner").toLowerCase() };
   const recon = RECON_RE.exec(ua);
   if (recon) return { category: "RECON", label: (recon[2] ?? "recon").toLowerCase() };
-  // The Go bypass applies only after explicit tool signatures are ruled out.
-  if (GO_ALLOW_RE.test(ua)) return null;
+  // Payload-in-the-UA outranks the allow list: a request carrying ${jndi: is an
+  // attack no matter what it claims to be, and a forged browser token is the
+  // usual wrapper for one.
   if (UA_INJECTION_RE.test(ua)) return { category: "SPOOFED", label: "injection-in-ua" };
+  // The Go bypass applies only after explicit attack signatures are ruled out.
+  if (GO_ALLOW_RE.test(ua)) return null;
   if (isMalformedMozilla(ua)) return { category: "SPOOFED", label: "malformed-mozilla" };
   if (hasBase64Blob(ua)) return { category: "SPOOFED", label: "base64-ua" };
-  return null;
+
+  const auto = AUTOMATION_RE.exec(ua);
+  if (auto) return { category: "AUTOMATION", label: (auto[2] ?? "automation").toLowerCase() };
+
+  // Nothing recognised it and it is not one of the clients this environment
+  // expects, so it is reported rather than passed. An empty UA lands here too —
+  // a request that declines to identify itself is the plainest case of this.
+  if (isKnownGoodUa(ua)) return null;
+  const token = uaToken(ua);
+  return { category: "UNKNOWN", label: token || "(빈 User-Agent)" };
 }
 
 export function queryHasBase64Blob(query: string): boolean {

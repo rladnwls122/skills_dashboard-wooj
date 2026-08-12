@@ -1,7 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import type { KubePanel, MetricsPanel, WarningEvent, WindowSelection } from "@/lib/types";
+import { getResourceHistoryAction } from "@/app/actions/dashboard";
+import type {
+  KubePanel,
+  MetricsPanel,
+  NamedSeries,
+  ResourceHistory,
+  WarningEvent,
+  WindowSelection,
+} from "@/lib/types";
 import { ActionTab } from "./ActionTab";
 import { GradingCard } from "./GradingCard";
 import {
@@ -12,6 +20,7 @@ import {
   Truncate,
   WarningEventDetailModal,
   fmtTs,
+  usePoll,
   type PollState,
 } from "./shared";
 import { TimeChart } from "./TimeChart";
@@ -28,20 +37,102 @@ const STATUS_SERIES = [
   { key: "http5xx", label: "5XX", color: "#ff5c5c" },
 ] as const;
 
-function UsageBar({ label, pct }: { label: string; pct: number | null }) {
-  const color =
-    pct === null ? "bg-neutral-700" : pct >= 90 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
+// Distinct enough that eight pods stay tellable apart in a legend.
+const USAGE_COLORS = [
+  "#54b8ff", "#3ddc97", "#ffb454", "#c792ea", "#7fdbca", "#f78c6c", "#89ddff", "#e57373",
+];
+
+interface UsageNow {
+  name: string;
+  cpuPct: number | null;
+  memPct: number | null;
+  detail: string;
+}
+
+// Usage as two charts plus the current reading.
+//
+// The bars this replaces could say 95% and not say for how long — which is the
+// difference between a burst and a pod that needs a bigger limit. The current
+// number stays, because "what is it right now" is still the first question,
+// but it sits under the line that explains it.
+//
+// Colours are assigned per name across both charts, so the pod that is hot on
+// CPU is the same colour in the memory chart underneath.
+function UsageCharts({
+  cpu,
+  mem,
+  now,
+  loading,
+}: {
+  cpu: NamedSeries[];
+  mem: NamedSeries[];
+  now: UsageNow[];
+  loading: boolean;
+}) {
+  const color = (name: string): string => {
+    const names = [...new Set([...cpu, ...mem].map((s) => s.label))].sort();
+    const i = names.indexOf(name);
+    return USAGE_COLORS[(i < 0 ? 0 : i) % USAGE_COLORS.length]!;
+  };
+  const paint = (list: NamedSeries[]) =>
+    list.map((s) => ({ label: s.label, points: s.points, color: color(s.label), unit: "%" }));
+
+  if (loading && now.length === 0) return <SectionLoading />;
+
   return (
-    <div>
-      <div className="flex justify-between text-neutral-500">
-        <span>{label}</span>
-        <span className="tabular-nums">{pct === null ? "limit 없음" : `${pct}%`}</span>
-      </div>
-      <div className="h-1.5 rounded bg-neutral-800">
-        <div className={`h-1.5 rounded ${color}`} style={{ width: `${Math.min(pct ?? 0, 100)}%` }} />
+    <div className="space-y-2">
+      {cpu.length === 0 && mem.length === 0 ? (
+        <div className="rounded border border-neutral-800 bg-neutral-950 px-2 py-3 text-center text-[11px] text-neutral-500">
+          이 구간에 기록된 사용률이 없습니다 — 대시보드가 켜져 있는 동안에만 기록됩니다.
+        </div>
+      ) : (
+        <>
+          <div>
+            <div className="mb-1 font-mono text-[10px] text-neutral-500">CPU 사용률 (%)</div>
+            <TimeChart height={150} syncKey="perf" series={paint(cpu)} />
+          </div>
+          <div>
+            <div className="mb-1 font-mono text-[10px] text-neutral-500">Memory 사용률 (%)</div>
+            <TimeChart height={150} syncKey="perf" series={paint(mem)} />
+          </div>
+        </>
+      )}
+
+      <div className="max-h-32 space-y-0.5 overflow-y-auto text-[11px]">
+        <div className="text-neutral-500">현재값</div>
+        {now.map((r) => (
+          <div key={r.name} className="flex items-center justify-between gap-2 rounded bg-neutral-950 px-2 py-0.5">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span
+                aria-hidden
+                className="h-0.5 w-3 shrink-0 rounded"
+                style={{ background: color(r.name) }}
+              />
+              <Truncate text={r.name} className="text-neutral-300" />
+            </span>
+            <span className="shrink-0 tabular-nums text-neutral-500">
+              {r.detail} · CPU{" "}
+              <span className={pctClass(r.cpuPct)}>
+                {r.cpuPct === null ? "limit 없음" : `${r.cpuPct}%`}
+              </span>{" "}
+              · Mem{" "}
+              <span className={pctClass(r.memPct)}>
+                {r.memPct === null ? "limit 없음" : `${r.memPct}%`}
+              </span>
+            </span>
+          </div>
+        ))}
+        {now.length === 0 && <div className="text-neutral-600">수집 중…</div>}
       </div>
     </div>
   );
+}
+
+function pctClass(pct: number | null): string {
+  if (pct === null) return "text-neutral-600";
+  if (pct >= 90) return "text-red-400";
+  if (pct >= 70) return "text-amber-400";
+  return "text-emerald-400";
 }
 
 // Everything about how the workload is performing and how to change it: pod and
@@ -62,6 +153,14 @@ export function PerformanceTab({
 }) {
   const pods = kube.data?.pods ?? [];
   const [eventDetail, setEventDetail] = useState<WarningEvent | null>(null);
+  // Read-only: the samples are written by the kube poll, so this only reads
+  // SQLite. It follows the shared window like every other panel.
+  const history: PollState<ResourceHistory> = usePoll(
+    () => getResourceHistoryAction(win),
+    15_000,
+    true,
+    [win.windowMin, win.intervalMin],
+  );
   const statusDist = metrics.data?.httpSummary?.statusDist ?? null;
 
   // The charts read the series already on the panel — nothing is re-fetched or
@@ -239,55 +338,38 @@ export function PerformanceTab({
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card
           title="Pod 리소스 사용률 (CPU/Memory)"
-          right={<ErrorNote error={kube.data?.podResourceError ?? null} />}
+          basis="metrics.k8s.io 는 이력을 남기지 않아, 이 대시보드가 켜져 있는 동안 3초마다 기록한 값 · limit 이 없는 컨테이너는 비율을 낼 수 없어 선이 없음"
+          right={<ErrorNote error={kube.data?.podResourceError ?? history.error} />}
         >
-          <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
-            {(kube.data?.podResources ?? []).map((p) => (
-              <div key={p.pod} className="rounded bg-neutral-950 px-2 py-1">
-                <div className="flex justify-between text-neutral-300">
-                  <Truncate text={p.pod} />
-                  <span className="tabular-nums text-neutral-500">
-                    {(p.cpuUsageMilli / 1000).toFixed(2)} core ·{" "}
-                    {(p.memUsageBytes / 1024 / 1024).toFixed(0)}Mi
-                  </span>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  <UsageBar label="CPU" pct={p.cpuPct} />
-                  <UsageBar label="Mem" pct={p.memPct} />
-                </div>
-              </div>
-            ))}
-            {(kube.data?.podResources.length ?? 0) === 0 && !kube.data?.podResourceError && (
-              <div className="text-neutral-500">수집 중…</div>
-            )}
-          </div>
+          <UsageCharts
+            cpu={history.data?.podCpu ?? []}
+            mem={history.data?.podMem ?? []}
+            now={(kube.data?.podResources ?? []).map((p) => ({
+              name: p.pod,
+              cpuPct: p.cpuPct,
+              memPct: p.memPct,
+              detail: `${(p.cpuUsageMilli / 1000).toFixed(2)} core · ${(p.memUsageBytes / 1024 / 1024).toFixed(0)}Mi`,
+            }))}
+            loading={kube.loading}
+          />
         </Card>
 
         <Card
           title="Node 리소스 사용률 (CPU/Memory)"
-          right={<ErrorNote error={kube.data?.nodeResourceError ?? null} />}
+          basis="metrics.k8s.io 는 이력을 남기지 않아, 이 대시보드가 켜져 있는 동안 3초마다 기록한 값 · 선이 끊긴 구간은 사용량 0 이 아니라 대시보드가 꺼져 있던 구간"
+          right={<ErrorNote error={kube.data?.nodeResourceError ?? history.error} />}
         >
-          <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
-            {(kube.data?.nodeResources ?? []).map((n) => (
-              <div key={n.name} className="rounded bg-neutral-950 px-2 py-1">
-                <div className="flex justify-between text-neutral-300">
-                  <Truncate text={n.name} />
-                  <span className="tabular-nums text-neutral-500">
-                    {(n.cpuUsageMilli / 1000).toFixed(2)}/{(n.cpuCapacityMilli / 1000).toFixed(1)}{" "}
-                    core · {(n.memUsageBytes / 1024 / 1024 / 1024).toFixed(2)}/
-                    {(n.memCapacityBytes / 1024 / 1024 / 1024).toFixed(2)}Gi
-                  </span>
-                </div>
-                <div className="mt-1 grid grid-cols-2 gap-2">
-                  <UsageBar label="CPU" pct={n.cpuPct} />
-                  <UsageBar label="Mem" pct={n.memPct} />
-                </div>
-              </div>
-            ))}
-            {(kube.data?.nodeResources.length ?? 0) === 0 && !kube.data?.nodeResourceError && (
-              <div className="text-neutral-500">수집 중…</div>
-            )}
-          </div>
+          <UsageCharts
+            cpu={history.data?.nodeCpu ?? []}
+            mem={history.data?.nodeMem ?? []}
+            now={(kube.data?.nodeResources ?? []).map((n) => ({
+              name: n.name,
+              cpuPct: n.cpuPct,
+              memPct: n.memPct,
+              detail: `${(n.cpuUsageMilli / 1000).toFixed(2)}/${(n.cpuCapacityMilli / 1000).toFixed(1)} core · ${(n.memUsageBytes / 1024 ** 3).toFixed(2)}/${(n.memCapacityBytes / 1024 ** 3).toFixed(2)}Gi`,
+            }))}
+            loading={kube.loading}
+          />
         </Card>
       </div>
 

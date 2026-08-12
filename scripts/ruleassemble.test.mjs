@@ -106,30 +106,75 @@ try {
 }
 check("no off-surface path is an error, not an empty rule", threw !== null, true);
 
-// --- ua: classified signatures only ---
+// --- ua: everything that is not an expected client ---
+// The rule covers each observed UA that is not on the allow list, not only the
+// ones matching a named tool. A deny list leaves the forged-browser case — the
+// one an attacker actually sends — walking straight through.
 const uas = assembleRule(
   "ua",
   summary([], [
     { key: "sqlmap/1.7.2", count: 60 },
     { key: "Go-http-client/2.0", count: 900 },
     { key: "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120", count: 300 },
+    { key: "ELB-HealthChecker/2.0", count: 400 },
+    { key: "python-requests/2.31.0", count: 40 },
+    { key: "Mozilla/5.0 (compatible)", count: 25 },
+    { key: "MyCorpAgent/3.1", count: 10 },
   ]),
 );
-check("only the scanner UA is patterned", uas.patterns.length, 1);
 check("ua patterns carry no uppercase", noUppercase(uas.patterns), true);
 check("ua rule blocks", uas.ruleJson.includes('"Block"'), true);
 const uaMatches = (ua) => uas.patterns.some((s) => new RegExp(s).test(ua.toLowerCase()));
-check("the scanner UA matches", uaMatches("sqlmap/1.7.2#stable"), true);
-check("the Go client does not match", uaMatches("Go-http-client/2.0"), false);
-check("a name containing the tool does not match", uaMatches("sqlmapper-client/1.0"), false);
+check("스캐너 UA 가 잡힌다", uaMatches("sqlmap/1.7.2#stable"), true);
+check("python-requests 가 잡힌다", uaMatches("python-requests/2.31.0"), true);
+check("엔진 없는 Mozilla 위장이 잡힌다", uaMatches("mozilla/5.0 (compatible)"), true);
+check("처음 보는 클라이언트가 잡힌다", uaMatches("mycorpagent/3.1"), true);
+// The version moved but the rule still fires — the pattern is the product
+// token, not the whole string.
+check("버전이 올라가도 계속 잡힌다", uaMatches("python-requests/9.99.0"), true);
+// And the traffic the score depends on must not be touched.
+check("Go 부하생성기는 잡히지 않는다", uaMatches("Go-http-client/2.0"), false);
+check("실제 브라우저는 잡히지 않는다", uaMatches("mozilla/5.0 (windows nt 10.0) applewebkit/537.36 chrome/120"), false);
+check("ELB 헬스체커는 잡히지 않는다", uaMatches("elb-healthchecker/2.0"), false);
+check("이 대시보드의 점검 요청은 잡히지 않는다", uaMatches("skills-dashboard/traffic-check"), false);
+check("도구 이름을 품은 다른 이름은 잡히지 않는다", uaMatches("sqlmapper-client/1.0"), false);
+// The trap this nearly walked into: "Mozilla/5.0 (compatible)" leads with the
+// same token every real browser does, so matching on the token would have taken
+// the whole site down. Browser-ish tokens are matched as the whole string.
+check(
+  "위장 Mozilla 는 전체 문자열로 고정된다",
+  uas.patterns.some((s) => s === String.raw`^mozilla\/5\.0 \(compatible\)$`),
+  true,
+);
+check("mozilla 토큰만으로는 패턴을 만들지 않는다", uaMatches("mozilla/5.0 (macintosh) applewebkit/605 safari/605"), false);
+// Empty UA needs ^$ — a literal pattern built from an empty token would match
+// every request instead.
+const emptyUa = assembleRule("ua", summary([], [{ key: "(empty UA)", count: 30 }]));
+check("빈 UA 는 ^$ 로 잡는다", emptyUa.patterns, ["^$"]);
+check("빈 UA 패턴이 아무 UA 나 잡지는 않는다", new RegExp(emptyUa.patterns[0]).test("curl/8.4.0"), false);
 
 let uaThrew = null;
 try {
-  assembleRule("ua", summary([], [{ key: "Mozilla/5.0 Chrome/120 AppleWebKit/537.36", count: 900 }]));
+  assembleRule("ua", summary([], [
+    { key: "Mozilla/5.0 Chrome/120 AppleWebKit/537.36", count: 900 },
+    { key: "Go-http-client/2.0", count: 500 },
+  ]));
 } catch (e) {
   uaThrew = e.message;
 }
-check("no threat UA is an error, not an empty rule", uaThrew !== null, true);
+check("정상 클라이언트뿐이면 빈 규칙이 아니라 오류", uaThrew !== null, true);
+// "Nothing suspicious was seen" and "nothing was seen at all" send the operator
+// to different places, so the two must not share a message. The second is the
+// live state of this environment: WAF samples only rule matches, and the app
+// log carries no user_agent field.
+let emptyThrew = null;
+try {
+  assembleRule("ua", summary([], []));
+} catch (e) {
+  emptyThrew = e.message;
+}
+check("UA 통계가 비면 수집 문제라고 말한다", emptyThrew?.includes("WAF_LOG_GROUP"), true);
+check("정상뿐인 경우와 다른 메시지", emptyThrew !== uaThrew, true);
 
 // A SPOOFED classification's label ("injection-in-ua", "base64-ua") is a
 // category name, not text found in the UA. Turning it into a literal builds a

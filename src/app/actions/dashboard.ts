@@ -21,6 +21,7 @@ import { assembleRule } from "@/lib/server/ruleassemble";
 import { probe } from "@/lib/server/probe";
 import { resolveWindow, windowKey } from "@/lib/server/window";
 import { fetchGradingPanel } from "@/lib/server/grading";
+import { loadResourceHistory, recordResourceSamples } from "@/lib/server/reshistory";
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -68,6 +69,7 @@ import type {
   PodLogsResult,
   ProbeResult,
   RequestLogQueryResult,
+  ResourceHistory,
   RuleTestResult,
   StatusDistribution,
   TestRequest,
@@ -159,6 +161,14 @@ export async function getKubePanelAction(): Promise<ActionResult<KubePanel>> {
               : null,
       };
       if (pods.status === "rejected") throw pods.reason;
+      // metrics.k8s.io keeps no history, so the reading is appended here — on
+      // the timer that already exists — and the charts read it back. Recording
+      // must never break the panel: a full disk is not an outage.
+      try {
+        recordResourceSamples(panel.podResources, panel.nodeResources, Date.now());
+      } catch {
+        // best effort
+      }
       return panel;
     });
     return ok(data);
@@ -327,6 +337,18 @@ export async function getWafPanelAction(
 export async function getWafHistoryAction(): Promise<ActionResult<ApplyHistoryEntry[]>> {
   try {
     return ok(applyHistory());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// Pod/node usage over the shared window. Read-only: the samples are written by
+// the kube panel, so asking for a chart never triggers a cluster call.
+export async function getResourceHistoryAction(
+  sel?: WindowSelection,
+): Promise<ActionResult<ResourceHistory>> {
+  try {
+    return ok(loadResourceHistory(resolveWindow(sel, Date.now())));
   } catch (e) {
     return fail(e);
   }

@@ -258,6 +258,19 @@ export function WafTab({
           ))}
         </SourceNote>
 
+        {/* Zero collected is not zero observed, and the lists below cannot tell
+            the two apart on their own. Said once, loudly, above them. */}
+        {metrics.data?.httpSummary?.totalSampled === 0 && (
+          <div className="mt-2 rounded border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-[11px] leading-5 text-amber-200">
+            <div className="font-semibold">수집된 요청이 0건입니다 — 트래픽이 없다는 뜻이 아닙니다.</div>
+            <div className="mt-1 text-amber-300/90">
+              아래 경로·IP·User-Agent 목록이 비어 있는 것은 관측 결과가 아니라 수집이 되지 않은
+              것입니다. 이 상태에서는 <span className="text-amber-100">규칙생성 탭의 UA 규칙</span>도
+              만들 수 없습니다.
+            </div>
+          </div>
+        )}
+
         {metrics.data?.httpSummary ? (
           <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             {/* The path list carries two server-decided marks the other stat

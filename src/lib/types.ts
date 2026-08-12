@@ -376,6 +376,22 @@ export interface NodeResourceUsage {
   memPct: number;
 }
 
+// One labelled line on a chart. The label is the pod or node name as recorded.
+export interface NamedSeries {
+  label: string;
+  points: MetricPoint[];
+}
+
+// Pod/node usage over the shared window, recorded by this dashboard itself
+// (see server/reshistory.ts) because metrics.k8s.io keeps no history. A gap in
+// a line means the dashboard was not running, not that usage was zero.
+export interface ResourceHistory {
+  podCpu: NamedSeries[];
+  podMem: NamedSeries[];
+  nodeCpu: NamedSeries[];
+  nodeMem: NamedSeries[];
+}
+
 export interface ScaleInfo {
   name: string;
   current: number;

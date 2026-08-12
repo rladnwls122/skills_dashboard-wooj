@@ -159,9 +159,17 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
     // Malicious-client signatures in the sampled UA/query mix. Independent of
     // request volume — a single scanner fingerprint is a finding — and blind to
     // source IP by policy. The Go client is bypassed inside classifyUa (REQ-01).
+    // UNKNOWN is excluded here on purpose. classifyUa reports it for any client
+    // that is not on the expected list, which is what the rule assembler wants
+    // — a rule should cover them — but it is not evidence of an attack, and an
+    // anomaly raised for every stray client would bury the scanner hit that
+    // actually matters. A positive signature is required to alarm.
     const flaggedUa = input.httpSummary.byUa
       .map((u) => ({ hit: classifyUa(u.key), key: u.key, count: u.count }))
-      .filter((x): x is { hit: NonNullable<ReturnType<typeof classifyUa>>; key: string; count: number } => x.hit !== null);
+      .filter(
+        (x): x is { hit: NonNullable<ReturnType<typeof classifyUa>>; key: string; count: number } =>
+          x.hit !== null && x.hit.category !== "UNKNOWN",
+      );
     const b64Query = input.httpSummary.queryPatterns.filter((q) => queryHasBase64Blob(q.key));
     if (flaggedUa.length > 0 || b64Query.length > 0) {
       const evidence: string[] = [];
@@ -171,7 +179,12 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
       for (const q of b64Query.slice(0, 3)) {
         evidence.push(`base64 난독화 쿼리 의심: "${q.key.slice(0, 60)}"`);
       }
-      const hasScanner = flaggedUa.some((f) => f.hit.category !== "SPOOFED");
+      // Only a named offensive tool is CRITICAL on its own. AUTOMATION (curl,
+      // python-requests) is worth a rule but is not by itself an attack, and
+      // treating it as one would make every scripted client a red light.
+      const hasScanner = flaggedUa.some(
+        (f) => f.hit.category === "SCANNER" || f.hit.category === "RECON",
+      );
       push(
         "MALICIOUS_CLIENT_SUSPECTED",
         hasScanner ? "CRITICAL" : "WARNING",

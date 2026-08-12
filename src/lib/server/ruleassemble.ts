@@ -21,7 +21,7 @@ import "server-only";
 //     evasion is normalised away rather than pattern-matched.
 
 import { ENV, WAF_REGION, isBenignPath, normalizePath } from "./config";
-import { classifyUa, spoofedUaPatterns } from "./threatsig";
+import { classifyUa, spoofedUaPatterns, type ThreatCategory } from "./threatsig";
 import type { AssembledRule, AssembleKind, HttpSummary } from "@/lib/types";
 
 // Fixed AWS WAF quotas (not adjustable). Exceeding either means the pattern set
@@ -50,6 +50,35 @@ export function pathPattern(path: string): string {
 // word-ish boundary so "nmap" does not fire inside "nmapper-client".
 export function uaPattern(needle: string): string {
   return `(^|[^a-z0-9])${escapeLiteral(needle.toLowerCase())}([^a-z0-9]|$)`;
+}
+
+// Tokens every real browser also leads with. An UNKNOWN client whose first
+// token is one of these cannot be matched on that token: "Mozilla/5.0
+// (compatible)" and Chrome both start with "mozilla", so a rule built from the
+// token would block every browser on the site. Those get matched on the whole
+// string instead — less resilient to a version bump, but a forged UA is a fixed
+// string anyway, and the alternative is an outage.
+const BROWSERISH_TOKENS = new Set([
+  "mozilla", "chrome", "safari", "firefox", "opera", "edge", "edg", "msie", "webkit",
+]);
+
+// The regexes that express one UA classification.
+//
+// The categories need different treatments and mixing them up produces a rule
+// that silently matches nothing — or, worse, one that matches everything: a
+// SCANNER/RECON/AUTOMATION label is the tool name as it literally appears in
+// the header, a SPOOFED label is a category name that appears nowhere in it,
+// and an UNKNOWN label is the client's own leading token.
+export function uaPatternsFor(category: ThreatCategory, label: string, rawUa: string): string[] {
+  if (category === "SPOOFED") return spoofedUaPatterns(label);
+  // A request that sent no User-Agent at all. WAF only evaluates this when the
+  // header is present-but-empty; a wholly absent header does not match a
+  // SingleHeader statement, which is why the spec note says so.
+  if (!label || label.startsWith("(")) return ["^$"];
+  if (category === "UNKNOWN" && BROWSERISH_TOKENS.has(label)) {
+    return [`^${escapeLiteral(rawUa.trim().toLowerCase())}$`];
+  }
+  return [uaPattern(label)];
 }
 
 // The fixed SQL-injection signature set. These are the shapes that are never
@@ -101,9 +130,13 @@ const SPEC: Record<AssembleKind, KindSpec> = {
     fields: [{ SingleHeader: { Name: "user-agent" } }],
     transforms: ["URL_DECODE", "COMPRESS_WHITE_SPACE", "LOWERCASE"],
     notes: [
-      "공격 도구·위조 시그니처로 분류된 User-Agent만 패턴화 — Go 클라이언트와 일반 브라우저는 제외",
+      "알려진 정상 클라이언트(렌더링 엔진을 밝힌 실제 브라우저 · Go 부하생성기 · ELB/Route53/kube 헬스체크 · 이 대시보드의 점검 요청)를 뺀 관측 User-Agent 전부를 패턴화",
+      "허용 목록 방식 — 이름 붙은 공격 도구만 막으면 UA 를 위조한 쪽은 그대로 통과한다. \"Mozilla/5.0 (compatible)\" 처럼 아무 엔진도 밝히지 않는 문자열이 대표적",
+      "SCANNER·RECON·AUTOMATION 은 도구 이름을, SPOOFED 는 페이로드 형태를, UNKNOWN 은 UA 의 첫 토큰(버전 앞부분)을 매칭 — 버전이 올라가도 계속 걸린다",
+      "빈 User-Agent 는 ^$ 로 잡는다. 헤더 자체가 없는 요청은 SingleHeader 문장이 평가되지 않으므로 이 규칙으로는 잡히지 않는다 — 필요하면 별도 규칙이 필요",
       "COMPRESS_WHITE_SPACE 로 공백을 정규화한 뒤 소문자 매칭",
       "단어 경계를 둬서 도구 이름이 다른 토큰 안에 포함된 경우는 매칭하지 않음",
+      "적용 전 반드시 시험 탭에서 판정해 볼 것 — 허용 목록에 없는 정상 클라이언트가 이 환경에 있다면 함께 차단된다",
     ],
   },
   sqli: {
@@ -246,16 +279,16 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
       );
     }
   } else if (kind === "ua") {
+    // Every observed UA that is not a client this environment expects, not just
+    // the ones matching a named tool. classifyUa now returns UNKNOWN rather
+    // than null for anything unrecognised, so a plain "Mozilla/5.0
+    // (compatible)" or a bare curl no longer walks through.
     const seen = new Set<string>();
     for (const ua of summary.byUa) {
       const hit = classifyUa(ua.key);
       if (!hit) continue;
-      // A SCANNER/RECON label is the tool name as it appears in the UA, so it
-      // works as a literal. A SPOOFED label is a category name that appears
-      // nowhere in the UA — using it as a literal would build a rule that
-      // matches nothing, so those come from threatsig as regexes.
-      const fresh =
-        hit.category === "SPOOFED" ? spoofedUaPatterns(hit.label) : [uaPattern(hit.label)];
+      const fresh = uaPatternsFor(hit.category, hit.label, ua.key);
+      if (fresh.length === 0) continue;
       let added = false;
       for (const pattern of fresh) {
         if (seen.has(pattern)) continue;
@@ -264,12 +297,20 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
         added = true;
       }
       if (added) {
-        evidence.push(`"${ua.key}" — ${ua.count}건 · ${hit.category} 시그니처 "${hit.label}"`);
+        evidence.push(
+          `"${ua.key}" — ${ua.count}건 · ${hit.category}${
+            hit.category === "UNKNOWN" ? " (알려진 정상 클라이언트가 아님)" : ` 시그니처 "${hit.label}"`
+          }`,
+        );
       }
     }
     if (patterns.length === 0) {
+      // "Nothing suspicious was seen" and "nothing was seen" need different
+      // answers from the operator, so they get different messages.
       throw new Error(
-        "공격 도구·위조로 분류된 User-Agent 가 관측되지 않음 — 패턴으로 만들 대상이 없습니다.",
+        summary.byUa.length === 0
+          ? "User-Agent 통계가 비어 있습니다 — 관측된 UA 가 하나도 없어 규칙을 만들 수 없습니다. WAF GetSampledRequests 는 규칙에 매칭된 요청만 표본으로 남기므로, 아무것도 매칭하지 않는 WebACL 에서는 항상 0건입니다. WAF 로깅을 켜고 WAF_LOG_GROUP 을 지정하거나, 광범위한 COUNT 규칙을 하나 추가해 표본을 만드세요. (이 환경의 앱 로그에는 user_agent 필드가 없어 대체 수집이 불가능합니다.)"
+          : "관측된 User-Agent 가 전부 알려진 정상 클라이언트(렌더링 엔진을 밝힌 브라우저 · Go 부하생성기 · AWS 헬스체크)입니다 — 패턴으로 만들 대상이 없습니다.",
       );
     }
   } else {

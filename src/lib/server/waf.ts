@@ -303,8 +303,31 @@ export async function buildHttpSummary(
     blockedTotal,
     statusDist,
     detailedStatus: null,
-    notes: [],
+    notes: emptySampleNotes(total),
   };
+}
+
+// Why this panel is empty, when it is.
+//
+// GetSampledRequests only samples requests that a rule matched. A WebACL whose
+// rules match nothing therefore returns zero samples, and every list built from
+// them — paths, IPs, User-Agents — comes back empty. Empty reads as "nothing
+// suspicious is happening"; it actually means "nothing was collected", and the
+// difference decides whether an operator goes looking. So the panel says which
+// one it is, and what to do about it.
+//
+// This is not hypothetical here: the app's own access log carries no
+// user_agent field either (app, client_ip, latency_ms, method, path, status),
+// so with sampling empty there is no UA anywhere in the system.
+export function emptySampleNotes(total: number): string[] {
+  if (total > 0) return [];
+  return [
+    "샘플 0건 — 트래픽이 없다는 뜻이 아니라 수집되지 않았다는 뜻입니다. WAF GetSampledRequests 는 규칙에 매칭된 요청만 표본으로 남기므로, 아무 규칙도 매칭하지 않는 WebACL 에서는 항상 0건입니다.",
+    "따라서 경로·IP·User-Agent 통계가 전부 비어 있고, 이 상태에서는 UA 규칙을 조립할 수 없습니다.",
+    "채우는 방법 ①: WAF 로깅을 CloudWatch Logs 로 켜고 .env 의 WAF_LOG_GROUP 을 그 로그 그룹으로 지정 — 표본이 아닌 전수 집계로 바뀝니다.",
+    "채우는 방법 ②: WebACL 에 광범위한 COUNT 규칙을 하나 추가 — 차단 없이 매칭만 시켜 표본을 만듭니다.",
+    "앱 액세스 로그로는 대체할 수 없습니다 — 이 환경의 앱 로그에는 user_agent 필드가 없습니다(app · client_ip · latency_ms · method · path · status · ts).",
+  ];
 }
 
 // --- WAF logs via Logs Insights -------------------------------------------

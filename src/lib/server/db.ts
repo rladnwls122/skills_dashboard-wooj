@@ -69,6 +69,16 @@ export function saveMetricSamples(key: string, points: { t: number; v: number }[
   d.prepare("DELETE FROM metric_samples WHERE t < ?").run(Date.now() - 6 * 3600_000);
 }
 
+// Every series recorded under a prefix that still has a row in the window.
+// The caller cannot enumerate pod names ahead of time — pods come and go — so
+// the table is the index.
+export function listMetricKeys(prefix: string, sinceMs: number): string[] {
+  const rows = getDb()
+    .prepare("SELECT DISTINCT key FROM metric_samples WHERE key LIKE ? AND t >= ? ORDER BY key")
+    .all(`${prefix}%`, sinceMs) as { key: string }[];
+  return rows.map((r) => r.key);
+}
+
 export function loadMetricSamples(key: string, sinceMs: number): { t: number; v: number }[] {
   return getDb()
     .prepare("SELECT t, v FROM metric_samples WHERE key = ? AND t >= ? ORDER BY t ASC")
