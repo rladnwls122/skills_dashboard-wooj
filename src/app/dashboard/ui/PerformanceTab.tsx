@@ -14,6 +14,19 @@ import {
   fmtTs,
   type PollState,
 } from "./shared";
+import { TimeChart } from "./TimeChart";
+
+// Target groups keep their colour across both charts, so the line that is slow
+// in the latency chart is the same colour as the one throwing errors below it.
+const TG_COLORS = ["#54b8ff", "#3ddc97", "#c792ea", "#7fdbca"] as const;
+const ERR_COLORS = ["#ff5c5c", "#ffb454", "#f78c6c", "#e57373"] as const;
+
+const STATUS_SERIES = [
+  { key: "http2xx", label: "2XX", color: "#3ddc97" },
+  { key: "http3xx", label: "3XX", color: "#54b8ff" },
+  { key: "http4xx", label: "4XX", color: "#ffb454" },
+  { key: "http5xx", label: "5XX", color: "#ff5c5c" },
+] as const;
 
 function UsageBar({ label, pct }: { label: string; pct: number | null }) {
   const color =
@@ -50,6 +63,31 @@ export function PerformanceTab({
   const pods = kube.data?.pods ?? [];
   const [eventDetail, setEventDetail] = useState<WarningEvent | null>(null);
   const statusDist = metrics.data?.httpSummary?.statusDist ?? null;
+
+  // The charts read the series already on the panel — nothing is re-fetched or
+  // re-aggregated here, so a line and the number beside it cannot disagree.
+  const tgs = metrics.data?.targetGroupMetrics ?? [];
+  const tgSeries = {
+    trt: tgs
+      .filter((tg) => tg.responseTime.points.length > 0)
+      .map((tg, i) => ({
+        label: tg.name,
+        points: tg.responseTime.points,
+        color: TG_COLORS[i % TG_COLORS.length],
+      })),
+    // 4XX and 5XX share the axis because they share a unit, and the pair is
+    // read together: 5XX rising while 4XX holds is a different fault from both
+    // rising at once.
+    errors: tgs.flatMap((tg, i) => [
+      { label: `${tg.name} 4XX`, points: tg.c4xx.points, color: TG_COLORS[i % TG_COLORS.length] },
+      { label: `${tg.name} 5XX`, points: tg.c5xx.points, color: ERR_COLORS[i % ERR_COLORS.length] },
+    ]).filter((s) => s.points.length > 0),
+  };
+
+  const statusSeries = STATUS_SERIES.map(({ key, label, color }) => {
+    const m = metrics.data?.metrics.find((x) => x.key === key);
+    return { label, points: m?.points ?? [], color };
+  }).filter((s) => s.points.length > 0);
 
   return (
     <div className="space-y-3">
@@ -293,6 +331,27 @@ export function PerformanceTab({
                 <div className="p-2 text-[11px] text-neutral-500">수집 중…</div>
               )}
           </div>
+
+          {/* The table says which Target Group is slow now; this says since
+              when, and whether the others moved with it. Split by unit —
+              seconds and req/min on one axis would flatten whichever is
+              smaller into the baseline. */}
+          {tgSeries.trt.length > 0 && (
+            <div className="mt-3 space-y-3">
+              <div>
+                <div className="mb-1 font-mono text-[10px] text-neutral-500">
+                  TargetResponseTime (s) — Target Group별
+                </div>
+                <TimeChart height={160} syncKey="perf" series={tgSeries.trt} />
+              </div>
+              <div>
+                <div className="mb-1 font-mono text-[10px] text-neutral-500">
+                  4XX · 5XX (req/min) — Target Group별
+                </div>
+                <TimeChart height={160} syncKey="perf" series={tgSeries.errors} />
+              </div>
+            </div>
+          )}
         </Card>
 
         <Card
@@ -335,6 +394,18 @@ export function PerformanceTab({
             </div>
           ) : (
             <div className="text-[11px] text-neutral-500">ALB 메트릭 수집 중…</div>
+          )}
+
+          {/* The bars are the mix at one instant. A 5XX share that has been
+              flat all hour and one that appeared four minutes ago are the same
+              bar and different incidents. */}
+          {statusSeries.length > 0 && (
+            <div className="mt-3">
+              <div className="mb-1 font-mono text-[10px] text-neutral-500">
+                상태코드 추이 (req/min)
+              </div>
+              <TimeChart height={160} syncKey="perf" series={statusSeries} />
+            </div>
           )}
         </Card>
       </div>

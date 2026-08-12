@@ -34,14 +34,9 @@ import { detectAnomalies, type AnomalyInput } from "@/lib/server/anomaly";
 import { buildTimeline, correlate } from "@/lib/server/correlation";
 import {
   applyHistory,
-  applyRecommendation,
   buildHttpSummary,
-  buildQHandoff,
-  generateRecommendations,
   getAclInfo,
   listSampleRows,
-  rollbackWaf,
-  simulateRecommendation,
 } from "@/lib/server/waf";
 import {
   buildSnapshot,
@@ -74,7 +69,6 @@ import type {
   ProbeResult,
   RequestLogQueryResult,
   RuleTestResult,
-  SimulationResult,
   StatusDistribution,
   TestRequest,
   Verdict,
@@ -316,62 +310,15 @@ export async function getWafPanelAction(
     const win = resolveWindow(sel, Date.now());
     const data = await cached(`panel:waf:${windowKey(win)}`, POLLING.wafTtlMs, async () => {
       const metrics = peekCached<MetricsPanel>("panel:metrics");
-      const wafStatus =
-        metrics?.metrics.find((m) => m.key === "wafBlocked")?.status ?? "NORMAL";
-      const http4xxStatus =
-        metrics?.metrics.find((m) => m.key === "http4xx")?.status ?? "NORMAL";
-
-      const [acl, recs] = await Promise.allSettled([
-        getAclInfo(),
-        generateRecommendations(wafStatus, http4xxStatus, win),
-      ]);
+      const [acl] = await Promise.allSettled([getAclInfo()]);
       const panel: WafPanel = {
         acl: acl.status === "fulfilled" ? acl.value : null,
         aclError: acl.status === "rejected" ? errMsg(acl.reason) : null,
-        recommendations: recs.status === "fulfilled" ? recs.value : [],
-        recommendationError: recs.status === "rejected" ? errMsg(recs.reason) : null,
         history: applyHistory(),
       };
       return panel;
     });
     return ok(data);
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export async function simulateRuleAction(
-  recommendationId: string,
-): Promise<ActionResult<SimulationResult>> {
-  try {
-    const metrics = peekCached<MetricsPanel>("panel:metrics");
-    const reqPerMin =
-      metrics?.metrics.find((m) => m.key === "requestCount")?.current ?? 0;
-    const totalPerWindow = Math.round(reqPerMin * 15);
-    return ok(await simulateRecommendation(recommendationId, totalPerWindow));
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export async function applyRuleAction(params: {
-  recommendationId: string;
-  mode: "COUNT" | "BLOCK";
-}): Promise<ActionResult<{ historyId: number; ruleName: string; priority: number }>> {
-  try {
-    const res = await applyRecommendation(params.recommendationId, params.mode);
-    putCached("panel:waf", 0, null);
-    return ok({ historyId: res.historyId, ruleName: res.ruleName, priority: res.priority });
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export async function rollbackWafAction(historyId: number): Promise<ActionResult<boolean>> {
-  try {
-    await rollbackWaf(historyId);
-    putCached("panel:waf", 0, null);
-    return ok(true);
   } catch (e) {
     return fail(e);
   }
@@ -388,16 +335,6 @@ export async function getWafHistoryAction(): Promise<ActionResult<ApplyHistoryEn
 export async function getWafSamplesAction(): Promise<ActionResult<WafSampleRow[]>> {
   try {
     return ok(await listSampleRows());
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export async function generateQHandoffAction(
-  recommendationId: string,
-): Promise<ActionResult<{ text: string }>> {
-  try {
-    return ok({ text: await buildQHandoff(recommendationId) });
   } catch (e) {
     return fail(e);
   }
@@ -654,7 +591,6 @@ export async function generateIncidentContextAction(): Promise<
         ? { pod: prevLogs.pod, container: prevLogs.container, lines: prevLogs.lines }
         : null,
       verifications,
-      wafRecommendations: wafPanel?.recommendations ?? [],
     });
     return ok({
       markdown: toMarkdown(snapshot),

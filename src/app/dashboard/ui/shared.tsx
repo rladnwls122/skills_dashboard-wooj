@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ActionResult, MetricPoint, Status, WarningEvent } from "@/lib/types";
+import { TimeChart } from "./TimeChart";
 
 export interface PollState<T> {
   data: T | null;
@@ -112,6 +113,54 @@ export function StatusBadge({ status }: { status: Status }) {
   );
 }
 
+// The zoom container both Card and Stat open.
+//
+// Native <dialog> gives ESC, focus containment and an inert background for
+// free, and showModal() is the only way to get them — so the open state is
+// pushed into the element rather than rendered as an attribute. Extracted
+// because a metric tile needs exactly the same behaviour as a panel, and two
+// copies would be two chances for one of them to lose ESC.
+export function ZoomDialog({
+  open,
+  onClose,
+  label,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  label: string;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDialogElement | null>(null);
+
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    if (!open && d.open) d.close();
+  }, [open]);
+
+  return (
+    <dialog
+      ref={ref}
+      aria-label={label}
+      onClose={onClose}
+      // A click that lands on the dialog element itself is a backdrop click;
+      // anything inside the panel stops at the panel.
+      onClick={(e) => {
+        if (e.target === ref.current) onClose();
+      }}
+      // m-auto restores the centering a modal <dialog> gets by default — the
+      // CSS reset zeroes every margin, which pins it to the top left.
+      className="m-auto w-[92vw] max-w-6xl rounded-[4px] border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 backdrop:bg-black/70"
+    >
+      {/* A closed <dialog> still renders its children. Left unguarded, every
+          panel and every tile would build its expanded body on each refresh. */}
+      {open && <div className="max-h-[85vh] overflow-y-auto">{children}</div>}
+    </dialog>
+  );
+}
+
 export function Card({
   title,
   right,
@@ -131,17 +180,6 @@ export function Card({
   zoomable?: boolean;
 }) {
   const [zoomed, setZoomed] = useState(false);
-  const dialogRef = useRef<HTMLDialogElement | null>(null);
-
-  // Native <dialog> gives ESC, focus containment and an inert background for
-  // free; showModal() is the only way to get them, so the open state is pushed
-  // into the element rather than rendered as an attribute.
-  useEffect(() => {
-    const d = dialogRef.current;
-    if (!d) return;
-    if (zoomed && !d.open) d.showModal();
-    if (!zoomed && d.open) d.close();
-  }, [zoomed]);
 
   const header = (inDialog: boolean): React.ReactNode => (
     <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-neutral-800 px-3 py-2">
@@ -185,25 +223,10 @@ export function Card({
         body
       )}
       {zoomable && (
-        <dialog
-          ref={dialogRef}
-          onClose={() => setZoomed(false)}
-          // A click that lands on the dialog element itself is a backdrop
-          // click; anything inside the panel stops at the panel.
-          onClick={(e) => {
-            if (e.target === dialogRef.current) setZoomed(false);
-          }}
-          // m-auto restores the centering a modal <dialog> gets by default —
-          // the CSS reset zeroes every margin, which pins it to the top left.
-          className="m-auto w-[92vw] max-w-6xl rounded-[4px] border border-neutral-700 bg-neutral-900 p-0 text-neutral-200 backdrop:bg-black/70"
-        >
-          {zoomed && (
-            <div className="max-h-[85vh] overflow-y-auto">
-              {header(true)}
-              {body}
-            </div>
-          )}
-        </dialog>
+        <ZoomDialog open={zoomed} onClose={() => setZoomed(false)} label={title}>
+          {header(true)}
+          {body}
+        </ZoomDialog>
       )}
     </div>
   );
@@ -389,6 +412,12 @@ const INTENT_TEXT: Record<Status, string> = {
 // populations of the same-sounding thing — "요청 수" over lines carrying a
 // status versus over lines carrying a latency — and with one shared card-level
 // caption there is no way to tell them apart.
+//
+// A tile with `points` also expands on its own. The card-level ⤢ enlarges six
+// metrics at once, which is the wrong move when the question is about one of
+// them: the tile carries a sparkline three characters tall, and reading a
+// spike off it is guesswork. Expanding the tile gives that one series a real
+// axis without hiding the other five behind a tab.
 export function Stat({
   label,
   value,
@@ -397,6 +426,8 @@ export function Stat({
   status = "NORMAL",
   sub,
   copy,
+  points,
+  detail,
 }: {
   label: string;
   value: string;
@@ -408,17 +439,38 @@ export function Stat({
   // A second line the caller owns — a delta, a share, a note.
   sub?: React.ReactNode;
   copy?: string;
+  // This metric's own series. Its presence is what makes the tile expandable —
+  // a tile with no history has nothing to enlarge.
+  points?: MetricPoint[];
+  // Extra rows for the expanded view only (previous value, delta, thresholds).
+  detail?: React.ReactNode;
 }) {
+  const [zoomed, setZoomed] = useState(false);
   const loud = status !== "NORMAL";
+  const expandable = (points?.length ?? 0) > 0;
+
   return (
     <div
-      className={`rounded border p-2 ${
+      className={`relative rounded border p-2 ${
         loud ? "border-neutral-700 bg-neutral-900" : "border-neutral-800 bg-neutral-950"
       }`}
     >
       <div className="flex items-start justify-between gap-1">
         <span className="text-[10px] leading-4 text-neutral-500">{label}</span>
-        {loud && <StatusBadge status={status} />}
+        <div className="flex shrink-0 items-center gap-1">
+          {loud && <StatusBadge status={status} />}
+          {expandable && (
+            <button
+              type="button"
+              onClick={() => setZoomed(true)}
+              aria-label={`${label} 크게 보기`}
+              title="이 지표만 크게 보기"
+              className="rounded px-1 font-mono text-[10px] text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200"
+            >
+              ⤢
+            </button>
+          )}
+        </div>
       </div>
       <div
         className={`font-mono font-bold tabular-nums ${loud ? "text-2xl" : "text-xl"} ${INTENT_TEXT[status]}`}
@@ -433,6 +485,46 @@ export function Stat({
         <div className="mt-0.5 text-[9.5px] leading-[1.35] break-keep text-neutral-600" title={basis}>
           {basis}
         </div>
+      )}
+
+      {expandable && (
+        <ZoomDialog open={zoomed} onClose={() => setZoomed(false)} label={label}>
+          <div className="flex items-center justify-between gap-3 border-b border-neutral-800 px-3 py-2">
+            <h3 className="flex items-center gap-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
+              <span aria-hidden className="h-3 w-0.5 shrink-0 bg-sky-500/70" />
+              {label}
+            </h3>
+            <div className="flex items-center gap-2">
+              {loud && <StatusBadge status={status} />}
+              <button
+                type="button"
+                onClick={() => setZoomed(false)}
+                title="닫기 (ESC)"
+                className="rounded px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+          <div className="space-y-2 p-3">
+            <div className={`font-mono text-3xl font-bold tabular-nums ${INTENT_TEXT[status]}`}>
+              {value}
+              {unit && (
+                <span className="ml-1 font-sans text-xs font-normal text-neutral-500">{unit}</span>
+              )}
+            </div>
+            {detail}
+            {basis && <div className="text-[10px] text-neutral-500">기준: {basis}</div>}
+            {/* Its own sync key: the crosshair on the page behind belongs to the
+                other charts, and tying this one to them would move a chart the
+                reader cannot see. */}
+            <TimeChart
+              height={320}
+              syncKey={`stat-${label}`}
+              series={[{ label: `${label}${unit ? ` (${unit})` : ""}`, points: points ?? [] }]}
+            />
+          </div>
+        </ZoomDialog>
       )}
     </div>
   );

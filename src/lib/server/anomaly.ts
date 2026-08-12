@@ -1,5 +1,5 @@
 import "server-only";
-import { isAppTrafficPath, isPathSuspicious } from "./config";
+import { isBenignPath, isPathSuspicious } from "./config";
 import { classifyUa, queryHasBase64Blob } from "./threatsig";
 import type {
   Anomaly,
@@ -129,9 +129,7 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
     // own load generator hammers the served API surface from a single IP.
     // Only traffic aimed outside that surface (probing, scanning) counts, so
     // the source-IP signal is gone and the path signal skips APP_TRAFFIC_PATHS.
-    const offSurface = input.httpSummary.byPath.filter(
-      (p) => !p.lowPriority && !isAppTrafficPath(p.path),
-    );
+    const offSurface = input.httpSummary.byPath.filter((p) => !p.lowPriority && !isBenignPath(p.path));
     const offSurfaceCount = offSurface.reduce((a, p) => a + p.count, 0);
     const concentrated: string[] = [];
     const topOff = offSurface[0];

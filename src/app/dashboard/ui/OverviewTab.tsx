@@ -15,7 +15,6 @@ import {
   fmtTs,
   type PollState,
 } from "./shared";
-import { TimeChart } from "./TimeChart";
 
 export function OverviewTab({
   kube,
@@ -66,6 +65,25 @@ export function OverviewTab({
                 unit={m.unit}
                 status={m.status}
                 basis={m.basis}
+                // Each tile carries its own series, so ⤢ on the tile opens that
+                // one metric on a real axis instead of enlarging all six.
+                points={m.points}
+                detail={
+                  <div className="grid grid-cols-3 gap-2 text-[11px]">
+                    {(
+                      [
+                        ["직전 값", String(m.previous)],
+                        ["변화", fmtDelta(m.delta, m.percentChange)],
+                        ["버킷 수", `${m.points.length}개`],
+                      ] as const
+                    ).map(([k, v]) => (
+                      <div key={k} className="rounded border border-neutral-800 bg-neutral-950 p-2">
+                        <div className="text-[10px] text-neutral-500">{k}</div>
+                        <div className="font-mono tabular-nums text-neutral-200">{v}</div>
+                      </div>
+                    ))}
+                  </div>
+                }
                 sub={
                   <div className="flex items-center justify-between gap-1">
                     <span
@@ -86,25 +104,6 @@ export function OverviewTab({
             ))}
           </div>
         )}
-      </Card>
-
-      {/* The same numbers over time. The tiles say what is true now; this says
-          when it changed, which is the question a tile cannot answer. Every
-          chart on the page shares one crosshair. */}
-      <Card
-        title="지표 추이"
-        basis={
-          metrics.data
-            ? `조회 구간 ${metrics.data.window.label} · ${metrics.data.window.buckets}개 버킷 · CloudWatch 원본 버킷값(헤드라인 타일의 3버킷 집계와 다름)`
-            : undefined
-        }
-      >
-        <TimeChart
-          height={200}
-          series={(metrics.data?.metrics ?? [])
-            .filter((m) => m.points.length > 0)
-            .map((m) => ({ label: `${m.label} (${m.unit})`, points: m.points, unit: "" }))}
-        />
       </Card>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
@@ -188,11 +187,6 @@ export function OverviewTab({
               ))}
               {(metrics.data?.anomalies.length ?? 0) === 0 && (
                 <div className="text-emerald-500">감지된 이상 없음</div>
-              )}
-              {waf.data && waf.data.recommendations.length > 0 && (
-                <div className="rounded bg-sky-950/40 px-2 py-1 text-sky-300">
-                  WAF 규칙 추천 {waf.data.recommendations.length}건 — 방화벽 탭 확인
-                </div>
               )}
             </div>
           )}

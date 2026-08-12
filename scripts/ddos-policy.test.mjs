@@ -131,13 +131,14 @@ const mixed = detectAnomalies(
 );
 check("small probe under threshold stays quiet", traffic(mixed).length, 0);
 
-const wafSrc = await readFile(new URL(`${SRC}waf.ts`), "utf8");
-const genBody = wafSrc.slice(
-  wafSrc.indexOf("export async function generateRecommendations"),
-  wafSrc.indexOf("function hash(s: string)"),
-);
-check("generateRecommendations builds no RateBasedStatement", genBody.includes("RateBasedStatement:"), false);
-check("generateRecommendations emits no RATE_BASED kind", genBody.includes('kind: "RATE_BASED"'), false);
+// The volumetric policy now lives entirely in the rule assembler — the old
+// recommendation engine that these two checks pointed at is gone. Asserting on
+// the deleted function would have passed vacuously (indexOf returns -1 and the
+// slice comes back empty), so the assertion moves to the code that still emits
+// rules.
+const asmSrc = await readFile(new URL(`${SRC}ruleassemble.ts`), "utf8");
+check("규칙 조립기는 RateBasedStatement 를 만들지 않음", asmSrc.includes("RateBasedStatement"), false);
+check("규칙 조립기는 요청량 임계치를 쓰지 않음", asmSrc.includes("AggregateKeyType"), false);
 
 const incSrc = await readFile(new URL(`${SRC}incident.ts`), "utf8");
 check("buildSnapshot blanks byIp", incSrc.includes("byIp: []"), true);

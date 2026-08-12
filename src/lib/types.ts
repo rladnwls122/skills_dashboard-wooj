@@ -266,27 +266,6 @@ export interface WafCriteria {
   header?: { name: string; value: string };
 }
 
-export interface WafRecommendation {
-  id: string;
-  kind: WafRuleKind;
-  name: string;
-  targetPattern: string;
-  criteria: WafCriteria;
-  threshold: number | null;
-  evaluationWindowSec: number | null;
-  action: "COUNT" | "BLOCK";
-  confidence: Confidence;
-  reason: string;
-  evidence: string[];
-  expectedImpact: string;
-  falsePositiveRisk: RiskLevel;
-  hasScopeDown: boolean;
-  // The actual WAFv2 Rule object this recommendation would apply, pretty-printed
-  // (SearchString decoded to plain text — same format the WAF console JSON
-  // editor accepts). Shown/copied in the UI and handed to Amazon Q.
-  ruleJson: string;
-}
-
 export interface WafSampleRow {
   ts: string;
   ip: string;
@@ -300,19 +279,6 @@ export interface WafSampleRow {
   // Only populated when WAF itself generated the response (Block with a custom
   // response, CAPTCHA, Challenge). null for ordinary ALLOW traffic.
   responseCode: number | null;
-}
-
-export interface SimulationResult {
-  recommendationId: string;
-  totalSampled: number;
-  matchedSampled: number;
-  matchRatePct: number;
-  estimatedTotalRequests: number;
-  estimatedMatched: number;
-  estimatedFalsePositives: number;
-  estimatedLegitBlocked: number;
-  riskLevel: RiskLevel;
-  notes: string[];
 }
 
 export interface ApplyHistoryEntry {
@@ -493,8 +459,6 @@ export interface MetricsPanel {
 export interface WafPanel {
   acl: WafAclInfo | null;
   aclError: string | null;
-  recommendations: WafRecommendation[];
-  recommendationError: string | null;
   history: ApplyHistoryEntry[];
 }
 

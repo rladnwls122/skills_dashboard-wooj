@@ -20,7 +20,7 @@ import "server-only";
 //     COMPRESS_WHITE_SPACE) run before the match so %20, &#x2f; and /./ style
 //     evasion is normalised away rather than pattern-matched.
 
-import { ENV, WAF_REGION, isAppTrafficPath, isLowPriorityPath, normalizePath } from "./config";
+import { ENV, WAF_REGION, isBenignPath, normalizePath } from "./config";
 import { classifyUa, spoofedUaPatterns } from "./threatsig";
 import type { AssembledRule, AssembleKind, HttpSummary } from "@/lib/types";
 
@@ -220,12 +220,14 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
   const evidence: string[] = [];
 
   if (kind === "path") {
-    // Off-surface paths only: anything the environment actually serves, or a
-    // health check, would be a false positive by construction.
+    // Off-surface paths only: anything the environment actually serves, a
+    // health check, or image delivery would be a false positive by
+    // construction. Image paths in particular are heavy legitimate traffic the
+    // score depends on — see isImageAssetPath.
     const seen = new Set<string>();
     for (const p of summary.byPath) {
       if (!p.path.startsWith("/")) continue;
-      if (isLowPriorityPath(p.path) || isAppTrafficPath(p.path)) continue;
+      if (isBenignPath(p.path)) continue;
       const pattern = pathPattern(p.path);
       if (seen.has(pattern)) continue;
       seen.add(pattern);

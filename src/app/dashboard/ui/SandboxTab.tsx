@@ -183,7 +183,6 @@ export function SandboxTab({
     setRequests((prev) => (prev ?? []).filter((r) => r.id !== id));
   };
 
-  const recs = waf.data?.recommendations ?? [];
   const rowById = new Map((requests ?? []).map((r) => [r.id, r]));
 
   return (
@@ -201,28 +200,7 @@ export function SandboxTab({
       </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-        <Card
-          title="규칙 JSON"
-          right={
-            recs.length > 0 ? (
-              <select
-                defaultValue=""
-                onChange={(e) => {
-                  const rec = recs.find((r) => r.id === e.target.value);
-                  if (rec) setRuleJson(rec.ruleJson);
-                }}
-                className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-[11px] text-neutral-300"
-              >
-                <option value="">추천 규칙 불러오기…</option>
-                {recs.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.name} — {r.targetPattern.slice(0, 40)}
-                  </option>
-                ))}
-              </select>
-            ) : null
-          }
-        >
+        <Card title="규칙 JSON">
           <textarea
             value={ruleJson}
             onChange={(e) => setRuleJson(e.target.value)}

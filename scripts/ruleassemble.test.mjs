@@ -163,6 +163,34 @@ check(
   true,
 );
 
+// Image delivery is normal traffic here, and it arrives under more than one
+// shape — through the API and as static assets. A rule built against either
+// blocks the traffic the score depends on, so neither may become a pattern.
+const withImages = assembleRule(
+  "path",
+  summary([p("/images/product-1.png"), p("/v1/image/42"), p("/IMAGES/x.PNG"), p("/wp-login.php")]),
+);
+check("image 경로는 패턴이 되지 않음", withImages.patterns, ["^\\/wp-login\\.php(/|$)"]);
+check(
+  "근거에도 image 경로가 남지 않음",
+  withImages.evidence.some((e) => e.toLowerCase().includes("image")),
+  false,
+);
+// The traversal case must still win: the resolved target is what decides, so a
+// served image prefix cannot smuggle one through.
+check(
+  "image 접두어를 단 traversal 은 그대로 걸린다",
+  assembleRule("path", summary([p("/v1/image/../../etc/passwd")])).patterns,
+  ["^\\/etc\\/passwd(/|$)"],
+);
+let noneLeft = null;
+try {
+  assembleRule("path", summary([p("/images/a.png")]));
+} catch (e) {
+  noneLeft = e.message;
+}
+check("image 경로만 있으면 만들 대상이 없다고 알린다", noneLeft !== null, true);
+
 // Query-string-only SQLi misses the POST body, which is where an injection
 // usually sits once a form is involved.
 const sqliStmt = JSON.parse(sqli.ruleJson).Statement;
