@@ -162,6 +162,27 @@ export interface HttpSummary {
   notes: string[];
 }
 
+// The grader's scoring surface (see server/grading.ts). Mirrors the load
+// generator's rubric so a number here means what the scorer means.
+export type GradingApi = "user" | "product" | "stress";
+
+// One grading key with the value observed for it. No points: scoring belongs to
+// the grader's own run, and a second score computed here would compete with it.
+export interface GradingScore {
+  label: string;
+  pct: number;
+  okCount: number;
+  total: number;
+}
+
+export interface GradingPanel {
+  lines: GradingScore[];
+  window: ResolvedWindow;
+  source: string;
+  scannedBytes: number;
+  notes: string[];
+}
+
 // What the client asks for; the server validates and resolves it.
 export interface WindowSelection {
   windowMin: number;

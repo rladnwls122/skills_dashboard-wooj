@@ -378,7 +378,12 @@ export function DashboardClient() {
             <OverviewTab kube={kube} metrics={metrics} waf={waf} onJumpToLogs={jumpToLogs} />
           )}
           {tab === "Performance" && (
-            <PerformanceTab kube={kube} metrics={metrics} onJumpToLogs={jumpToLogs} />
+            <PerformanceTab
+              kube={kube}
+              metrics={metrics}
+              onJumpToLogs={jumpToLogs}
+              window={win}
+            />
           )}
           {tab === "WAF" && <WafTab waf={waf} metrics={metrics} />}
           {tab === "Logs" && (

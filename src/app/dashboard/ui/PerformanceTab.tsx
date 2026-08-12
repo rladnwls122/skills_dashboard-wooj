@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import type { KubePanel, MetricsPanel, WarningEvent } from "@/lib/types";
+import type { KubePanel, MetricsPanel, WarningEvent, WindowSelection } from "@/lib/types";
 import { ActionTab } from "./ActionTab";
+import { GradingCard } from "./GradingCard";
 import {
   Card,
   ErrorNote,
@@ -37,9 +38,11 @@ export function PerformanceTab({
   kube,
   metrics,
   onJumpToLogs,
+  window: win,
 }: {
   kube: PollState<KubePanel>;
   metrics: PollState<MetricsPanel>;
+  window: WindowSelection;
   // The log terminal lives on its own tab now, so every "로그" affordance has
   // to move the user there as well as select the pod.
   onJumpToLogs: (pod: string, container: string) => void;
@@ -50,6 +53,8 @@ export function PerformanceTab({
 
   return (
     <div className="space-y-3">
+      <GradingCard window={win} />
+
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
         <Card title="Pod 상태 분포">
           {kube.data ? (

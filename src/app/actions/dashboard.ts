@@ -19,6 +19,7 @@ import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
 import { defaultTestRequests, maliciousExampleRequests, testRule } from "@/lib/server/rulesim";
 import { assembleRule } from "@/lib/server/ruleassemble";
 import { resolveWindow, windowKey } from "@/lib/server/window";
+import { fetchGradingPanel } from "@/lib/server/grading";
 import {
   getNodeResourceUsage,
   getNodeScaling,
@@ -63,6 +64,7 @@ import type {
   DeployChangeEntry,
   DeploymentInfo,
   FingerprintEntry,
+  GradingPanel,
   IncidentContextResult,
   KubePanel,
   MetricsPanel,
@@ -394,6 +396,31 @@ export async function generateQHandoffAction(
 ): Promise<ActionResult<{ text: string }>> {
   try {
     return ok({ text: await buildQHandoff(recommendationId) });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Grading scorecard — what the load generator would score this environment at.
+// One Insights pass over the app log; on-demand and cached like the rest.
+// ---------------------------------------------------------------------------
+
+export async function getGradingPanelAction(
+  sel?: WindowSelection,
+): Promise<ActionResult<GradingPanel>> {
+  try {
+    const win = resolveWindow(sel, Date.now());
+    const metrics = peekCached<MetricsPanel>("panel:metrics");
+    const wafBlocked = metrics?.httpSummary?.blockedTotal ?? 0;
+    return ok(
+      await cached(
+        `panel:grading:${windowKey(win)}`,
+        POLLING.logCacheTtlMs,
+        () => fetchGradingPanel(win, wafBlocked),
+        POLLING.logFailTtlMs,
+      ),
+    );
   } catch (e) {
     return fail(e);
   }

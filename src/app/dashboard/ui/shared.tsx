@@ -70,7 +70,13 @@ export function usePoll<T>(
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // Nothing will run, so nothing will clear the initial loading flag. A
+      // disabled poll that reports "loading" forever locks every control bound
+      // to it — an on-demand panel would never become clickable.
+      setLoading(false);
+      return;
+    }
     // Inputs changed: what is on screen answers a different question, so drop
     // it rather than label another pod's logs with the newly selected name.
     if (lastInputKey.current !== inputKey) {

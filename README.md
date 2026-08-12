@@ -69,7 +69,13 @@ mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드�
 
 1. **요약 (Overview)** — 핵심 메트릭 카드, Pod 상태, Warning 이벤트, 감지된
    이상 목록을 한 화면에 모아 보여줌. 장애 발생 시 가장 먼저 보는 탭.
-2. **성능 (Performance)** — Pod 상태 분포와 개수(min/current/max), Node 개수와
+2. **성능 (Performance)** — 맨 위 **채점 지표 정렬**은 채점기(skills-grader)가 쓰는
+   지표 키에 관측 트래픽을 맞춰 세워 둔 표다. `(user|product|stress) availability` /
+   `performance`, `image download`, `Exception Handling` 순으로, 각 키의 비율과
+   충족/전체 건수를 보여준다. **점수는 매기지 않는다** — 점수는 채점기 실행 결과
+   (`results_<비번호>.log`)가 정하고, 이 표는 그 값이 왜 그렇게 나오는지 보라고
+   있는 것이다. 앱 로그 Logs Insights 한 번으로 집계하며 **조회를 눌러야** 실행된다.
+   그 아래로 Pod 상태 분포와 개수(min/current/max), Node 개수와
    리소스 사용률, Pod Health 표, Target Group별 지표, 상태코드 분포, Warning
    Event Board, 그리고 **Deployment 조정**(Replicas/CPU/Memory Limit 변경 →
    승인 → 약 2분 뒤 사후 검증으로 IMPROVED/NO_CHANGE/DEGRADED/INCONCLUSIVE).
@@ -217,6 +223,20 @@ WAF 통계, Pod 로그, 앱 요청 로그가 **모두 같은 창**을 읽는다.
 "최근 3버킷 합계/평균"이며 3버킷이 몇 분인지는 선택한 간격에 따라 달라지므로
 그 값도 함께 적힌다 — `req/min` 같은 단위만으로는 3버킷 합계를 분당 값으로
 잘못 읽게 된다.
+
+### 채점 지표는 어디까지 맞고 어디부터 다른가
+
+가용성은 `2xx && 5초 이내`, 성능은 그중 `SLO 이내`(user·product 200ms, stress 1s)로
+센다. 채점기는 요청마다 **자기가 기대한 코드**(생성 201, 조회 200)를 알고 비교하지만
+로그 한 줄에는 그 의도가 없어 2xx로 근사한다 — 그래서 채점기 값과 다를 수 있고,
+화면이 그 사실을 함께 띄운다.
+
+`Exception Handling`은 앱 로그에 남은 **미지정 경로** 요청 중 404/403으로 끝난 비율이다.
+WAF가 차단한 요청은 앱에 도달하지 않아 이 분모에 없으므로, 같은 구간의 WAF 차단
+건수를 옆에 따로 적는다. 두 수는 출처가 다르니 더하지 않는다.
+
+`cost ratio`는 이 도구가 관측할 수 없어 표에 없다. 0점으로 적으면 점수처럼 읽히기
+때문에 아예 빼고, 왜 뺐는지 적는다.
 
 ### WAF 통계는 로그가 있으면 전수 집계
 
