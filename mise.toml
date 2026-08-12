@@ -15,7 +15,7 @@ description = "Rehearsal traffic generator (--target <url> required, --dry to pr
 
 [tasks.dev]
 run = "pnpm dev"
-description = "Run dev server on :3100"
+description = "Run dev server on 127.0.0.1:3100 (loopback only, no auth)"
 
 [tasks.clean]
 run = "pnpm clean"
@@ -31,7 +31,7 @@ description = "Production build after clearing the .next cache"
 
 [tasks.start]
 run = "pnpm start"
-description = "Run production server on :3100"
+description = "Run production server on 127.0.0.1:3100 (loopback only, no auth)"
 
 [tasks.typecheck]
 run = "pnpm typecheck"

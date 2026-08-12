@@ -4,10 +4,10 @@
   "private": true,
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
-    "dev": "next dev -p 3100",
+    "dev": "next dev -p 3100 -H 127.0.0.1",
     "build": "next build",
     "build:clean": "pnpm clean && pnpm build",
-    "start": "next start -p 3100",
+    "start": "next start -p 3100 -H 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test": "pnpm test:ddos && pnpm test:applog && pnpm test:rulestatement && pnpm test:rulesim && pnpm test:threatsig && pnpm test:gateway && pnpm test:ruleassemble && pnpm test:window && pnpm test:waflogagg && pnpm test:metricsummary && pnpm test:grading && pnpm test:probe",
     "test:probe": "node --import ./scripts/testing/register.mjs scripts/probe.test.mjs",

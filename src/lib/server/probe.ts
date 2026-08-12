@@ -10,6 +10,26 @@ import "server-only";
 // Deliberately small: one GET, one status code, one elapsed time, run only
 // when someone presses the button. Nothing is stored — a probe that kept
 // history would be a monitoring system, and this is a button.
+//
+// On SSRF. This fetches an address the operator typed, which is the shape of a
+// server-side request forgery, and it is left that way on purpose:
+//
+//   - The address has exactly one source: the 점검 tab's input field. No
+//     observed data — log lines, WAF samples, AWS responses — reaches here, so
+//     there is no path by which a crafted document could choose the target.
+//   - The dashboard binds 127.0.0.1 and runs on the operator's own machine
+//     with their own credentials. `curl` on that machine already reaches
+//     everything this can; the button widens nothing.
+//   - The response body is discarded (see below), so a probe of a metadata
+//     endpoint yields a status code and a duration, not a credential.
+//
+// The usual mitigation — refuse loopback, RFC1918 and link-local — would
+// delete the feature rather than harden it: the addresses being checked are an
+// internal ALB, a service on the cluster, a port on this machine. If this ever
+// stops being a single-operator local tool (a shared host, an exposed port,
+// any authentication at all), that mitigation and a target allowlist become
+// required, because then the caller is no longer the person who owns the
+// network the probe runs on.
 
 import type { ProbeResult } from "@/lib/types";
 
