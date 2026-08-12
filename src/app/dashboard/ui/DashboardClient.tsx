@@ -13,22 +13,26 @@ import type {
   WafPanel,
   WindowSelection,
 } from "@/lib/types";
-import { usePoll, type PollState } from "./shared";
+import { fmtClock, usePoll, type PollState } from "./shared";
+import { WindowBar } from "./WindowBar";
 import { OverviewTab } from "./OverviewTab";
 import { PerformanceTab } from "./PerformanceTab";
 import { WafTab } from "./WafTab";
 import { LogTab } from "./LogTab";
 import { SandboxTab } from "./SandboxTab";
 import { AiTab } from "./AiTab";
+import { CheckTab } from "./CheckTab";
 
 // One tab per job: what is happening (요약), how the workload performs and how
 // to change it (성능), what the firewall sees and does (방화벽), what the logs
-// say (로그), whether a rule is safe (시험), and what to hand to Amazon Q (AI).
+// say (로그), whether the service answers right now (점검), whether a rule is
+// safe (시험), and what to hand to Amazon Q (AI).
 const TABS = [
   { id: "Overview", ko: "요약" },
   { id: "Performance", ko: "성능" },
   { id: "WAF", ko: "방화벽" },
   { id: "Logs", ko: "로그" },
+  { id: "Check", ko: "점검" },
   { id: "Sandbox", ko: "시험" },
   { id: "AI", ko: "규칙생성" },
 ] as const;
@@ -156,26 +160,6 @@ function Clock() {
   );
 }
 
-const REFRESH_CHOICES = [5, 10, 15, 20, 25, 30] as const;
-
-// Mirrors server/window.ts. The server validates and corrects whatever arrives,
-// so a mismatch here degrades to a corrected window rather than an error — but
-// offering an invalid pair would still be a lie about what the page can show.
-const WINDOW_CHOICES = [15, 30, 60, 120, 240] as const;
-const INTERVAL_CHOICES = [1, 5, 10, 60] as const;
-
-function intervalsFor(windowMin: number): number[] {
-  return INTERVAL_CHOICES.filter((i) => {
-    if (windowMin % i !== 0) return false;
-    const buckets = windowMin / i;
-    return buckets >= 4 && buckets <= 250;
-  });
-}
-
-function windowLabel(min: number): string {
-  return min % 60 === 0 ? `${min / 60}시간` : `${min}분`;
-}
-
 export function DashboardClient() {
   const [tab, setTab] = useState<Tab>("Overview");
   const [podSelection, setPodSelection] = useState<PodSelection | null>(null);
@@ -282,9 +266,9 @@ export function DashboardClient() {
           {TABS.map((t) => navButton(t, false))}
         </nav>
         <div className="border-t border-neutral-800 px-4 py-3 font-mono text-[9px] leading-4 text-neutral-600">
-          <div>K8S {kube.lastUpdated ?? "--"}</div>
-          <div>CW&nbsp; {metrics.lastUpdated ?? "--"}</div>
-          <div>WAF {waf.lastUpdated ?? "--"}</div>
+          <div>K8S {kube.lastUpdated === null ? "--" : fmtClock(kube.lastUpdated)}</div>
+          <div>CW&nbsp; {metrics.lastUpdated === null ? "--" : fmtClock(metrics.lastUpdated)}</div>
+          <div>WAF {waf.lastUpdated === null ? "--" : fmtClock(waf.lastUpdated)}</div>
           <div className="mt-1 text-neutral-500">구간 {metrics.data?.window.label ?? "--"}</div>
         </div>
       </aside>
@@ -301,67 +285,23 @@ export function DashboardClient() {
               <Annunciator segments={segments} />
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              <label className="flex items-center gap-1 font-mono text-[10px] text-neutral-500">
-                구간
-                <select
-                  value={win.windowMin}
-                  onChange={(e) => {
-                    const windowMin = Number(e.target.value);
-                    const allowed = intervalsFor(windowMin);
-                    // Keep the interval when it is still offered; otherwise take
-                    // the finest one the new span allows.
-                    const intervalMin = allowed.includes(win.intervalMin)
-                      ? win.intervalMin
-                      : (allowed[0] ?? 1);
-                    setWin({ windowMin, intervalMin });
-                  }}
-                  className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-1.5 py-1 font-mono text-[11px] text-neutral-300"
-                >
-                  {WINDOW_CHOICES.map((m) => (
-                    <option key={m} value={m}>
-                      {windowLabel(m)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-1 font-mono text-[10px] text-neutral-500">
-                간격
-                <select
-                  value={win.intervalMin}
-                  onChange={(e) => setWin({ ...win, intervalMin: Number(e.target.value) })}
-                  className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-1.5 py-1 font-mono text-[11px] text-neutral-300"
-                >
-                  {intervalsFor(win.windowMin).map((m) => (
-                    <option key={m} value={m}>
-                      {m}분
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-1 font-mono text-[10px] text-neutral-500">
-                갱신
-                <select
-                  value={refreshSec}
-                  onChange={(e) => setRefreshSec(Number(e.target.value))}
-                  className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-1.5 py-1 font-mono text-[11px] text-neutral-300"
-                >
-                  {REFRESH_CHOICES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}초
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={refreshAll}
-                title="지금 새로고침"
-                className="rounded-[4px] border border-neutral-800 bg-neutral-900 px-2 py-1 font-mono text-[11px] text-neutral-300 hover:bg-neutral-800 hover:text-neutral-100"
-              >
-                ⟳ 새로고침
-              </button>
               <Clock />
             </div>
+          </div>
+          {/* The window is a caption for every number below it, so it sits on
+              its own row at full width rather than being squeezed into the
+              status row and truncated. */}
+          <div className="border-t border-neutral-800/60 px-4 py-1.5">
+            <WindowBar
+              window={win}
+              onChange={setWin}
+              resolved={metrics.data?.window ?? null}
+              refreshSec={refreshSec}
+              onRefreshSec={setRefreshSec}
+              onRefresh={refreshAll}
+              lastUpdated={metrics.lastUpdated}
+              busy={metrics.loading}
+            />
           </div>
           <div className="px-4 pb-2 lg:hidden">
             <div className="mb-2 overflow-x-auto">
@@ -394,6 +334,7 @@ export function DashboardClient() {
               window={win}
             />
           )}
+          {tab === "Check" && <CheckTab />}
           {tab === "Sandbox" && <SandboxTab waf={waf} incomingRule={incomingRule} />}
           {tab === "AI" && <AiTab onSendToSandbox={sendToSandbox} window={win} />}
         </main>

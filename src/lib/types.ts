@@ -183,6 +183,22 @@ export interface GradingPanel {
   notes: string[];
 }
 
+// One traffic probe (see server/probe.ts). A failed probe is still a completed
+// probe, so a failure rides here with ok=false rather than as an error result.
+export interface ProbeResult {
+  url: string;
+  ok: boolean;
+  status: number | null;
+  elapsedMs: number;
+  at: string;
+  error: string | null;
+  // What counted as healthy. A red verdict cannot be read without also reading
+  // what it was compared against.
+  expect: string;
+  // Where a redirect chain ended, when it moved.
+  finalUrl: string | null;
+}
+
 // What the client asks for; the server validates and resolves it.
 export interface WindowSelection {
   windowMin: number;

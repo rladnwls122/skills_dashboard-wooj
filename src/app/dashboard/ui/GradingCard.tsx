@@ -2,14 +2,7 @@
 
 import { getGradingPanelAction } from "@/app/actions/dashboard";
 import type { GradingPanel, WindowSelection } from "@/lib/types";
-import { Card, ErrorNote, SectionLoading, usePoll, type PollState } from "./shared";
-
-function fmtBytes(n: number): string {
-  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(2)}GB`;
-  if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)}MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
-  return `${n}B`;
-}
+import { Card, ErrorNote, SectionLoading, Stat, fmtBytes, usePoll, type PollState } from "./shared";
 
 // Observed traffic lined up against the grader's metric keys. No score is
 // computed here — the grade comes from the grader's own run; this only shows
@@ -54,6 +47,35 @@ export function GradingCard({ window: win }: { window: WindowSelection }) {
         </div>
       ) : (
         <div className="space-y-2">
+          {/* What this panel cost, as a number rather than a footnote: Logs
+              Insights bills per byte scanned, so it is a first-class figure on
+              a screen whose refresh button spends money. */}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Stat
+              label="Insights 스캔량"
+              value={fmtBytes(data.scannedBytes)}
+              copy={String(data.scannedBytes)}
+              basis={`이 조회 1건 · ${data.source}`}
+            />
+            <Stat
+              label="집계 구간"
+              value={data.window.label}
+              basis={`${data.window.buckets}개 버킷 · ${data.window.intervalMin}분 간격`}
+            />
+            <Stat
+              label="관측 요청"
+              value={data.lines.reduce((a, l) => a + l.total, 0).toLocaleString("ko-KR")}
+              unit="건"
+              basis="아래 채점 키 분모의 합 · 같은 요청이 두 키에 들어가지는 않음"
+            />
+            <Stat
+              label="채점 키"
+              value={String(data.lines.length)}
+              unit="개"
+              basis="채점기 키 순서대로 정렬 · 점수는 매기지 않음"
+            />
+          </div>
+
           <table className="w-full text-left text-[11px]">
             <thead className="text-neutral-500">
               <tr>

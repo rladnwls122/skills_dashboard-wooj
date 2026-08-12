@@ -18,6 +18,7 @@ import {
 import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
 import { defaultTestRequests, maliciousExampleRequests, testRule } from "@/lib/server/rulesim";
 import { assembleRule } from "@/lib/server/ruleassemble";
+import { probe } from "@/lib/server/probe";
 import { resolveWindow, windowKey } from "@/lib/server/window";
 import { fetchGradingPanel } from "@/lib/server/grading";
 import {
@@ -70,6 +71,7 @@ import type {
   MetricsPanel,
   MetricSummary,
   PodLogsResult,
+  ProbeResult,
   RequestLogQueryResult,
   RuleTestResult,
   SimulationResult,
@@ -699,6 +701,22 @@ export async function assembleRuleAction(
     if (kind === "sqli") return ok(assembleRule("sqli", EMPTY_SUMMARY));
     return ok(assembleRule(kind, await buildHttpSummary(null, resolveWindow(sel, Date.now()))));
   } catch (e) {
+    return fail(e);
+  }
+}
+
+// One GET at the address the operator typed. Not cached, not scheduled, not
+// stored: the whole point is that it answers "right now", which a cached value
+// cannot. See server/probe.ts.
+export async function probeUrlAction(
+  url: string,
+  expectStatus: number | null,
+): Promise<ActionResult<ProbeResult>> {
+  try {
+    return ok(await probe(url, expectStatus));
+  } catch (e) {
+    // Only a malformed address lands here — a target that refused, timed out
+    // or answered 500 comes back as a result, not as a failure.
     return fail(e);
   }
 }

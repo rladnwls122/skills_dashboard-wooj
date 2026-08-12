@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getRequestLogRowsAction } from "@/app/actions/dashboard";
 import type { RequestLogQueryResult, WindowSelection } from "@/lib/types";
-import { Card, ErrorNote, SectionLoading, Truncate, fmtTs } from "./shared";
+import { Card, Counts, ErrorNote, SectionLoading, Truncate, fmtBytes, fmtTs } from "./shared";
 
 const CLASSES = ["ALL", "2xx", "3xx", "4xx", "5xx"] as const;
 type StatusClass = (typeof CLASSES)[number];
@@ -15,14 +15,6 @@ const LABEL: Record<StatusClass, string> = {
   "4xx": "4xx",
   "5xx": "5xx",
 };
-
-// Local copy — fmtBytes lives in a server-only module.
-function fmtBytes(n: number): string {
-  if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(2)}GB`;
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)}MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`;
-  return `${n}B`;
-}
 
 function statusColor(status: number): string {
   if (status >= 500) return "text-red-400";
@@ -102,11 +94,18 @@ export function RequestLogPanel({ window: win }: { window: WindowSelection }) {
       }
     >
       {data && (
-        <div className="mb-2 font-mono text-[10px] text-neutral-500">
-          창 {data.windowLabel} · 스캔 {fmtBytes(data.scannedBytes)} · 매칭 {data.totalMatched.toLocaleString()}건
-          {data.truncated && (
-            <span className="ml-1 text-amber-500">· 상위 {rows.length}건만 표시 (나머지 생략)</span>
-          )}
+        <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+          {/* Three numbers, stated separately: how many matched in the window,
+              how many came back under the row cap, how many are drawn. */}
+          <Counts
+            total={data.totalMatched}
+            fetched={rows.length}
+            shown={rows.length}
+            cap={data.truncated ? rows.length : undefined}
+          />
+          <span className="font-mono text-[10px] text-neutral-600">
+            창 {data.windowLabel} · Logs Insights 스캔 {fmtBytes(data.scannedBytes)}
+          </span>
         </div>
       )}
       {loading && rows.length === 0 ? (

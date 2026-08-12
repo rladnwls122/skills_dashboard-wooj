@@ -103,3 +103,32 @@ body {
     transition-duration: 0.001s !important;
   }
 }
+
+/* uPlot ships a light-theme stylesheet. Only the parts that would be unreadable
+   on this background are overridden; the layout is left alone. */
+.u-legend {
+  font-size: 11px;
+  color: #a3a3a3;
+}
+.u-legend .u-marker {
+  border-width: 2px;
+}
+.u-legend .u-inactive {
+  opacity: 0.4;
+}
+.u-legend th,
+.u-legend td {
+  font-weight: 400;
+}
+.u-legend .u-value {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  color: #e5e5e5;
+}
+.u-select {
+  background: rgba(56, 189, 248, 0.15);
+}
+.u-cursor-x,
+.u-cursor-y {
+  border-color: #525252;
+}

@@ -21,6 +21,12 @@ export interface RawSeries {
   stat: "Average" | "Sum";
   points: { t: number; v: number }[];
   thresholdKey?: string;
+  // The CloudWatch metric this came from — "AWS/WAFV2 BlockedRequests". A
+  // display label like "WAF BlockedRequests" is our wording; this is the
+  // metric's own name, which is what someone checking the number in the
+  // console has to search for. Passed in at the call that builds the query so
+  // the two cannot drift.
+  metric: string;
 }
 
 function toSeries(
@@ -28,6 +34,7 @@ function toSeries(
   label: string,
   unit: string,
   stat: "Average" | "Sum",
+  metric: string,
   r: MetricDataResult | undefined,
   thresholdKey?: string,
 ): RawSeries {
@@ -36,7 +43,7 @@ function toSeries(
   const points = ts
     .map((t, i) => ({ t: t.getTime(), v: vs[i] ?? 0 }))
     .sort((a, b) => a.t - b.t);
-  return { key, label, unit, stat, points, thresholdKey };
+  return { key, label, unit, stat, points, thresholdKey, metric };
 }
 
 // AGG_BUCKETS buckets are aggregated into the headline number to smooth a
@@ -78,9 +85,10 @@ export function summarize(s: RawSeries, win: ResolvedWindow): MetricSummary {
     status: statusFor(s.thresholdKey ?? s.key, current, percentChange),
     points,
     basis:
-      s.stat === "Sum"
+      `${s.metric} ${s.stat} · ` +
+      (s.stat === "Sum"
         ? `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 합계를 분당으로 환산 · 직전 동일 구간과 비교`
-        : `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 평균 · 직전 동일 구간과 비교`,
+        : `최근 ${AGG_BUCKETS}버킷(${AGG_BUCKETS * win.intervalMin}분) 평균 · 직전 동일 구간과 비교`),
   };
 }
 
@@ -120,14 +128,14 @@ export async function fetchCoreMetrics(win: ResolvedWindow): Promise<CoreMetrics
     );
     const byId = new Map((res.MetricDataResults ?? []).map((r) => [r.Id ?? "", r]));
     results.push(
-      toSeries("targetResponseTime", "TargetResponseTime", "s", "Average", byId.get("trt")),
-      toSeries("http4xx", "Target 4XX", "req/min", "Sum", byId.get("c4xx")),
-      toSeries("http5xx", "Target 5XX", "req/min", "Sum", byId.get("c5xx")),
-      toSeries("http2xx", "Target 2XX", "req/min", "Sum", byId.get("c2xx")),
-      toSeries("http3xx", "Target 3XX", "req/min", "Sum", byId.get("c3xx")),
-      toSeries("requestCount", "RequestCount", "req/min", "Sum", byId.get("reqs")),
-      toSeries("rdsClientConnections", "RDS Proxy Client Conn", "conn", "Average", byId.get("rdscc")),
-      toSeries("rdsDatabaseConnections", "RDS Proxy DB Conn", "conn", "Average", byId.get("rdsdc")),
+      toSeries("targetResponseTime", "TargetResponseTime", "s", "Average", "AWS/ApplicationELB TargetResponseTime", byId.get("trt")),
+      toSeries("http4xx", "Target 4XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_4XX_Count", byId.get("c4xx")),
+      toSeries("http5xx", "Target 5XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_5XX_Count", byId.get("c5xx")),
+      toSeries("http2xx", "Target 2XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_2XX_Count", byId.get("c2xx")),
+      toSeries("http3xx", "Target 3XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_3XX_Count", byId.get("c3xx")),
+      toSeries("requestCount", "RequestCount", "req/min", "Sum", "AWS/ApplicationELB RequestCount", byId.get("reqs")),
+      toSeries("rdsClientConnections", "RDS Proxy Client Conn", "conn", "Average", `AWS/RDS ClientConnections (ProxyName=${ENV.rdsProxyName})`, byId.get("rdscc")),
+      toSeries("rdsDatabaseConnections", "RDS Proxy DB Conn", "conn", "Average", `AWS/RDS DatabaseConnections (ProxyName=${ENV.rdsProxyName})`, byId.get("rdsdc")),
     );
   } catch (e) {
     errors.push(`ALB/RDS metrics: ${errMsg(e)}`);
@@ -158,8 +166,8 @@ export async function fetchCoreMetrics(win: ResolvedWindow): Promise<CoreMetrics
     );
     const byId = new Map((res.MetricDataResults ?? []).map((r) => [r.Id ?? "", r]));
     results.push(
-      toSeries("wafBlocked", "WAF BlockedRequests", "req/min", "Sum", byId.get("wafb")),
-      toSeries("wafAllowed", "WAF AllowedRequests", "req/min", "Sum", byId.get("wafa")),
+      toSeries("wafBlocked", "WAF BlockedRequests", "req/min", "Sum", `AWS/WAFV2 BlockedRequests (WebACL=${ENV.wafWebAclName}, Rule=ALL)`, byId.get("wafb")),
+      toSeries("wafAllowed", "WAF AllowedRequests", "req/min", "Sum", `AWS/WAFV2 AllowedRequests (WebACL=${ENV.wafWebAclName}, Rule=ALL)`, byId.get("wafa")),
     );
   } catch (e) {
     errors.push(`WAF metrics: ${errMsg(e)}`);
@@ -217,17 +225,34 @@ export async function fetchTargetGroupMetrics(
         "TargetResponseTime",
         "s",
         "Average",
+        `AWS/ApplicationELB TargetResponseTime (TargetGroup=${tg.name})`,
         byId.get(`tg${i}trt`),
         "targetResponseTime",
       ),
       win,
     );
     const c4 = summarize(
-      toSeries(`tg-${tg.name}-4xx`, "4XX", "req/min", "Sum", byId.get(`tg${i}c4`), "http4xx"),
+      toSeries(
+        `tg-${tg.name}-4xx`,
+        "4XX",
+        "req/min",
+        "Sum",
+        `AWS/ApplicationELB HTTPCode_Target_4XX_Count (TargetGroup=${tg.name})`,
+        byId.get(`tg${i}c4`),
+        "http4xx",
+      ),
       win,
     );
     const c5 = summarize(
-      toSeries(`tg-${tg.name}-5xx`, "5XX", "req/min", "Sum", byId.get(`tg${i}c5`), "http5xx"),
+      toSeries(
+        `tg-${tg.name}-5xx`,
+        "5XX",
+        "req/min",
+        "Sum",
+        `AWS/ApplicationELB HTTPCode_Target_5XX_Count (TargetGroup=${tg.name})`,
+        byId.get(`tg${i}c5`),
+        "http5xx",
+      ),
       win,
     );
     return { name: tg.name, pathPattern: tg.pathPattern, responseTime: trt, c4xx: c4, c5xx: c5 };

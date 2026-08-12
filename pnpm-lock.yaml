@@ -38,6 +38,9 @@ importers:
       react-dom:
         specifier: ^19.1.0
         version: 19.2.8(react@19.2.8)
+      uplot:
+        specifier: ^1.6.32
+        version: 1.6.32
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.1.11
@@ -1078,6 +1081,9 @@ packages:
 
   undici-types@7.18.2:
     resolution: {integrity: sha512-AsuCzffGHJybSaRrmr5eHr81mwJU3kjw6M+uprWvCXiNeN9SOGwQ3Jn8jb8m3Z6izVgknn1R0FTCEAP2QrLY/w==}
+
+  uplot@1.6.32:
+    resolution: {integrity: sha512-KIMVnG68zvu5XXUbC4LQEPnhwOxBuLyW1AHtpm6IKTXImkbLgkMy+jabjLgSLMasNuGGzQm/ep3tOkyTxpiQIw==}
 
   util-deprecate@1.0.2:
     resolution: {integrity: sha512-EPD5q1uXyFxJpCrLnCc1nHnq3gOa6DZBocAIiI2TaSCA7VCJ1UJDMagCzIkXNsUYfD1daK//LTEQ8xiIbrHtcw==}
@@ -2153,6 +2159,8 @@ snapshots:
   typescript@5.9.3: {}
 
   undici-types@7.18.2: {}
+
+  uplot@1.6.32: {}
 
   util-deprecate@1.0.2: {}
 

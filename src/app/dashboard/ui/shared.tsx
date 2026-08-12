@@ -7,7 +7,10 @@ export interface PollState<T> {
   data: T | null;
   error: string | null;
   loading: boolean;
-  lastUpdated: string | null;
+  // Epoch ms of the last SUCCESSFUL load, not a formatted string. "몇 초 전"
+  // has to be recomputed every second, and only a number can do that; the
+  // formatting belongs to <LastUpdated>.
+  lastUpdated: number | null;
   refresh: () => void;
 }
 
@@ -39,7 +42,7 @@ export function usePoll<T>(
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const inflight = useRef(false);
   const fnRef = useRef(fn);
   fnRef.current = fn;
@@ -57,7 +60,7 @@ export function usePoll<T>(
         setError(null);
         // Only a success advances the clock — otherwise the sidebar reads
         // "just updated" while the panel is still showing stale data.
-        setLastUpdated(new Date().toLocaleTimeString("ko-KR"));
+        setLastUpdated(Date.now());
       } else {
         setError(res.error);
       }
@@ -232,11 +235,215 @@ export function Sparkline({ points, status }: { points: MetricPoint[]; status: S
   );
 }
 
+// The failure, in full, inside the panel that failed.
+//
+// A shortened message is unactionable: the useful part of an Insights error is
+// the tail ("token recognition error at ':' at line 9"), which is precisely
+// what a one-line clamp cuts off. It wraps and scrolls instead.
 export function ErrorNote({ error }: { error: string | null }) {
   if (!error) return null;
   return (
-    <div className="rounded border border-red-900 bg-red-950/40 px-2 py-1 text-[11px] text-red-300">
+    <div
+      role="alert"
+      className="max-h-32 overflow-auto rounded border border-red-900 bg-red-950/40 px-2 py-1 font-mono text-[10px] leading-4 whitespace-pre-wrap break-all text-red-300"
+    >
       조회 실패: {error}
+    </div>
+  );
+}
+
+// A number the operator will want to paste somewhere — a pod name, a path, an
+// ARN, a count. Clicking it copies it; nothing else changes.
+export function CopyValue({
+  value,
+  copy,
+  className = "",
+  title,
+}: {
+  value: string;
+  // What lands on the clipboard, when that differs from what is shown (a
+  // formatted "1,284" is useless in a shell).
+  copy?: string;
+  className?: string;
+  title?: string;
+}) {
+  const [state, setState] = useState<"idle" | "ok" | "fail">("idle");
+
+  const run = async (): Promise<void> => {
+    const text = copy ?? value;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      // The async clipboard API needs a secure context, and this is served
+      // over plain http. Browsers usually treat localhost as secure — usually.
+      ok = false;
+    }
+    setState(ok ? "ok" : "fail");
+    setTimeout(() => setState("idle"), 1400);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void run()}
+      title={title ?? "클릭해서 복사"}
+      className={`group inline-flex max-w-full items-baseline gap-1 rounded px-0.5 text-left break-all hover:bg-neutral-800/70 ${className}`}
+    >
+      <span>{value}</span>
+      <span aria-hidden className="shrink-0 text-[9px] text-neutral-600 group-hover:text-sky-400">
+        {state === "ok" ? "✓" : state === "fail" ? "!" : "⧉"}
+      </span>
+    </button>
+  );
+}
+
+export function fmtNum(n: number, digits = 0): string {
+  return n.toLocaleString("ko-KR", { maximumFractionDigits: digits });
+}
+
+export function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let v = n / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
+export function fmtClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString("ko-KR", { hour12: false });
+}
+
+export function fmtAgo(ms: number, nowMs: number): string {
+  const s = Math.max(0, Math.round((nowMs - ms) / 1000));
+  if (s < 60) return `${s}초 전`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}분 전`;
+  return `${Math.floor(m / 60)}시간 전`;
+}
+
+// A one-second tick, isolated.
+//
+// Its own component because the relative reading has to re-render every
+// second, and an interval placed in a tab would re-render every panel and
+// every chart under it once a second to change five characters.
+export function LastUpdated({ at, label }: { at: number | null; label?: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (at === null) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [at]);
+
+  return (
+    <span className="font-mono text-[10px] tabular-nums text-neutral-500">
+      {label ? `${label} ` : ""}
+      {at === null ? "갱신 없음" : `갱신 ${fmtClock(at)} · ${fmtAgo(at, now)}`}
+    </span>
+  );
+}
+
+// Three numbers that are routinely collapsed into one, stated separately:
+// how many exist, how many were fetched, how many are drawn. Deriving the
+// first from the last is how a header comes to report a capped array's length
+// as a total.
+export function Counts({
+  total,
+  fetched,
+  shown,
+  cap,
+}: {
+  total: number | null;
+  fetched: number;
+  shown: number;
+  // The row limit, when the fetch hit it.
+  cap?: number;
+}) {
+  return (
+    <span className="font-mono text-[10px] tabular-nums text-neutral-500">
+      전체 {total === null ? "?" : fmtNum(total)}건 · 조회 {fmtNum(fetched)}건 · 표시{" "}
+      {fmtNum(shown)}건
+      {cap !== undefined && total !== null && total > fetched && (
+        <span className="ml-1 rounded-[3px] bg-amber-950/60 px-1 text-amber-400">
+          상위 {fmtNum(cap)}건만 조회됨
+        </span>
+      )}
+    </span>
+  );
+}
+
+const INTENT_TEXT: Record<Status, string> = {
+  NORMAL: "text-neutral-100",
+  WARNING: "text-amber-400",
+  CRITICAL: "text-red-400",
+};
+
+// One headline number, with the exact thing it counted written underneath.
+//
+// `basis` is not decoration. Two stats can legitimately count different
+// populations of the same-sounding thing — "요청 수" over lines carrying a
+// status versus over lines carrying a latency — and with one shared card-level
+// caption there is no way to tell them apart.
+export function Stat({
+  label,
+  value,
+  unit,
+  basis,
+  status = "NORMAL",
+  sub,
+  copy,
+}: {
+  label: string;
+  value: string;
+  unit?: string;
+  // The field, the aggregation and the exclusions. "AWS/WAFV2 BlockedRequests
+  // Sum", not "WAF 기준".
+  basis?: string;
+  status?: Status;
+  // A second line the caller owns — a delta, a share, a note.
+  sub?: React.ReactNode;
+  copy?: string;
+}) {
+  const loud = status !== "NORMAL";
+  return (
+    <div
+      className={`rounded border p-2 ${
+        loud ? "border-neutral-700 bg-neutral-900" : "border-neutral-800 bg-neutral-950"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-1">
+        <span className="text-[10px] leading-4 text-neutral-500">{label}</span>
+        {loud && <StatusBadge status={status} />}
+      </div>
+      <div
+        className={`font-mono font-bold tabular-nums ${loud ? "text-2xl" : "text-xl"} ${INTENT_TEXT[status]}`}
+      >
+        <CopyValue value={value} copy={copy ?? value} title={`${label} 복사`} />
+        {unit && (
+          <span className="ml-0.5 font-sans text-[10px] font-normal text-neutral-500">{unit}</span>
+        )}
+      </div>
+      {sub}
+      {basis && (
+        <div className="mt-0.5 text-[9.5px] leading-[1.35] break-keep text-neutral-600" title={basis}>
+          {basis}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A statement about where a number came from that contradicts a neighbouring
+// panel, placed in the panel rather than in a footnote.
+export function SourceNote({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded border border-neutral-800 bg-neutral-900/60 px-2 py-1 text-[10px] leading-4 text-neutral-400">
+      {children}
     </div>
   );
 }

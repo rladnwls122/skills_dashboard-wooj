@@ -9,7 +9,16 @@ import {
   simulateRuleAction,
 } from "@/app/actions/dashboard";
 import type { MetricsPanel, SimulationResult, WafPanel, WafSampleRow } from "@/lib/types";
-import { Card, ErrorNote, SectionLoading, Truncate, fmtTs, usePoll, type PollState } from "./shared";
+import {
+  Card,
+  ErrorNote,
+  SectionLoading,
+  SourceNote,
+  Truncate,
+  fmtTs,
+  usePoll,
+  type PollState,
+} from "./shared";
 
 const RISK_COLOR = {
   LOW: "text-emerald-400",
@@ -345,8 +354,21 @@ export function WafTab({
             : undefined
         }
       >
+        {/* Two panels on this page count blocked requests and will not agree.
+            The conflict is stated where the numbers are, not in a footnote. */}
+        <SourceNote>
+          이 표는 <span className="text-neutral-200">WAF 로그·샘플 기준</span>입니다. 요약 탭의{" "}
+          <span className="text-neutral-200">WAF BlockedRequests</span> 는 CloudWatch 메트릭
+          기준이라, 전달 지연과 집계 단위 차이로 같은 구간에서도 값이 다르게 보일 수 있습니다.
+          {metrics.data?.httpSummary?.notes.map((n) => (
+            <span key={n} className="mt-0.5 block text-neutral-500">
+              · {n}
+            </span>
+          ))}
+        </SourceNote>
+
         {metrics.data?.httpSummary ? (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             {/* The path list carries two server-decided marks the other stat
                 lists have no use for: 의심 (off-surface and concentrated) and
                 헬스체크 (excluded from anomaly scoring). */}

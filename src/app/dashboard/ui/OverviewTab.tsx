@@ -7,6 +7,7 @@ import {
   ErrorNote,
   SectionLoading,
   Sparkline,
+  Stat,
   StatusBadge,
   Truncate,
   WarningEventDetailModal,
@@ -14,6 +15,7 @@ import {
   fmtTs,
   type PollState,
 } from "./shared";
+import { TimeChart } from "./TimeChart";
 
 export function OverviewTab({
   kube,
@@ -40,7 +42,7 @@ export function OverviewTab({
         title="Infrastructure Health"
         basis={
           metrics.data
-            ? `조회 구간 ${metrics.data.window.label} · ${metrics.data.metrics[0]?.basis ?? ""}`
+            ? `조회 구간 ${metrics.data.window.label} · 각 값의 출처는 타일 아래에 따로 적혀 있음`
             : undefined
         }
         right={
@@ -54,32 +56,55 @@ export function OverviewTab({
         ) : (
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
             {(metrics.data?.metrics ?? []).map((m) => (
-              <div
+              // The basis is per tile, not per card: "요청 수" over a Sum and
+              // over an Average are different populations, and one shared
+              // caption gives no way to tell which is which.
+              <Stat
                 key={m.key}
-                className="rounded border border-neutral-800 bg-neutral-950 p-2"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-neutral-500">{m.label}</span>
-                  <StatusBadge status={m.status} />
-                </div>
-                <div className="mt-1 font-mono text-xl font-bold tabular-nums text-neutral-100">
-                  {m.current}
-                  <span className="ml-1 font-sans text-[10px] font-normal text-neutral-500">
-                    {m.unit}
-                  </span>
-                </div>
-                <div
-                  className={`font-mono text-[10px] tabular-nums ${
-                    m.delta > 0 ? "text-amber-400" : m.delta < 0 ? "text-emerald-400" : "text-neutral-500"
-                  }`}
-                >
-                  {fmtDelta(m.delta, m.percentChange)}
-                </div>
-                <Sparkline points={m.points} status={m.status} />
-              </div>
+                label={m.label}
+                value={String(m.current)}
+                unit={m.unit}
+                status={m.status}
+                basis={m.basis}
+                sub={
+                  <div className="flex items-center justify-between gap-1">
+                    <span
+                      className={`font-mono text-[10px] tabular-nums ${
+                        m.delta > 0
+                          ? "text-amber-400"
+                          : m.delta < 0
+                            ? "text-emerald-400"
+                            : "text-neutral-500"
+                      }`}
+                    >
+                      {fmtDelta(m.delta, m.percentChange)}
+                    </span>
+                    <Sparkline points={m.points} status={m.status} />
+                  </div>
+                }
+              />
             ))}
           </div>
         )}
+      </Card>
+
+      {/* The same numbers over time. The tiles say what is true now; this says
+          when it changed, which is the question a tile cannot answer. Every
+          chart on the page shares one crosshair. */}
+      <Card
+        title="지표 추이"
+        basis={
+          metrics.data
+            ? `조회 구간 ${metrics.data.window.label} · ${metrics.data.window.buckets}개 버킷 · CloudWatch 원본 버킷값(헤드라인 타일의 3버킷 집계와 다름)`
+            : undefined
+        }
+      >
+        <TimeChart
+          height={200}
+          series={(metrics.data?.metrics ?? [])
+            .filter((m) => m.points.length > 0)
+            .map((m) => ({ label: `${m.label} (${m.unit})`, points: m.points, unit: "" }))}
+        />
       </Card>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">

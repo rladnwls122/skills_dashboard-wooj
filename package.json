@@ -9,7 +9,8 @@
     "build:clean": "pnpm clean && pnpm build",
     "start": "next start -p 3100",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm test:ddos && pnpm test:applog && pnpm test:rulestatement && pnpm test:rulesim && pnpm test:threatsig && pnpm test:gateway && pnpm test:ruleassemble && pnpm test:window && pnpm test:waflogagg && pnpm test:metricsummary && pnpm test:grading",
+    "test": "pnpm test:ddos && pnpm test:applog && pnpm test:rulestatement && pnpm test:rulesim && pnpm test:threatsig && pnpm test:gateway && pnpm test:ruleassemble && pnpm test:window && pnpm test:waflogagg && pnpm test:metricsummary && pnpm test:grading && pnpm test:probe",
+    "test:probe": "node --import ./scripts/testing/register.mjs scripts/probe.test.mjs",
     "test:ruleassemble": "node --import ./scripts/testing/register.mjs scripts/ruleassemble.test.mjs",
     "test:ddos": "node --import ./scripts/testing/register.mjs scripts/ddos-policy.test.mjs",
     "test:applog": "node --import ./scripts/testing/register.mjs scripts/applogquery.test.mjs",
@@ -32,7 +33,8 @@
     "better-sqlite3": "^12.2.0",
     "next": "^15.4.6",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "uplot": "^1.6.32"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.11",
