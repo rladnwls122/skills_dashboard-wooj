@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import type uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { MetricPoint } from "@/lib/types";
+import { tipPosition } from "@/lib/charttip";
 
 // Every time series on the dashboard is drawn here.
 //
@@ -67,6 +68,95 @@ export function alignSeries(series: ChartSeries[]): {
   };
 }
 
+// Value readout that follows the cursor.
+//
+// The live legend below the chart already carries these numbers, but reading
+// one means looking away from the point being read — and with several charts
+// stacked, away from the chart entirely. The tooltip puts the same values next
+// to the crosshair; it formats them through each series' own `value`, so the
+// legend and the tooltip can never disagree.
+//
+// It is drawn only on the chart the pointer is actually over. `cursor.sync`
+// moves the crosshair on every chart at once, and a tooltip on every chart at
+// once is noise, not information.
+function cursorTooltip(): uPlot.Plugin {
+  let tip: HTMLDivElement;
+  let hovering = false;
+  const hide = () => {
+    if (tip) tip.style.opacity = "0";
+  };
+
+  return {
+    hooks: {
+      init: (u: uPlot) => {
+        tip = document.createElement("div");
+        tip.className = "u-tip";
+        u.over.appendChild(tip);
+        u.over.addEventListener("mouseenter", () => {
+          hovering = true;
+        });
+        u.over.addEventListener("mouseleave", () => {
+          hovering = false;
+          hide();
+        });
+      },
+      setCursor: (u: uPlot) => {
+        const idx = u.cursor.idx;
+        const left = u.cursor.left ?? -1;
+        const top = u.cursor.top ?? -1;
+        if (!hovering || idx == null || left < 0 || top < 0) return hide();
+
+        tip.textContent = "";
+        const when = document.createElement("div");
+        when.className = "u-tip-time";
+        when.textContent = new Date((u.data[0][idx] as number) * 1000).toLocaleTimeString("ko-KR", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        tip.appendChild(when);
+
+        for (let i = 1; i < u.series.length; i++) {
+          const s = u.series[i];
+          // A series switched off in the legend is switched off here too.
+          if (!s || s.show === false) continue;
+          const row = document.createElement("div");
+          row.className = "u-tip-row";
+          const dot = document.createElement("span");
+          dot.className = "u-tip-dot";
+          dot.style.background = typeof s.stroke === "string" ? s.stroke : "#a3a3a3";
+          const name = document.createElement("span");
+          name.textContent = typeof s.label === "string" ? s.label : "";
+          const val = document.createElement("span");
+          val.className = "u-tip-val";
+          const raw = (u.data[i] as (number | null)[])[idx];
+          val.textContent =
+            typeof s.value === "function" ? String(s.value(u, raw as number, i, idx)) : String(raw ?? "—");
+          row.append(dot, name, val);
+          tip.appendChild(row);
+        }
+
+        // Appearing from hidden would otherwise animate the tooltip in from
+        // wherever it was last left, which reads as a stray box flying across
+        // the chart. Only movement while visible is worth easing.
+        const appearing = tip.style.opacity !== "1";
+        if (appearing) tip.dataset.jump = "1";
+        tip.style.opacity = "1";
+        const { x, y } = tipPosition(
+          left,
+          top,
+          tip.offsetWidth,
+          tip.offsetHeight,
+          u.over.clientWidth,
+          u.over.clientHeight,
+        );
+        tip.style.transform = `translate(${x}px, ${y}px)`;
+        if (appearing) requestAnimationFrame(() => delete tip.dataset.jump);
+      },
+    },
+  };
+}
+
 export function TimeChart({
   series,
   height = 180,
@@ -101,6 +191,7 @@ export function TimeChart({
           width: el.clientWidth || 600,
           height,
           cursor: { sync: { key: syncKey }, points: { size: 6 } },
+          plugins: [cursorTooltip()],
           scales: { x: { time: true } },
           legend: { live: true },
           axes: [

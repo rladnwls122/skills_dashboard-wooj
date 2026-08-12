@@ -132,3 +132,53 @@ body {
 .u-cursor-y {
   border-color: #525252;
 }
+
+/* Cursor tooltip, built in TimeChart.tsx. Moved with `transform` rather than
+   `left`/`top`: the browser can ease a transform on the compositor, and a
+   tooltip that follows the pointer moves on every mouse event. */
+.u-tip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  padding: 5px 7px;
+  border: 1px solid #404040;
+  border-radius: 6px;
+  background: rgba(23, 23, 23, 0.94);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  font-size: 11px;
+  line-height: 1.5;
+  color: #e5e5e5;
+  white-space: nowrap;
+  transition:
+    transform 90ms ease-out,
+    opacity 120ms ease-out;
+}
+/* Set for the frame the tooltip appears on, so it fades in where the cursor is
+   instead of sliding in from where it was last hidden. */
+.u-tip[data-jump="1"] {
+  transition: opacity 120ms ease-out;
+}
+.u-tip-time {
+  margin-bottom: 2px;
+  color: #a3a3a3;
+}
+.u-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.u-tip-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.u-tip-val {
+  margin-left: auto;
+  padding-left: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+}
