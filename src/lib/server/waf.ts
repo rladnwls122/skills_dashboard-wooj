@@ -1,9 +1,10 @@
 import "server-only";
 import {
-  CheckCapacityCommand,
   GetSampledRequestsCommand,
   GetWebACLCommand,
   ListWebACLsCommand,
+  // Unused until 06b wires apply/promote/rollback onto it. Kept so the module
+  // that will call it is the module that already reads the ACL.
   UpdateWebACLCommand,
   type Rule,
   type SampledHTTPRequest,
@@ -28,6 +29,7 @@ import { logsClient, wafClient } from "./aws";
 import { insertWafHistory, getWafHistory, listWafHistory } from "./db";
 import { maskText } from "./mask";
 import { classifyUa, queryHasBase64Blob } from "./threatsig";
+import { scopeDownRefusal } from "./ruleassemble";
 import { runInsightsQuery } from "./logsinsights";
 import { foldByAction, insightsAgeNote, topKeyCounts, totals } from "./waflogagg";
 import { errMsg } from "./cloudwatch";
@@ -42,19 +44,6 @@ import type {
   WafAclInfo,
   WafSampleRow,
 } from "@/lib/types";
-
-// Pretty-print WAF objects with SearchString bytes decoded to text — the same
-// shape the WAF console JSON editor accepts, and readable by Amazon Q.
-export function wafJson(value: unknown): string {
-  return JSON.stringify(
-    value,
-    (_k, v: unknown) => {
-      if (v instanceof Uint8Array) return new TextDecoder().decode(v);
-      return v;
-    },
-    2,
-  );
-}
 
 interface AclHandle {
   webAcl: WebACL;
@@ -534,8 +523,86 @@ export async function listSampleRows(): Promise<WafSampleRow[]> {
     .slice(0, 300);
 }
 
-// One paste-ready block for Amazon Q: situation, current WebACL rules JSON,
-// the recommended rule JSON, local simulation numbers, and the questions.
+// Apply, promote, demote, remove — all four are this one call.
+//
+// `action` is what the rule should be doing after the call: "COUNT", "BLOCK",
+// or null to take it out of the WebACL entirely. The rule is keyed by its Name,
+// so promoting is "put it back at the other action" and there is no separate
+// update path that could disagree with the create path.
+//
+// The scope-down check runs here rather than in the UI because this is the only
+// door into the WebACL: a rule pasted by hand goes through the same gate as one
+// the assembler built (04).
+export async function setRuleAction(
+  ruleJson: string,
+  action: "COUNT" | "BLOCK" | null,
+): Promise<{ ruleName: string; priorRules: string }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(ruleJson);
+  } catch (e) {
+    throw new Error(`규칙 JSON 을 파싱할 수 없습니다: ${errMsg(e)}`);
+  }
+  const rule = parsed as Rule & Record<string, unknown>;
+  const ruleName = String(rule?.Name ?? "");
+  if (!ruleName) throw new Error("규칙에 Name 이 없습니다.");
+
+  if (action !== null) {
+    const refusal = scopeDownRefusal(rule);
+    if (refusal) throw new Error(refusal);
+    if (String(rule.ARN ?? "").length === 0) {
+      const json = JSON.stringify(rule);
+      if (json.includes("-ARN>")) {
+        throw new Error(
+          "규칙에 ARN 자리표시자가 남아 있습니다 — 정규식 패턴 세트를 먼저 만들고 그 ARN 을 채우세요.",
+        );
+      }
+    }
+  }
+
+  const attempt = async (): Promise<{ ruleName: string; priorRules: string }> => {
+    const { webAcl, lockToken } = await getAclHandle();
+    const prior = webAcl.Rules ?? [];
+    const kept = prior.filter((r) => r.Name !== ruleName);
+    const next =
+      action === null
+        ? kept
+        : [
+            ...kept,
+            {
+              ...(rule as Rule),
+              Action: action === "BLOCK" ? { Block: {} } : { Count: {} },
+            },
+          ];
+
+    await wafClient().send(
+      new UpdateWebACLCommand({
+        Name: webAcl.Name,
+        Id: webAcl.Id,
+        Scope: ENV.wafScope,
+        DefaultAction: webAcl.DefaultAction,
+        Description: webAcl.Description,
+        VisibilityConfig: webAcl.VisibilityConfig,
+        CustomResponseBodies: webAcl.CustomResponseBodies,
+        Rules: next,
+        LockToken: lockToken,
+      }),
+    );
+    return { ruleName, priorRules: JSON.stringify(prior) };
+  };
+
+  try {
+    return await attempt();
+  } catch (e) {
+    // Someone else (the console, the other operator) changed the ACL between
+    // our read and our write. Re-reading gives a fresh lock token; a second
+    // failure is a real conflict and is surfaced.
+    if (e instanceof Error && e.name === "WAFOptimisticLockException") return attempt();
+    throw e;
+  }
+}
+
+// What has been applied from this screen, newest first.
 export function applyHistory(): ApplyHistoryEntry[] {
   return listWafHistory().map((h) => ({
     id: h.id,

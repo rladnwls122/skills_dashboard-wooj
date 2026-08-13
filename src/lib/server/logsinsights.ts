@@ -124,10 +124,3 @@ export async function runInsightsQuery(params: {
     release();
   }
 }
-
-export function fmtBytes(n: number): string {
-  if (n >= 1024 * 1024 * 1024) return `${(n / 1024 / 1024 / 1024).toFixed(2)}GB`;
-  if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(2)}MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`;
-  return `${n}B`;
-}

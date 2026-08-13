@@ -12,13 +12,12 @@ import {
   listPods,
   listWarningEvents,
   patchDeployment,
-  validatePatch,
   type DeploymentPatchRequest,
 } from "@/lib/server/k8s";
 import { fetchPodLogsInsights, fetchPodLogsKube } from "@/lib/server/podlogs";
-import { defaultTestRequests, maliciousExampleRequests, testRule } from "@/lib/server/rulesim";
 import { assembleRule } from "@/lib/server/ruleassemble";
 import { probe } from "@/lib/server/probe";
+import { nodeCountPanel, type NodeCountProjection } from "@/lib/server/nodecount";
 import { resolveWindow, windowKey } from "@/lib/server/window";
 import { fetchGradingPanel } from "@/lib/server/grading";
 import { loadResourceHistory, recordResourceSamples } from "@/lib/server/reshistory";
@@ -35,30 +34,29 @@ import {
 } from "@/lib/server/resources";
 import { aggregateFingerprints } from "@/lib/server/fingerprint";
 import { analyzeRequestLog } from "@/lib/server/requestlog";
-import { detectAnomalies, type AnomalyInput } from "@/lib/server/anomaly";
-import { buildTimeline, correlate } from "@/lib/server/correlation";
+import {
+  detectAnomalies,
+  type AnomalyInput,
+  type RecentRuleApply,
+} from "@/lib/server/anomaly";
 import {
   applyHistory,
   buildHttpSummary,
   getAclInfo,
   listSampleRows,
+  setRuleAction,
 } from "@/lib/server/waf";
-import {
-  buildSnapshot,
-  toJson,
-  toMarkdown,
-  toQPrompt,
-  type IncidentSnapshot,
-} from "@/lib/server/incident";
+import { countEvidence, type CountEvidence } from "@/lib/server/wafcountevidence";
 import {
   getDeployHistory,
   insertDeployHistory,
+  insertWafHistory,
   listDeployHistory,
+  listWafHistory,
   updateDeployVerdict,
 } from "@/lib/server/db";
 import type {
   ActionResult,
-  ApplyHistoryEntry,
   AssembledRule,
   AssembleKind,
   WindowSelection,
@@ -77,9 +75,7 @@ import type {
   RequestLogQueryResult,
   SettingsView,
   ResourceHistory,
-  RuleTestResult,
   StatusDistribution,
-  TestRequest,
   Verdict,
   VerificationResult,
   WafPanel,
@@ -88,6 +84,24 @@ import type {
 
 function ok<T>(data: T): ActionResult<T> {
   return { ok: true, data };
+}
+
+// Rule changes made from this screen in the last few minutes, with the grading
+// snapshot each one carried. Feeds the false-block alarm; a row whose snapshot
+// is unreadable is skipped rather than guessed at.
+function recentRuleApplies(): RecentRuleApply[] {
+  const cutoff = Date.now() - 10 * 60_000;
+  return listWafHistory()
+    .filter((h) => h.ts >= cutoff && h.status === "SUCCESS" && h.action !== "REMOVE")
+    .flatMap((h) => {
+      try {
+        const snap = JSON.parse(h.detail) as { keys?: { label: string; pct: number }[] };
+        if (!snap.keys?.length) return [];
+        return [{ ruleName: h.rule_name, action: h.action, atMs: h.ts, keys: snap.keys }];
+      } catch {
+        return [];
+      }
+    });
 }
 
 function fail<T>(e: unknown): ActionResult<T> {
@@ -111,12 +125,14 @@ const EMPTY_SUMMARY = {
   notes: [],
 };
 
+// Exactly what the screen draws: four tiles on 성능 and the two WAF series on
+// 트래픽. The status-code chart that needed 2XX/3XX is gone (03), and RDS
+// DatabaseConnections said the same thing as ClientConnections.
 const VISIBLE_METRICS = [
   "targetResponseTime",
   "http4xx",
   "http5xx",
   "rdsClientConnections",
-  "rdsDatabaseConnections",
   "wafBlocked",
   "wafAllowed",
 ];
@@ -196,20 +212,11 @@ export async function getMetricsPanelAction(
     const data = await cached(`panel:metrics:${windowKey(win)}`, POLLING.metricsTtlMs, async () => {
       const { summaries: metricsSettled, errors: metricErrors } = await fetchCoreMetrics(win);
       const byKey = new Map(metricsSettled.map((m) => [m.key, m]));
-      const statusDist: StatusDistribution | null = byKey.has("http2xx")
-        ? (() => {
-            const c2xx = byKey.get("http2xx")?.current ?? 0;
-            const c3xx = byKey.get("http3xx")?.current ?? 0;
-            const c4xx = byKey.get("http4xx")?.current ?? 0;
-            const c5xx = byKey.get("http5xx")?.current ?? 0;
-            return { c2xx, c3xx, c4xx, c5xx, total: c2xx + c3xx + c4xx + c5xx };
-          })()
-        : null;
 
       let httpSummary: MetricsPanel["httpSummary"] = null;
       let httpSummaryError: string | null = null;
       try {
-        httpSummary = await buildHttpSummary(statusDist, win);
+        httpSummary = await buildHttpSummary(null, win);
       } catch (e) {
         httpSummaryError = errMsg(e);
       }
@@ -224,16 +231,17 @@ export async function getMetricsPanelAction(
 
       const kube = peekCached<KubePanel>("panel:kube");
       const fingerprints = peekCached<FingerprintEntry[]>("panel:fingerprints") ?? [];
+      const grading = peekCached<GradingPanel>(`panel:grading:${windowKey(win)}`);
       const input: AnomalyInput = {
         metrics: metricsSettled,
         httpSummary,
         pods: kube?.pods ?? [],
         events: kube?.events ?? [],
         fingerprints,
+        recentApplies: recentRuleApplies(),
+        gradingNow: (grading?.lines ?? []).map((l) => ({ label: l.label, pct: l.pct })),
       };
       const anomalies = detectAnomalies(input);
-      const correlations = correlate(input, anomalies);
-      const timeline = buildTimeline(input, anomalies);
 
       const visible: MetricSummary[] = VISIBLE_METRICS.map((k) => byKey.get(k)).filter(
         (m): m is MetricSummary => m !== undefined,
@@ -246,8 +254,6 @@ export async function getMetricsPanelAction(
         httpSummary,
         httpSummaryError,
         anomalies,
-        correlations,
-        timeline,
         window: win,
       };
       return panel;
@@ -341,9 +347,55 @@ export async function getWafPanelAction(
   }
 }
 
-export async function getWafHistoryAction(): Promise<ActionResult<ApplyHistoryEntry[]>> {
+// Apply / promote / demote / remove, all one call (04). Every press is a
+// person's press — nothing on this screen changes a WebACL on its own.
+//
+// The grading keys as they stood at the moment of the change go into the
+// history row with it. That snapshot is what the false-block alarm compares
+// against five minutes later, and it has to be taken here, before the rule can
+// have moved anything.
+export async function updateWafRuleAction(params: {
+  ruleJson: string;
+  action: "COUNT" | "BLOCK" | null;
+  window?: WindowSelection;
+}): Promise<ActionResult<{ ruleName: string; historyId: number }>> {
   try {
-    return ok(applyHistory());
+    // Whatever the 성능 tab last aggregated, over the same window it is showing.
+    // Never re-queried here: a rule change is not a reason to spend an Insights
+    // scan, and a five-minute-old baseline is still the baseline the operator
+    // was looking at when they pressed the button.
+    const win = resolveWindow(params.window, Date.now());
+    const grading = peekCached<GradingPanel>(`panel:grading:${windowKey(win)}`);
+    const snapshot = JSON.stringify({
+      at: Date.now(),
+      keys: (grading?.lines ?? []).map((l) => ({ label: l.label, pct: l.pct, total: l.total })),
+    });
+    const { ruleName, priorRules } = await setRuleAction(params.ruleJson, params.action);
+    const historyId = insertWafHistory(
+      ruleName,
+      params.action ?? "REMOVE",
+      "SUCCESS",
+      snapshot,
+      priorRules,
+    );
+    // The rule list on screen is read from the WebACL, so it has to be re-read
+    // rather than patched locally.
+    invalidateCached("panel:waf");
+    return ok({ ruleName, historyId });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// What a COUNT rule actually matched, and whether the app answered those
+// requests normally. SQLi rules only — a UA rule never sits in COUNT (04).
+export async function getCountEvidenceAction(
+  ruleName: string,
+  sel?: WindowSelection,
+): Promise<ActionResult<CountEvidence>> {
+  try {
+    const win = resolveWindow(sel, Date.now());
+    return ok(await countEvidence(ruleName, win.startMs, win.endMs));
   } catch (e) {
     return fail(e);
   }
@@ -451,28 +503,6 @@ export async function getRequestLogRowsAction(params: {
 // ---------------------------------------------------------------------------
 // Deployment actions
 // ---------------------------------------------------------------------------
-
-export async function getDeploymentAction(params: {
-  namespace: string;
-  name: string;
-}): Promise<ActionResult<DeploymentInfo>> {
-  try {
-    return ok(await getDeployment(params.namespace, params.name));
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export async function previewPatchAction(
-  req: DeploymentPatchRequest,
-): Promise<ActionResult<{ current: DeploymentInfo }>> {
-  try {
-    const { deployment } = await validatePatch(req);
-    return ok({ current: deployment });
-  } catch (e) {
-    return fail(e);
-  }
-}
 
 export async function patchDeploymentAction(
   req: DeploymentPatchRequest,
@@ -624,73 +654,10 @@ export async function verifyActionAction(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Incident context (spec §17, §18)
-// ---------------------------------------------------------------------------
-
-export async function generateIncidentContextAction(): Promise<
-  ActionResult<IncidentContextResult>
-> {
-  try {
-    const metricsRes = await getMetricsPanelAction();
-    const kubeRes = await getKubePanelAction();
-    const metrics = metricsRes.ok ? metricsRes.data : null;
-    const kube = kubeRes.ok ? kubeRes.data : null;
-    const fingerprints = peekCached<FingerprintEntry[]>("panel:fingerprints") ?? [];
-    const logs = peekCached<IncidentSnapshot["logs"]>("panel:lastlogs");
-    const prevLogs = peekCached<IncidentSnapshot["previousLogs"]>("panel:lastprevlogs");
-    const verifications = peekCached<VerificationResult[]>("panel:verifications") ?? [];
-
-    const wafPanel = peekCached<WafPanel>("panel:waf");
-    const snapshot = buildSnapshot({
-      metrics: metrics?.metrics ?? [],
-      httpSummary: metrics?.httpSummary ?? null,
-      kube,
-      anomalies: metrics?.anomalies ?? [],
-      correlations: metrics?.correlations ?? [],
-      timeline: metrics?.timeline ?? [],
-      fingerprints,
-      logs: logs ?? null,
-      previousLogs: prevLogs
-        ? { pod: prevLogs.pod, container: prevLogs.container, lines: prevLogs.lines }
-        : null,
-      verifications,
-    });
-    return ok({
-      markdown: toMarkdown(snapshot),
-      json: toJson(snapshot),
-      qPrompt: toQPrompt(snapshot),
-      generatedAt: snapshot.timestamp,
-    });
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Rule sandbox — evaluates a pasted WAFv2 Rule against synthetic requests.
-// Pure and local: nothing is sent to AWS and no WebACL is touched.
-// ---------------------------------------------------------------------------
-
-export async function getDefaultTestRequestsAction(): Promise<ActionResult<TestRequest[]>> {
-  try {
-    return ok(defaultTestRequests());
-  } catch (e) {
-    return fail(e);
-  }
-}
-
-export async function getMaliciousExampleRequestsAction(): Promise<ActionResult<TestRequest[]>> {
-  try {
-    return ok(maliciousExampleRequests());
-  } catch (e) {
-    return fail(e);
-  }
-}
-
 // Assembles a regex rule for one purpose (suspicious paths / threat UAs /
 // SQLi) out of the current traffic summary. Nothing is applied — the result is
-// rule JSON the operator reads, tests in the sandbox, then applies by hand.
+// rule JSON the operator reads, applies as COUNT, then promotes to BLOCK by
+// hand once the live count shows no false positives.
 export async function assembleRuleAction(
   kind: AssembleKind,
   sel?: WindowSelection,
@@ -721,12 +688,14 @@ export async function probeUrlAction(
   }
 }
 
-export async function testRuleJsonAction(params: {
-  ruleJson: string;
-  requests: TestRequest[];
-}): Promise<ActionResult<RuleTestResult>> {
+// Node count over the scoring window — the cost grader's input, counted rather
+// than estimated. Not cached: describe-instances has no per-byte charge, the
+// poll is 30s, and a TTL here would only make the number older than it looks.
+// The reading is recorded to SQLite inside the call, so this is also what keeps
+// the running average fed. See server/nodecount.ts.
+export async function getNodeCostAction(): Promise<ActionResult<NodeCountProjection>> {
   try {
-    return ok(testRule(params));
+    return ok(await nodeCountPanel(Date.now()));
   } catch (e) {
     return fail(e);
   }

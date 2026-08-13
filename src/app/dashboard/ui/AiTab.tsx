@@ -1,18 +1,21 @@
 "use client";
 
 import { useState } from "react";
-import { assembleRuleAction } from "@/app/actions/dashboard";
-import type { AssembledRule, AssembleKind, WindowSelection } from "@/lib/types";
-import { Card, ErrorNote } from "./shared";
-import { IncidentTab } from "./IncidentTab";
+import {
+  assembleRuleAction,
+  getCountEvidenceAction,
+  getWafSamplesAction,
+  updateWafRuleAction,
+} from "@/app/actions/dashboard";
+import type { CountEvidence } from "@/lib/server/wafcountevidence";
+import type { AssembledRule, AssembleKind, WafPanel, WindowSelection } from "@/lib/types";
+import { Card, ErrorNote, Truncate, fmtTs, usePoll, type PollState } from "./shared";
+import { ProbePanel } from "./ProbePanel";
 
+// No path rule: an undefined path is already answered with 404 by the ALB, and
+// a WAF Block there would turn that 404 into a 403 — the opposite of what the
+// task asks for. Path statistics stay on 트래픽 as a watch-only list (04).
 const KINDS: { kind: AssembleKind; label: string; sub: string; field: string }[] = [
-  {
-    kind: "path",
-    label: "의심 경로",
-    sub: "관측된 경로 중 서비스 경로 밖의 것",
-    field: "UriPath",
-  },
   {
     kind: "ua",
     label: "의심 User-Agent",
@@ -29,16 +32,34 @@ const KINDS: { kind: AssembleKind; label: string; sub: string; field: string }[]
 
 // Generates one regex rule per purpose out of what the environment is seeing,
 // and hands the incident snapshot to Amazon Q. Nothing here touches the WebACL:
-// the output is JSON to read, test in the 시험 tab, then apply by hand.
+// the output is JSON to read, apply as Count, then promote by hand.
+// Derived from the WebACL, so "추천됨" means exactly "not in the ACL".
+function RuleState({ action }: { action: string | null }) {
+  const [text, cls] =
+    action === null
+      ? ["추천됨", "bg-neutral-800 text-neutral-400"]
+      : action === "BLOCK"
+        ? ["BLOCK", "bg-red-950 text-red-300"]
+        : action === "COUNT"
+          ? ["COUNT", "bg-amber-950 text-amber-300"]
+          : [action, "bg-neutral-800 text-neutral-400"];
+  return (
+    <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${cls}`}>{text}</span>
+  );
+}
+
 export function AiTab({
-  onSendToSandbox,
+  waf,
   window: win,
 }: {
-  onSendToSandbox: (ruleJson: string) => void;
+  waf: PollState<WafPanel>;
   // Observed paths and UAs are read over the page's shared window, so the
   // assembled rule describes the same span the WAF panel showed.
   window: WindowSelection;
 }) {
+  // The WebACL is the state: what is applied, at which action, is read back
+  // from AWS rather than tracked in a local table that can drift from it (04).
+  const samples = usePoll(getWafSamplesAction, 30_000);
   const [rules, setRules] = useState<Partial<Record<AssembleKind, AssembledRule>>>({});
   const [errors, setErrors] = useState<Partial<Record<AssembleKind, string>>>({});
   const [busy, setBusy] = useState<AssembleKind | null>(null);
@@ -47,6 +68,10 @@ export function AiTab({
   // Until then the rule shows placeholders, because a set name in the ARN field
   // is rejected by AWS rather than quietly matching nothing.
   const [arns, setArns] = useState<Record<string, string>>({});
+  const [moving, setMoving] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const [evidence, setEvidence] = useState<Record<string, CountEvidence | undefined>>({});
+  const [evidenceBusy, setEvidenceBusy] = useState<string | null>(null);
 
   const build = async (kind: AssembleKind): Promise<void> => {
     setBusy(kind);
@@ -80,6 +105,32 @@ export function AiTab({
 
   const pendingArns = (rule: AssembledRule): number =>
     rule.sets.filter((set) => !arns[set.name]?.trim()).length;
+
+  // State comes from the WebACL, never from a local flag: the moment someone
+  // changes a rule in the console, a local flag would start lying and there is
+  // no way to notice mid-match (04).
+  const aclAction = (ruleName: string): string | null =>
+    waf.data?.acl?.rules.find((r) => r.name === ruleName)?.action ?? null;
+
+  const move = async (rule: AssembledRule, action: "COUNT" | "BLOCK" | null): Promise<void> => {
+    setMoving(rule.name);
+    setMoveError(null);
+    const res = await updateWafRuleAction({ ruleJson: withArns(rule), action, window: win });
+    if (!res.ok) setMoveError(res.error);
+    else {
+      waf.refresh();
+      setEvidence((prev) => ({ ...prev, [rule.name]: undefined }));
+    }
+    setMoving(null);
+  };
+
+  const loadEvidence = async (ruleName: string): Promise<void> => {
+    setEvidenceBusy(ruleName);
+    const res = await getCountEvidenceAction(ruleName, win);
+    setEvidence((prev) => ({ ...prev, [ruleName]: res.ok ? res.data : undefined }));
+    if (!res.ok) setMoveError(res.error);
+    setEvidenceBusy(null);
+  };
 
   return (
     <div className="space-y-3">
@@ -199,6 +250,83 @@ export function AiTab({
                     </ul>
                   </div>
 
+                  {/* The rule's whole life, on the card that built it. UA goes
+                      straight to BLOCK — its patterns are strings the operator
+                      just read. SQLi is a fixed signature set that has never met
+                      our traffic, so it earns COUNT first (04). */}
+                  <div className="rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px]">
+                    <div className="mb-1 flex items-center justify-between">
+                      <span className="font-mono text-neutral-400">{rule.name}</span>
+                      <RuleState action={aclAction(rule.name)} />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {k.kind === "sqli" && (
+                        <button
+                          type="button"
+                          disabled={moving !== null || pendingArns(rule) > 0}
+                          onClick={() => void move(rule, "COUNT")}
+                          className="rounded bg-amber-900 px-2 py-0.5 font-semibold text-amber-100 hover:bg-amber-800 disabled:opacity-40"
+                        >
+                          COUNT 로 올리기
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        disabled={moving !== null || pendingArns(rule) > 0}
+                        onClick={() => void move(rule, "BLOCK")}
+                        className="rounded bg-red-900 px-2 py-0.5 font-semibold text-red-100 hover:bg-red-800 disabled:opacity-40"
+                      >
+                        {k.kind === "sqli" ? "BLOCK 으로 승격" : "BLOCK 으로 올리기"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={moving !== null || aclAction(rule.name) === null}
+                        onClick={() => void move(rule, null)}
+                        className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
+                      >
+                        내리기
+                      </button>
+                      {moving === rule.name && <span className="text-neutral-500">적용 중…</span>}
+                    </div>
+                    {k.kind === "ua" && (
+                      <div className="mt-1 text-neutral-500">
+                        올린 직후 아래 정상 경로 프로브를 한 번 돌리세요 — COUNT 를 거치지 않으므로
+                        오탐을 즉시 알 수 있는 유일한 신호입니다.
+                      </div>
+                    )}
+
+                    {k.kind === "sqli" && aclAction(rule.name) === "COUNT" && (
+                      <div className="mt-2 border-t border-neutral-800 pt-2">
+                        <button
+                          type="button"
+                          disabled={evidenceBusy !== null}
+                          onClick={() => void loadEvidence(rule.name)}
+                          className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
+                        >
+                          {evidenceBusy === rule.name ? "집계 중…" : "COUNT 실측 조회"}
+                        </button>
+                        {evidence[rule.name] && (
+                          <div className="mt-1 space-y-1">
+                            {/* Three numbers side by side. Unjoinable is not
+                                folded into abnormal — POST/PUT carry no
+                                requestid on either side, and calling those
+                                abnormal would be inventing evidence (07). */}
+                            <div className="font-mono text-neutral-200">
+                              매칭 {evidence[rule.name]!.total}건 (정상 {evidence[rule.name]!.normal}{" "}
+                              · 비정상 {evidence[rule.name]!.abnormal} · 조인 불가{" "}
+                              {evidence[rule.name]!.unjoinable})
+                            </div>
+                            <ul className="space-y-0.5 text-neutral-500">
+                              {evidence[rule.name]!.notes.map((n, i) => (
+                                <li key={i}>· {n}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   <div className="text-[11px]">
                     <div className="mb-0.5 text-neutral-500">판단 기준</div>
                     <ul className="space-y-0.5 text-neutral-500">
@@ -208,18 +336,6 @@ export function AiTab({
                     </ul>
                   </div>
 
-                  <div className="flex items-center gap-2 text-[11px]">
-                    <button
-                      type="button"
-                      onClick={() => onSendToSandbox(rule.sandboxRuleJson)}
-                      className="rounded bg-neutral-800 px-2 py-0.5 text-neutral-200 hover:bg-neutral-700"
-                    >
-                      시험 탭으로 보내기
-                    </button>
-                    <span className="text-neutral-600">
-                      시험에는 패턴을 담은 형태로 보냅니다 (세트를 만들기 전에도 판정 가능)
-                    </span>
-                  </div>
                 </div>
               )}
 
@@ -233,7 +349,110 @@ export function AiTab({
         })}
       </div>
 
-      <IncidentTab />
+      <Card
+        title={
+          waf.data?.acl
+            ? `WebACL 규칙 (${waf.data.acl.name} · 규칙 ${waf.data.acl.ruleCount}개 · WCU ${waf.data.acl.capacityUsed})`
+            : "WebACL 규칙"
+        }
+        right={<ErrorNote error={moveError ?? waf.error} />}
+      >
+        {waf.data?.acl ? (
+          <div className="space-y-0.5 text-[11px]">
+            {waf.data.acl.rules.map((r) => (
+              <div
+                key={r.name}
+                className="flex items-center justify-between rounded bg-neutral-950 px-2 py-1"
+              >
+                <span className="text-neutral-300">{r.name}</span>
+                <span className="tabular-nums text-neutral-500">
+                  p{r.priority} ·{" "}
+                  <span
+                    className={
+                      r.action === "Block"
+                        ? "text-red-400"
+                        : r.action === "Count"
+                          ? "text-amber-400"
+                          : "text-neutral-400"
+                    }
+                  >
+                    {r.action}
+                  </span>
+                </span>
+              </div>
+            ))}
+            {waf.data.acl.rules.length === 0 && (
+              <div className="text-neutral-500">규칙 없음</div>
+            )}
+          </div>
+        ) : (
+          <div className="text-[11px] text-red-400">{waf.data?.aclError ?? "WebACL 조회 중…"}</div>
+        )}
+      </Card>
+
+      {/* COUNT evidence: what a Count rule actually matched. Whether those
+          requests were legitimate is what decides promotion. */}
+      <Card
+        title={`COUNT 실측 증거 (${samples.data?.filter((s) => s.action === "COUNT").length ?? 0}건)`}
+        right={
+          <button
+            type="button"
+            onClick={samples.refresh}
+            className="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-700"
+          >
+            새로고침
+          </button>
+        }
+      >
+        <ErrorNote error={samples.error} />
+        <div className="max-h-64 overflow-auto">
+          <table className="w-full table-fixed text-left font-mono text-[10px]">
+            <thead className="sticky top-0 bg-neutral-900 text-neutral-500">
+              <tr>
+                {["시각", "IP", "메소드", "경로", "쿼리", "User-Agent", "룰"].map((h) => (
+                  <th key={h} className="px-2 py-1 font-medium whitespace-nowrap">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(samples.data ?? [])
+                .filter((s) => s.action === "COUNT")
+                .map((s, i) => (
+                  <tr key={i} className="border-t border-neutral-800 text-neutral-300">
+                    <td className="px-2 py-0.5 text-neutral-500">
+                      <Truncate text={fmtTs(s.ts)} />
+                    </td>
+                    <td className="px-2 py-0.5">
+                      <Truncate text={s.ip} />
+                    </td>
+                    <td className="px-2 py-0.5">{s.method}</td>
+                    <td className="px-2 py-0.5">
+                      <Truncate text={s.path} />
+                    </td>
+                    <td className="px-2 py-0.5 text-neutral-500">
+                      <Truncate text={s.query} />
+                    </td>
+                    <td className="px-2 py-0.5 text-neutral-500">
+                      <Truncate text={s.userAgent} />
+                    </td>
+                    <td className="px-2 py-0.5 text-neutral-500">
+                      <Truncate text={s.rule} />
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+          {(samples.data ?? []).filter((s) => s.action === "COUNT").length === 0 && (
+            <div className="p-3 text-center text-[11px] text-neutral-500">
+              {samples.loading ? "수집 중…" : "COUNT 로 걸린 요청 없음"}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <ProbePanel />
     </div>
   );
 }

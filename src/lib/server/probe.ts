@@ -35,12 +35,6 @@ import type { ProbeResult } from "@/lib/types";
 
 const TIMEOUT_MS = 10_000;
 
-// Long enough to tell "slow" from "gone", short enough that the button comes
-// back while the operator is still looking at it.
-export function probeTimeoutMs(): number {
-  return TIMEOUT_MS;
-}
-
 // Only what a browser would follow. A dashboard that will GET file:// or
 // gopher:// on request is a file reader with a URL bar.
 export function parseTarget(raw: string): URL {

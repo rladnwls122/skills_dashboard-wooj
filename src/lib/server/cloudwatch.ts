@@ -117,11 +117,7 @@ export async function fetchCoreMetrics(win: ResolvedWindow): Promise<CoreMetrics
       q("trt", "AWS/ApplicationELB", "TargetResponseTime", albDim, "Average", periodSec),
       q("c4xx", "AWS/ApplicationELB", "HTTPCode_Target_4XX_Count", albDim, "Sum", periodSec),
       q("c5xx", "AWS/ApplicationELB", "HTTPCode_Target_5XX_Count", albDim, "Sum", periodSec),
-      q("c2xx", "AWS/ApplicationELB", "HTTPCode_Target_2XX_Count", albDim, "Sum", periodSec),
-      q("c3xx", "AWS/ApplicationELB", "HTTPCode_Target_3XX_Count", albDim, "Sum", periodSec),
-      q("reqs", "AWS/ApplicationELB", "RequestCount", albDim, "Sum", periodSec),
       q("rdscc", "AWS/RDS", "ClientConnections", [{ Name: "ProxyName", Value: ENV.rdsProxyName }], "Average", periodSec),
-      q("rdsdc", "AWS/RDS", "DatabaseConnections", [{ Name: "ProxyName", Value: ENV.rdsProxyName }], "Average", periodSec),
     ];
     const res = await cloudWatch().send(
       new GetMetricDataCommand({ StartTime: start, EndTime: end, MetricDataQueries: queries }),
@@ -131,11 +127,7 @@ export async function fetchCoreMetrics(win: ResolvedWindow): Promise<CoreMetrics
       toSeries("targetResponseTime", "TargetResponseTime", "s", "Average", "AWS/ApplicationELB TargetResponseTime", byId.get("trt")),
       toSeries("http4xx", "Target 4XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_4XX_Count", byId.get("c4xx")),
       toSeries("http5xx", "Target 5XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_5XX_Count", byId.get("c5xx")),
-      toSeries("http2xx", "Target 2XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_2XX_Count", byId.get("c2xx")),
-      toSeries("http3xx", "Target 3XX", "req/min", "Sum", "AWS/ApplicationELB HTTPCode_Target_3XX_Count", byId.get("c3xx")),
-      toSeries("requestCount", "RequestCount", "req/min", "Sum", "AWS/ApplicationELB RequestCount", byId.get("reqs")),
       toSeries("rdsClientConnections", "RDS Proxy Client Conn", "conn", "Average", `AWS/RDS ClientConnections (ProxyName=${ENV.rdsProxyName})`, byId.get("rdscc")),
-      toSeries("rdsDatabaseConnections", "RDS Proxy DB Conn", "conn", "Average", `AWS/RDS DatabaseConnections (ProxyName=${ENV.rdsProxyName})`, byId.get("rdsdc")),
     );
   } catch (e) {
     errors.push(`ALB/RDS metrics: ${errMsg(e)}`);

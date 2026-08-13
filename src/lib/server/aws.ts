@@ -10,6 +10,8 @@ import {
   ElasticLoadBalancingV2Client,
 } from "@aws-sdk/client-elastic-load-balancing-v2";
 import { WAFV2Client } from "@aws-sdk/client-wafv2";
+import { CloudTrailClient } from "@aws-sdk/client-cloudtrail";
+import { EC2Client } from "@aws-sdk/client-ec2";
 import { cached } from "./cache";
 import { ENV, wafRegion } from "./config";
 
@@ -20,6 +22,8 @@ let elb: ElasticLoadBalancingV2Client | null = null;
 let cwl: CloudWatchLogsClient | null = null;
 let eks: EKSClient | null = null;
 let cwlRegional: CloudWatchLogsClient | null = null;
+let ec2: EC2Client | null = null;
+let trail: CloudTrailClient | null = null;
 const cwlByRegion = new Map<string, CloudWatchLogsClient>();
 
 // Every client above is built once and reused. They capture a region at
@@ -34,6 +38,8 @@ export function resetAwsClients(): void {
   cwl = null;
   cwlRegional = null;
   eks = null;
+  ec2 = null;
+  trail = null;
   cwlByRegion.clear();
 }
 
@@ -85,6 +91,19 @@ export function logsClientFor(region: string): CloudWatchLogsClient {
 export function eksClient(): EKSClient {
   if (!eks) eks = new EKSClient({ region: ENV.region });
   return eks;
+}
+
+export function ec2Client(): EC2Client {
+  if (!ec2) ec2 = new EC2Client({ region: ENV.region });
+  return ec2;
+}
+
+// CloudTrail is read in the cluster region: RunInstances/TerminateInstances are
+// regional events, and the scored instances only ever run in the region the
+// task assigns.
+export function cloudTrailClient(): CloudTrailClient {
+  if (!trail) trail = new CloudTrailClient({ region: ENV.region });
+  return trail;
 }
 
 export interface TargetGroupHandle {

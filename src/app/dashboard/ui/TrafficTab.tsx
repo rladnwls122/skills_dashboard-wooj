@@ -2,10 +2,19 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getPodLogsAction } from "@/app/actions/dashboard";
-import type { KubePanel, PodLogsResult, WindowSelection } from "@/lib/types";
+import type { KubePanel, MetricsPanel, PodLogsResult, WindowSelection } from "@/lib/types";
 import type { PodSelection } from "./DashboardClient";
 import { RequestLogPanel } from "./RequestLogPanel";
-import { Card, SectionLoading, Truncate, fmtTs, usePoll, type PollState } from "./shared";
+import { TimeChart } from "./TimeChart";
+import {
+  Card,
+  ErrorNote,
+  SectionLoading,
+  Truncate,
+  fmtTs,
+  usePoll,
+  type PollState,
+} from "./shared";
 
 const RED = /(error|fatal|exception|\b50\d\b|\b5xx\b)/i;
 const ORANGE = /(warn|warning|timeout|\b429\b|\b4\d{2}\b|\b4xx\b)/i;
@@ -37,22 +46,42 @@ function fmtScanBytes(n: number): string {
   return `${n}B`;
 }
 
-// Log reading in one place: the raw pod terminal, what repeats in it, what the
-// request lines say, and the on-demand status-code query over the app log
-// group. Nothing here polls on its own unless asked — Insights bills per byte.
-export function LogTab({
+// What is arriving right now, in one tab: which paths and query strings the WAF
+// saw, which User-Agents (the only list that leads to a rule), the app's own
+// request lines, and the pod terminal underneath them.
+//
+// The path list is watch-only. Undefined paths are answered by the ALB with a
+// 404 already, so a 의심 path is a cue to check that it really ended in 404 —
+// not a cue to write a WAF rule (see 04).
+export function TrafficTab({
   kube,
+  metrics,
   selection,
   onSelect,
+  onMakeUaRule,
   window: win,
 }: {
   kube: PollState<KubePanel>;
+  metrics: PollState<MetricsPanel>;
   selection: PodSelection | null;
   onSelect: (s: PodSelection | null) => void;
+  // The one path from here into 규칙 생성: a scanner User-Agent.
+  onMakeUaRule: () => void;
   // The page's shared window — the log queries cover exactly the span the
   // metric charts do, so a spike and the lines around it line up.
   window: WindowSelection;
 }) {
+  const summary = metrics.data?.httpSummary ?? null;
+  const wafSeries = (["wafBlocked", "wafAllowed"] as const)
+    .map((key, i) => {
+      const m = metrics.data?.metrics.find((x) => x.key === key);
+      return {
+        label: key === "wafBlocked" ? "Blocked" : "Allowed",
+        points: m?.points ?? [],
+        color: i === 0 ? "#ff5c5c" : "#3ddc97",
+      };
+    })
+    .filter((s) => s.points.length > 0);
   const pods = kube.data?.pods ?? [];
   const [previous, setPrevious] = useState(false);
   const [tailLines, setTailLines] = useState(200);
@@ -108,6 +137,86 @@ export function LogTab({
 
   return (
     <div className="space-y-3">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <Card title="경로별 요청·차단" right={<ErrorNote error={metrics.data?.httpSummaryError ?? null} />}>
+          <div className="max-h-56 space-y-0.5 overflow-y-auto text-[11px]">
+            {(summary?.byPath ?? []).map((p) => (
+              <div
+                key={p.path}
+                className={`flex justify-between gap-2 rounded px-1.5 py-0.5 ${p.blocked > 0 ? "bg-red-950/30" : "bg-neutral-950"}`}
+              >
+                <span className={`truncate ${p.lowPriority ? "text-neutral-600" : "text-neutral-300"}`}>
+                  {p.suspicious && (
+                    <span className="mr-1 rounded-[3px] bg-red-900 px-1 font-mono text-[9px] font-bold text-red-200">
+                      의심
+                    </span>
+                  )}
+                  {p.path || "/"}
+                </span>
+                <span className="tabular-nums text-neutral-500">
+                  {p.count}
+                  {p.blocked > 0 && <span className="text-red-400"> · 차단 {p.blocked}</span>}
+                </span>
+              </div>
+            ))}
+            {(summary?.byPath.length ?? 0) === 0 && <div className="text-neutral-600">데이터 없음</div>}
+          </div>
+        </Card>
+
+        {/* The only list here that leads anywhere: a scanner UA is the one thing
+            04 still blocks by hand. */}
+        <Card
+          title="User-Agent"
+          right={
+            <button
+              type="button"
+              onClick={onMakeUaRule}
+              className="rounded bg-neutral-800 px-2 py-0.5 text-[11px] text-neutral-200 hover:bg-neutral-700"
+            >
+              규칙 만들기
+            </button>
+          }
+        >
+          <div className="max-h-56 space-y-0.5 overflow-y-auto text-[11px]">
+            {(summary?.byUa ?? []).map((u, i) => (
+              <div
+                key={i}
+                className="flex justify-between gap-2 rounded bg-neutral-950 px-1.5 py-0.5 text-neutral-300"
+              >
+                <span className="truncate">{u.key || "(empty)"}</span>
+                <span className="tabular-nums text-neutral-500">{u.count}</span>
+              </div>
+            ))}
+            {(summary?.byUa.length ?? 0) === 0 && <div className="text-neutral-600">데이터 없음</div>}
+          </div>
+        </Card>
+
+        <Card title="QueryString 패턴">
+          <div className="max-h-56 space-y-0.5 overflow-y-auto text-[11px]">
+            {(summary?.queryPatterns ?? []).map((q, i) => (
+              <div
+                key={i}
+                className="flex justify-between gap-2 rounded bg-neutral-950 px-1.5 py-0.5 text-neutral-300"
+              >
+                <span className="truncate">{q.key || "(empty)"}</span>
+                <span className="tabular-nums text-neutral-500">{q.count}</span>
+              </div>
+            ))}
+            {(summary?.queryPatterns.length ?? 0) === 0 && (
+              <div className="text-neutral-600">데이터 없음</div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <RequestLogPanel window={win} />
+
+      {wafSeries.length > 0 && (
+        <Card title="WAF Blocked / Allowed 추이">
+          <TimeChart height={160} syncKey="traffic" series={wafSeries} />
+        </Card>
+      )}
+
       <div ref={logTerminalRef} className="scroll-mt-4">
         <Card
           title="Log Terminal"
@@ -243,85 +352,7 @@ export function LogTab({
         </Card>
       </div>
 
-      <Card title="요청 로그 분석 (선택 Pod — Latency / Non-2xx / Error·Warn)">
-        {logs.data?.requestLog ? (
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-            <div>
-              <div className="mb-1 text-[11px] text-neutral-500">
-                평균 latency {logs.data.requestLog.avgLatencyMs ?? "-"}ms · 최대{" "}
-                {logs.data.requestLog.maxLatencyMs ?? "-"}ms · 요청{" "}
-                {logs.data.requestLog.totalRequests ?? logs.data.requestLog.entries.length}건
-                {logs.data.requestLog.basis && (
-                  <span className="text-neutral-600"> · 기준: {logs.data.requestLog.basis}</span>
-                )}
-              </div>
-              <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
-                {logs.data.requestLog.byPath.map((p) => (
-                  <div key={p.path} className="flex justify-between rounded bg-neutral-950 px-2 py-1">
-                    <Truncate text={p.path} className="text-neutral-300" />
-                    <span className="tabular-nums text-neutral-500">
-                      {p.count}건 · avg {p.avgLatencyMs}ms · max {p.maxLatencyMs}ms
-                      {p.nonOkCount > 0 && (
-                        <span className="text-amber-400"> · non-2xx {p.nonOkCount}</span>
-                      )}
-                    </span>
-                  </div>
-                ))}
-                {logs.data.requestLog.byPath.length === 0 && (
-                  <div className="text-neutral-500">파싱된 요청 없음</div>
-                )}
-              </div>
-            </div>
-            <div>
-              <div className="mb-1 text-[11px] text-neutral-500">
-                200/201 이외 응답 (
-                {logs.data.requestLog.nonOkTotal ?? logs.data.requestLog.nonOkEntries.length}건)
-              </div>
-              <div className="max-h-56 space-y-1 overflow-y-auto text-[11px]">
-                {logs.data.requestLog.nonOkEntries.map((e, i) => (
-                  <div
-                    key={i}
-                    className="flex justify-between rounded bg-amber-950/30 px-2 py-1 text-amber-300"
-                  >
-                    <span>
-                      {e.method} {e.path}
-                    </span>
-                    <span className="tabular-nums">
-                      {e.status} · {e.latencyMs}ms
-                    </span>
-                  </div>
-                ))}
-                {logs.data.requestLog.nonOkEntries.length === 0 && (
-                  <div className="text-neutral-500">없음</div>
-                )}
-              </div>
-            </div>
-            <div>
-              <div className="mb-1 text-[11px] text-neutral-500">
-                Error/Warn 로그 (
-                {logs.data.requestLog.errorWarnTotal ?? logs.data.requestLog.errorWarnLines.length}건)
-              </div>
-              <div className="max-h-56 space-y-1 overflow-y-auto font-mono text-[11px]">
-                {logs.data.requestLog.errorWarnLines.map((l, i) => (
-                  <div key={i} className={`break-all ${lineColor(l)}`}>
-                    {l}
-                  </div>
-                ))}
-                {logs.data.requestLog.errorWarnLines.length === 0 && (
-                  <div className="text-neutral-500">없음</div>
-                )}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="text-[11px] text-neutral-500">Pod 로그를 조회하면 분석 결과가 표시됩니다</div>
-        )}
-      </Card>
-
-      <Card
-        title="Top Errors / Fingerprints (선택 Pod 기준)"
-        basis="조회된 로그에서 집계 · 반복 횟수 상위 20개만 표시"
-      >
+      <Card title="Top Errors / Fingerprints (선택 Pod 기준)">
         {kube.loading && !logs.data ? (
           <SectionLoading />
         ) : (
@@ -344,7 +375,6 @@ export function LogTab({
         )}
       </Card>
 
-      <RequestLogPanel window={win} />
     </div>
   );
 }

@@ -20,7 +20,7 @@ import "server-only";
 //     COMPRESS_WHITE_SPACE) run before the match so %20, &#x2f; and /./ style
 //     evasion is normalised away rather than pattern-matched.
 
-import { ENV, isBenignPath, normalizePath, wafRegion } from "./config";
+import { APP_TRAFFIC_PATHS, ENV, wafRegion } from "./config";
 import { classifyUa, spoofedUaPatterns, type ThreatCategory } from "./threatsig";
 import type { AssembledRule, AssembleKind, HttpSummary } from "@/lib/types";
 
@@ -34,16 +34,6 @@ export const MAX_PATTERN_CHARS = 200;
 // Escapes every regex metacharacter so a literal is matched as text.
 export function escapeLiteral(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
-}
-
-// A path pattern anchored at the start and ending at a segment boundary, so
-// "/admin" matches /admin and /admin/x but never /administration.
-export function pathPattern(path: string): string {
-  // NORMALIZE_PATH runs before the match, so the pattern has to describe the
-  // resolved path — "/v1/image/../../etc/passwd" is matched as "/etc/passwd".
-  const clean = normalizePath(path).toLowerCase();
-  const trimmed = clean.endsWith("/") && clean.length > 1 ? clean.slice(0, -1) : clean;
-  return `^${escapeLiteral(trimmed)}(/|$)`;
 }
 
 // A UA pattern matched anywhere in the header, with tool names held to a
@@ -111,19 +101,6 @@ interface KindSpec {
 }
 
 const SPEC: Record<AssembleKind, KindSpec> = {
-  path: {
-    name: "dash-regex-path",
-    setName: "dash-suspicious-paths",
-    fields: [{ UriPath: {} }],
-    // NORMALIZE_PATH collapses /./ and /../ before the anchor is applied, so a
-    // request for /x/./admin cannot slip past a ^/admin pattern.
-    transforms: ["URL_DECODE", "NORMALIZE_PATH", "LOWERCASE"],
-    notes: [
-      "관측된 경로 중 서비스 경로(APP_TRAFFIC_PATHS)와 헬스체크를 뺀 것만 패턴화 — 정상 트래픽은 매칭되지 않음",
-      "URL_DECODE + NORMALIZE_PATH 를 먼저 적용해 %2f·/./ 인코딩 우회를 정규화한 뒤 매칭",
-      "^/경로(/|$) 형태라 하위 경로는 잡고 접두어가 같은 다른 경로(/admin 대 /administration)는 잡지 않음",
-    ],
-  },
   ua: {
     name: "dash-regex-ua",
     setName: "dash-threat-uas",
@@ -136,7 +113,7 @@ const SPEC: Record<AssembleKind, KindSpec> = {
       "빈 User-Agent 는 ^$ 로 잡는다. 헤더 자체가 없는 요청은 SingleHeader 문장이 평가되지 않으므로 이 규칙으로는 잡히지 않는다 — 필요하면 별도 규칙이 필요",
       "COMPRESS_WHITE_SPACE 로 공백을 정규화한 뒤 소문자 매칭",
       "단어 경계를 둬서 도구 이름이 다른 토큰 안에 포함된 경우는 매칭하지 않음",
-      "적용 전 반드시 시험 탭에서 판정해 볼 것 — 허용 목록에 없는 정상 클라이언트가 이 환경에 있다면 함께 차단된다",
+      "적용은 반드시 Count 부터 — 허용 목록에 없는 정상 클라이언트가 이 환경에 있다면 함께 차단된다",
     ],
   },
   sqli: {
@@ -162,8 +139,7 @@ const SPEC: Record<AssembleKind, KindSpec> = {
 //
 // The rule handed to the console therefore carries an ARN placeholder, not the
 // set name: a name in the ARN field is rejected at creation time, and would
-// have failed only after the operator pasted it. The sandbox is the one place
-// that takes patterns inline, so it gets its own copy of the JSON.
+// have failed only after the operator pasted it.
 function chunkSets(spec: KindSpec, patterns: string[]): { name: string; patterns: string[] }[] {
   const chunks: string[][] = [];
   for (let i = 0; i < patterns.length; i += MAX_PATTERNS_PER_SET) {
@@ -195,15 +171,77 @@ function createSetCli(setName: string, patterns: string[]): string {
   ].join(" ");
 }
 
-// `arnFor` decides what goes in the ARN field: a placeholder for the console
-// copy, the bare set name for the sandbox (its evaluator resolves inline sets
-// by name).
+// The path scope-down every rule is wrapped in.
+//
+// The WAF sits in front of the ALB. Without this, a malicious-UA request to an
+// undefined path is cut with 403 before the ALB can answer it with the 404 the
+// task requires, and `Exception Handling` drops for a request nobody meant to
+// touch. So detection is AND'ed with "the URI is one of the served API paths"
+// — the rule can only ever fire inside the surface we own.
+export function pathScopeStatement(): Record<string, unknown> {
+  const transforms = [
+    { Priority: 0, Type: "URL_DECODE" },
+    { Priority: 1, Type: "NORMALIZE_PATH" },
+    { Priority: 2, Type: "LOWERCASE" },
+  ];
+  const matches = APP_TRAFFIC_PATHS.map((p) => ({
+    ByteMatchStatement: {
+      SearchString: p.toLowerCase(),
+      FieldToMatch: { UriPath: {} },
+      TextTransformations: transforms,
+      PositionalConstraint: "STARTS_WITH",
+    },
+  }));
+  return matches.length === 1 ? matches[0]! : { OrStatement: { Statements: matches } };
+}
+
+// Does this statement narrow a rule to the served API paths?
+//
+// Accepts a bare ByteMatch/RegexPatternSetReference on UriPath, or an Or of
+// them. A ByteMatch has to name a path we actually serve — a scope-down onto
+// some other prefix is not a scope-down, it is a different rule.
+function isPathScope(stmt: unknown): boolean {
+  if (!stmt || typeof stmt !== "object") return false;
+  const s = stmt as Record<string, any>;
+
+  if (s.OrStatement?.Statements) {
+    const kids = s.OrStatement.Statements as unknown[];
+    return kids.length > 0 && kids.every(isPathScope);
+  }
+  if (s.ByteMatchStatement?.FieldToMatch?.UriPath) {
+    const needle = String(s.ByteMatchStatement.SearchString ?? "").toLowerCase();
+    return APP_TRAFFIC_PATHS.some((p) => needle.startsWith(p.toLowerCase()));
+  }
+  // The set's contents live in AWS, not in the JSON, so this is taken at its
+  // word — the operator wrote the set and can see what is in it.
+  if (s.RegexPatternSetReferenceStatement?.FieldToMatch?.UriPath) return true;
+  return false;
+}
+
+// The gate both paths into the WebACL pass through: the assembler's own output
+// and anything an operator pastes. Returns null when the rule is acceptable,
+// or the reason it is refused.
+export function scopeDownRefusal(rule: unknown): string | null {
+  if (!rule || typeof rule !== "object") return "규칙 JSON 을 읽을 수 없습니다.";
+  const stmt = (rule as Record<string, any>).Statement;
+  if (!stmt) return "규칙에 Statement 가 없습니다.";
+  const and = (stmt as Record<string, any>).AndStatement?.Statements as unknown[] | undefined;
+  if (!and || and.length < 2) {
+    return `경로 스코프다운이 없습니다 — AndStatement 로 제공 API 경로(${APP_TRAFFIC_PATHS.join(", ")}) 조건과 묶여야 합니다. 스코프다운 없이 올리면 미지정 경로가 404 대신 403 을 받아 Exception Handling 이 깨집니다.`;
+  }
+  if (!and.some(isPathScope)) {
+    return `AndStatement 안에 제공 API 경로(${APP_TRAFFIC_PATHS.join(", ")}) 조건이 없습니다.`;
+  }
+  return null;
+}
+
+// `arnFor` decides what goes in the ARN field — a placeholder until the
+// operator creates the set and pastes the real ARN back.
 function buildRule(
   spec: KindSpec,
   sets: { name: string; patterns: string[] }[],
   action: "BLOCK" | "COUNT",
   arnFor: (setName: string) => string,
-  inlineSets: boolean,
 ): string {
   const transforms = spec.transforms.map((Type, Priority) => ({ Priority, Type }));
 
@@ -218,11 +256,12 @@ function buildRule(
       },
     })),
   );
+  const detection = refs.length === 1 ? refs[0]! : { OrStatement: { Statements: refs } };
 
   const rule = {
     Name: spec.name,
     Priority: 100,
-    Statement: refs.length === 1 ? refs[0] : { OrStatement: { Statements: refs } },
+    Statement: { AndStatement: { Statements: [pathScopeStatement(), detection] } },
     Action: action === "BLOCK" ? { Block: {} } : { Count: {} },
     VisibilityConfig: {
       SampledRequestsEnabled: true,
@@ -231,18 +270,7 @@ function buildRule(
     },
   };
 
-  return JSON.stringify(
-    inlineSets
-      ? {
-          // Sandbox-only: the local evaluator reads pattern sets from the top
-          // level, which is how a rule can be judged before the set exists.
-          RegexPatternSets: Object.fromEntries(sets.map((s) => [s.name, s.patterns])),
-          Rules: [rule],
-        }
-      : rule,
-    null,
-    2,
-  );
+  return JSON.stringify(rule, null, 2);
 }
 
 // Builds the rule for one purpose. `summary` is only read for the observed
@@ -252,33 +280,7 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
   const patterns: string[] = [];
   const evidence: string[] = [];
 
-  if (kind === "path") {
-    // Off-surface paths only: anything the environment actually serves, a
-    // health check, or image delivery would be a false positive by
-    // construction. Image paths in particular are heavy legitimate traffic the
-    // score depends on — see isImageAssetPath.
-    const seen = new Set<string>();
-    for (const p of summary.byPath) {
-      if (!p.path.startsWith("/")) continue;
-      if (isBenignPath(p.path)) continue;
-      const pattern = pathPattern(p.path);
-      if (seen.has(pattern)) continue;
-      seen.add(pattern);
-      patterns.push(pattern);
-      // Show the resolved path when normalisation changed it, so the operator
-      // sees why a "/v1/…" request produced an "/etc/passwd" pattern.
-      const resolved = normalizePath(p.path);
-      const shown = resolved === (p.path.split("?")[0] ?? p.path) ? p.path : `${p.path} → ${resolved}`;
-      evidence.push(
-        `${shown} — ${p.count}건${p.blocked > 0 ? ` (차단 ${p.blocked})` : ""}${p.suspicious ? " · 의심 경로" : ""}`,
-      );
-    }
-    if (patterns.length === 0) {
-      throw new Error(
-        "서비스 경로 밖에서 관측된 경로가 없음 — 패턴으로 만들 대상이 없습니다. (SQLi 는 관측과 무관하게 생성됩니다)",
-      );
-    }
-  } else if (kind === "ua") {
+  if (kind === "ua") {
     // Every observed UA that is not a client this environment expects, not just
     // the ones matching a named tool. classifyUa now returns UNKNOWN rather
     // than null for anything unrecognised, so a plain "Mozilla/5.0
@@ -337,10 +339,11 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
         ]
       : [];
 
-  // Observed-path rules stay in COUNT: the path list is a sample, and a path
-  // that merely looks odd is not proof. UA and SQLi signatures are never
-  // legitimate traffic, so those block outright.
-  const action = kind === "path" ? "COUNT" : "BLOCK";
+  // SQLi is a fixed signature set that has never seen our traffic, so it goes
+  // up as COUNT and is promoted on measurement. UA patterns are built from
+  // strings the operator just read on screen, so a COUNT round would only delay
+  // the block (04).
+  const action = kind === "sqli" ? "COUNT" : "BLOCK";
 
   return {
     kind,
@@ -352,15 +355,15 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
       createCli: createSetCli(set.name, set.patterns),
       arnPlaceholder: placeholder(set.name),
     })),
-    ruleJson: buildRule(spec, sets, action, placeholder, false),
-    sandboxRuleJson: buildRule(spec, sets, action, (n) => n, true),
+    ruleJson: buildRule(spec, sets, action, placeholder),
     evidence,
     notes: [
       ...spec.notes,
       ...capNote,
+      "제공 API 경로 조건과 AND 로 묶여 있음 — 미지정 경로 요청은 이 규칙에 걸리지 않고 ALB 의 404 로 간다",
       action === "COUNT"
-        ? "Action 은 COUNT — 매칭량을 먼저 확인하고 오탐이 없을 때 Block 으로 바꾸세요."
-        : "Action 은 Block — 정상 트래픽이 매칭되지 않음을 시험 탭에서 확인한 뒤 적용하세요.",
+        ? "Action 은 COUNT — 매칭 건수와 앱 응답을 확인한 뒤 Block 으로 승격하세요."
+        : "Action 은 Block — 올린 직후 정상 경로 프로브를 한 번 돌려 200 인지 확인하세요.",
     ],
   };
 }
