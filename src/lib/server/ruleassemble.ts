@@ -165,19 +165,36 @@ function visibility(name: string): Record<string, unknown> {
 }
 
 // 403 — abnormal requests on the served endpoints, built from what the
-// traffic actually carried. Every legitimate request here has a query string
-// (the task appends requestid/uuid to all traffic), so mere presence is never
-// the condition. Observation picks the patterns: a fixed SQLI_PATTERNS
-// signature enters only when an observed query string actually triggered it,
-// and an injected-looking query that no fixed signature covers (XSS, exotic
-// payloads) becomes a literal pattern of its normalised form. The served
-// paths themselves are the rule's scope, never its suspicion — a pattern is
-// only ever built from the query string.
+// traffic actually carried, PLUS AWS's own obfuscation-resistant matchers.
+// Every legitimate request here has a query string (the task appends
+// requestid/uuid to all traffic), so mere presence is never the condition.
+//
+// Two layers, both scoped to the observed traffic:
+//   - a precise, editable layer: a fixed SQLI_PATTERNS signature enters only
+//     when an observed query string actually triggered it, and an
+//     injected-looking query no fixed signature covers becomes a literal
+//     pattern of its normalised form. Grounded in what was actually seen.
+//   - an obfuscation layer: SqliMatchStatement + XssMatchStatement, AWS's own
+//     tokenizer-based matchers. A hand-rolled regex can only undo the decode
+//     steps it was told about (URL/HTML-entity here) — base64, hex, unicode
+//     escapes, SQL comments and nesting go straight past it. AWS's matcher
+//     already does that decoding internally, so it rides shotgun rather than
+//     being reimplemented. rulestatement.ts already knows how to approximate
+//     both locally (looksLikeSqli/looksLikeXss, SensitivityLevel HIGH), so
+//     the 시험 탭 judges this rule with no changes there.
+//
+// The served paths themselves are the rule's scope, never its suspicion.
 function assembleQueryRule(apiPaths: string[], summary: HttpSummary): AssembledRule {
   const name = "dash-query-403";
   const endpointPattern = `^${endpointGroup(apiPaths)}(/|$)`;
   const transforms = SPEC.sqli.transforms.map((Type, Priority) => ({ Priority, Type }));
   const compiledSigs = SQLI_PATTERNS.map((s) => new RegExp(s));
+
+  if (summary.queryPatterns.length === 0) {
+    throw new Error(
+      "쿼리스트링 통계가 비어 있습니다 — 관측된 쿼리스트링이 없어 규칙을 만들 수 없습니다. WAF 로깅(WAF_LOG_GROUP)을 확인하세요.",
+    );
+  }
 
   const sigs: string[] = [];
   const literals = new Set<string>();
@@ -201,15 +218,6 @@ function assembleQueryRule(apiPaths: string[], summary: HttpSummary): AssembledR
   }
 
   const patterns = [...sigs, ...literals];
-  if (patterns.length === 0) {
-    // "Nothing was seen" and "nothing suspicious was seen" need different
-    // answers from the operator.
-    throw new Error(
-      summary.queryPatterns.length === 0
-        ? "쿼리스트링 통계가 비어 있습니다 — 관측된 쿼리스트링이 없어 규칙을 만들 수 없습니다. WAF 로깅(WAF_LOG_GROUP)을 확인하세요."
-        : "관측된 쿼리스트링이 전부 정상 형태(requestid·uuid 등)입니다 — 403으로 만들 대상이 없습니다. 관측과 무관한 선제 차단이 필요하면 SQL 인젝션 카드를 쓰세요.",
-    );
-  }
   const tooLong = patterns.filter((p) => p.length > MAX_PATTERN_CHARS);
   if (tooLong.length > 0 || endpointPattern.length > MAX_PATTERN_CHARS) {
     throw new Error(
@@ -218,16 +226,24 @@ function assembleQueryRule(apiPaths: string[], summary: HttpSummary): AssembledR
   }
 
   const sets = chunkSets("dash-query-sigs", patterns);
-  const refs = (arnFor: (setName: string) => string): Record<string, unknown>[] =>
-    sets.map((set) => ({
+  const sqliStatement = {
+    SqliMatchStatement: {
+      FieldToMatch: { QueryString: {} },
+      TextTransformations: transforms,
+      SensitivityLevel: "HIGH",
+    },
+  };
+  const xssStatement = {
+    XssMatchStatement: { FieldToMatch: { QueryString: {} }, TextTransformations: transforms },
+  };
+  const rule = (arnFor: (setName: string) => string): Record<string, unknown> => {
+    const sigRefs = sets.map((set) => ({
       RegexPatternSetReferenceStatement: {
         ARN: arnFor(set.name),
         FieldToMatch: { QueryString: {} },
         TextTransformations: transforms,
       },
     }));
-  const rule = (arnFor: (setName: string) => string): Record<string, unknown> => {
-    const r = refs(arnFor);
     return {
       Name: name,
       // Distinct priorities so the 403/404 pair can land in one WebACL without
@@ -238,7 +254,7 @@ function assembleQueryRule(apiPaths: string[], summary: HttpSummary): AssembledR
         AndStatement: {
           Statements: [
             pathRegexStatement(endpointPattern),
-            ...(r.length === 1 ? r : [{ OrStatement: { Statements: r } }]),
+            { OrStatement: { Statements: [...sigRefs, sqliStatement, xssStatement] } },
           ],
         },
       },
@@ -266,10 +282,14 @@ function assembleQueryRule(apiPaths: string[], summary: HttpSummary): AssembledR
       null,
       2,
     ),
-    evidence,
+    evidence:
+      evidence.length > 0
+        ? evidence
+        : ["관측 창에서 이상 쿼리스트링 없음 — SqliMatchStatement·XssMatchStatement(AWS 자체 탐지)만 적용"],
     notes: [
       "관측된 쿼리스트링(QueryString 패턴 목록) 중 인젝션 형태만 패턴화 — 쿼리스트링 존재만으로는 차단하지 않음. 이 환경의 모든 정상 요청에 requestid·uuid 쿼리스트링이 붙는다",
-      "고정 시그니처는 관측에 실제로 걸린 것만 담고, 시그니처 밖 페이로드는 정규화된 형태의 리터럴로 패턴화",
+      "고정 시그니처는 관측에 실제로 걸린 것만 담고, 시그니처 밖 페이로드는 정규화된 형태의 리터럴로 패턴화 — 둘 다 관측 근거가 있는 정밀한 매칭",
+      "OrStatement 에 SqliMatchStatement·XssMatchStatement 를 항상 추가 — base64·hex·유니코드 이스케이프·SQL 주석 등 우리 정규식이 못 푸는 난독화는 AWS 자체 토크나이저가 내부적으로 처리. SensitivityLevel HIGH 라 오탐 가능성이 있으니 적용 전 시험 탭에서 반드시 확인",
       `AndStatement — 과제지의 정상 경로(${endpointPattern}) 안의 요청만 평가. 경로 자체는 의심 패턴이 아니라 적용 범위이고, 경로 밖 요청은 404 규칙 담당. 엔드포인트는 괄호 안 목록만 고치면 추가/삭제 (LOWERCASE 변환이 먼저라 항상 소문자)`,
       "URL_DECODE + HTML_ENTITY_DECODE 로 인코딩 우회를 풀고 COMPRESS_WHITE_SPACE 로 공백 삽입을 정규화한 뒤 매칭",
       customResponseNote(403),
@@ -341,10 +361,10 @@ function assembleEndpointRule(kind: EndpointKind, summary: HttpSummary): Assembl
   }
   // The 403 rule scopes to every served endpoint, image delivery included: an
   // injection aimed at /v1/image is still an injection, and this rule only ever
-  // fires on an observed injection signature — never on the path itself — so
-  // widening the scope cannot touch normal image traffic. Leaving it out would
-  // put /v1/image?id=' or 1=1 past both rules, since the 404 allow list below
-  // waves anything carrying "image" through.
+  // fires on an injection signature — never on the path itself — so widening
+  // the scope cannot touch normal image traffic. Leaving it out would put
+  // /v1/image?id=' or 1=1 past both rules, since the 404 allow list below waves
+  // anything carrying "image" through.
   if (kind === "query") return assembleQueryRule(APP_TRAFFIC_PATHS, summary);
   // The 404 allow list takes image delivery as a substring instead (it arrives
   // under more than one shape), so its alternation carries the API paths proper.

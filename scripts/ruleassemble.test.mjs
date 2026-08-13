@@ -387,20 +387,41 @@ check("시그니처 밖 XSS 는 리터럴 패턴화", qSig("q=<script>alert(1)</
 // Evidence carries only the abnormal observations, never the normal traffic.
 check("근거는 비정상 관측만", q403.evidence.length, 2);
 check("정상 쿼리는 근거에 없음", q403.evidence.some((e) => e.includes("dbdump")), false);
-// Console copy references the set by ARN placeholder; sandbox copy inlines it.
+// The endpoint-scope statement and the signature/obfuscation OR sit as the
+// two AndStatement arms; Sqli/XssMatchStatement always ride along inside the
+// Or so obfuscated payloads our regex can't decode still get caught.
 const qConsole = JSON.parse(q403.ruleJson);
-const qRef = qConsole.Statement.AndStatement.Statements[1].RegexPatternSetReferenceStatement;
+const qOr = qConsole.Statement.AndStatement.Statements[1].OrStatement.Statements;
+check("OrStatement 에 SqliMatchStatement 포함", qOr.some((s) => s.SqliMatchStatement), true);
+check("OrStatement 에 XssMatchStatement 포함", qOr.some((s) => s.XssMatchStatement), true);
+check(
+  "SqliMatchStatement 는 SensitivityLevel HIGH",
+  qOr.find((s) => s.SqliMatchStatement)?.SqliMatchStatement.SensitivityLevel,
+  "HIGH",
+);
+const qRef = qOr.find((s) => s.RegexPatternSetReferenceStatement).RegexPatternSetReferenceStatement;
 check("콘솔용 ARN 은 자리표시자", qRef.ARN, q403.sets[0].arnPlaceholder);
 const qSandbox = JSON.parse(q403.sandboxRuleJson);
 check("샌드박스용은 패턴을 인라인으로 담음", qSandbox.RegexPatternSets[q403.sets[0].name], q403.sets[0].patterns);
 
-// "Nothing seen" and "nothing abnormal seen" are different operator answers.
+// "Nothing seen at all" still blocks (WAF_LOG_GROUP 확인 필요); "traffic seen
+// but all clean" no longer throws — SqliMatch/XssMatch alone is still a
+// meaningful rule, so the operator gets it instead of an error.
 let qEmpty = null;
 try { assembleRule("query", summary()); } catch (e) { qEmpty = e.message; }
 check("쿼리 통계가 비면 수집 문제라고 말한다", qEmpty?.includes("WAF_LOG_GROUP"), true);
-let qClean = null;
-try { assembleRule("query", summary([], [], [{ key: NORMAL_Q, count: 900 }])); } catch (e) { qClean = e.message; }
-check("정상 쿼리뿐이면 만들 대상이 없다고 말한다", qClean !== null && qClean !== qEmpty, true);
+const qClean = assembleRule("query", summary([], [], [{ key: NORMAL_Q, count: 900 }]));
+check("정상 쿼리뿐이어도 규칙은 만들어짐 (Sqli/XssMatch 만)", qClean.sets.length, 0);
+check(
+  "정상 쿼리뿐이면 근거에 그렇게 적힘",
+  qClean.evidence.some((e) => e.includes("AWS 자체 탐지")),
+  true,
+);
+check(
+  "정상 쿼리뿐이어도 SqliMatchStatement 는 남음",
+  qClean.ruleJson.includes("SqliMatchStatement"),
+  true,
+);
 
 const s404 = assembleRule("surface", summary([p("/admin"), p("/v1/user", 900, false)]));
 const sPattern = s404.patterns[0];
