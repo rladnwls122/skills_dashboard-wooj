@@ -25,6 +25,18 @@ const KINDS: { kind: AssembleKind; label: string; sub: string; field: string }[]
     sub: "고정 시그니처 세트 (관측 무관)",
     field: "QueryString",
   },
+  {
+    kind: "query",
+    label: "엔드포인트 비정상 요청 403",
+    sub: "관측된 쿼리스트링 중 인젝션 형태만 패턴화",
+    field: "UriPath + QueryString",
+  },
+  {
+    kind: "surface",
+    label: "미제공 엔드포인트 404",
+    sub: "과제지 정상 경로 밖 요청 전부 · 관측 경로로 영향 확인",
+    field: "UriPath",
+  },
 ];
 
 // Generates one regex rule per purpose out of what the environment is seeing,
@@ -120,6 +132,9 @@ export function AiTab({
 
               {rule && (
                 <div className="space-y-3">
+                  {/* The endpoint kinds carry the regex inline — no set to
+                      create, so the whole ① step disappears. */}
+                  {rule.sets.length > 0 && (
                   <div className="text-[11px]">
                     <div className="mb-1 font-semibold text-neutral-300">
                       ① 정규식 패턴 세트 {rule.sets.length > 1 ? `${rule.sets.length}개` : ""} 먼저 생성
@@ -167,9 +182,12 @@ export function AiTab({
                       </div>
                     ))}
                   </div>
+                  )}
 
                   <div className="text-[11px]">
-                    <div className="mb-1 font-semibold text-neutral-300">② 규칙 JSON</div>
+                    <div className="mb-1 font-semibold text-neutral-300">
+                      {rule.sets.length > 0 ? "② 규칙 JSON" : "규칙 JSON (그대로 붙여넣기 가능)"}
+                    </div>
                     {pendingArns(rule) > 0 && (
                       <div className="mb-1 rounded border border-amber-800/60 bg-amber-950/20 px-2 py-1 text-amber-300">
                         ARN {pendingArns(rule)}개가 아직 자리표시자입니다 — 그대로 붙여넣으면 AWS 가

@@ -697,7 +697,8 @@ export async function assembleRuleAction(
 ): Promise<ActionResult<AssembledRule>> {
   try {
     // SQLi is a fixed signature set, so it must not fail when the WAF summary
-    // is unavailable — only the observed kinds need live traffic.
+    // is unavailable — every other kind (path/ua/query/surface) reads the
+    // observed traffic.
     if (kind === "sqli") return ok(assembleRule("sqli", EMPTY_SUMMARY));
     return ok(assembleRule(kind, await buildHttpSummary(null, resolveWindow(sel, Date.now()))));
   } catch (e) {
