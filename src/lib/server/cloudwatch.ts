@@ -278,6 +278,31 @@ function q(
   };
 }
 
+// Two AWS failures are configuration mistakes rather than outages, and both
+// reach the operator as SDK prose that names no fix. They are worth rewriting
+// at the single point every panel already funnels its errors through.
+//
+// Deliberately appended, not substituted: the original text carries the request
+// ID and the account, which is what a supervisor asks for when the cause turns
+// out not to be the obvious one.
+const HINTS: { match: RegExp; hint: string }[] = [
+  {
+    // Every AWS-backed panel fails at once with this, which reads as an outage.
+    // It is almost always the process having started before .env held the keys —
+    // env files are read at boot only, so editing one changes nothing until a
+    // restart.
+    match: /could not load credentials from any providers/i,
+    hint: "AWS 자격증명을 찾지 못했습니다 — .env 를 채운 뒤 서버를 재시작했는지 확인하세요(.env 는 기동 시점에만 읽힙니다). 또는 `aws configure` 로 ~/.aws/credentials 를 만드세요.",
+  },
+  {
+    // A name that is merely wrong looks identical to logging being off.
+    match: /log group '.*' does not exist/i,
+    hint: "설정된 로그 그룹 이름이 이 계정·리전에 없습니다 — 설정 탭의 자동 탐색으로 실제 존재하는 그룹을 고르세요. CLOUDFRONT scope 의 WAF 로그는 us-east-1 에 있습니다.",
+  },
+];
+
 export function errMsg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  const raw = e instanceof Error ? e.message : String(e);
+  const hint = HINTS.find((h) => h.match.test(raw))?.hint;
+  return hint ? `${hint} (원문: ${raw})` : raw;
 }
