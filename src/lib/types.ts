@@ -266,7 +266,10 @@ export interface ResolvedWindow extends WindowSelection {
 }
 
 // A regex rule assembled for one purpose (see server/ruleassemble.ts).
-export type AssembleKind = "path" | "ua" | "sqli";
+// "query" and "surface" are the endpoint rules: a query string on a served
+// endpoint → 403, a path outside the served surface → 404. Both are
+// observation-free and use no pattern set (the regex rides inline).
+export type AssembleKind = "path" | "ua" | "sqli" | "query" | "surface";
 
 // A regex pattern set is a separate AWS resource, created before the rule that
 // references it. Both artefacts are produced here so neither has to be

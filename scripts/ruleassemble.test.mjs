@@ -22,7 +22,7 @@ const check = (name, actual, expected) => {
   );
 };
 
-const summary = (byPath = [], byUa = []) => ({
+const summary = (byPath = [], byUa = [], queryPatterns = []) => ({
   totalSampled: 1000,
   windowLabel: "15m",
   source: "test",
@@ -30,7 +30,7 @@ const summary = (byPath = [], byUa = []) => ({
   byIp: [],
   byUa,
   byMethod: [],
-  queryPatterns: [],
+  queryPatterns,
   headerPatterns: [],
   blockedTotal: 0,
   statusDist: null,
@@ -346,6 +346,95 @@ check("세트 이름이 서로 다름", new Set(many.sets.map((s) => s.name)).si
 check("세트마다 ARN 자리표시자가 다름", new Set(many.sets.map((s) => s.arnPlaceholder)).size, 3);
 check("쪼개진 사실이 판단 기준에 적힘",
   many.notes.some((n) => n.includes("세트 3개")), true);
+
+// --- endpoint rules: abnormal-request 403 / off-surface 404 ---
+// The task appends requestid/uuid query strings to EVERY legitimate request,
+// so the 403 rule keys on what observed traffic actually carried — injection
+// shapes — never on the query string's mere presence. The custom response
+// carries only a ResponseCode — the one shape AWS cannot reject (a body key
+// must preexist in the WebACL's CustomResponseBodies map).
+const NORMAL_Q = "email=dbdump500001@example.org&requestid=999999999999&uuid=7c5a3c6a-758f-4bc5-9bdf-3e573a0ad729";
+const q403 = assembleRule("query", summary([], [], [
+  { key: NORMAL_Q, count: 900 },
+  { key: "id=1%20or%201%3D1&requestid=1&uuid=x", count: 12 },
+  { key: "q=%3Cscript%3Ealert(1)%3C%2Fscript%3E", count: 7 },
+]));
+const qPattern = q403.patterns[0];
+// The editable form the whole feature exists for: one lowercase word list.
+check("query 경로 패턴은 편집 가능한 목록 형태", qPattern, "^/v1/(user|product|stress|image)(/|$)");
+check("query 규칙은 403 커스텀 응답", q403.ruleJson.includes('"ResponseCode": 403'), true);
+check("커스텀 응답에 body key 없음", q403.ruleJson.includes("CustomResponseBodyKey"), false);
+check("쿼리스트링 존재만으로 차단하지 않음", q403.ruleJson.includes("SizeConstraintStatement"), false);
+check("경로 조건과 시그니처 조건의 AND", q403.ruleJson.includes("AndStatement"), true);
+const qRe = new RegExp(qPattern);
+check("서비스 엔드포인트가 매칭됨", qRe.test("/v1/user"), true);
+check("하위 경로도 매칭됨", qRe.test("/v1/product/3"), true);
+check("이름이 비슷한 다른 경로는 매칭 안 됨", qRe.test("/v1/users"), false);
+// 404 규칙은 "image" 가 든 경로를 전부 통과시키므로, 403 규칙이 이미지 엔드포인트를
+// 범위에서 빼면 /v1/image 인젝션이 두 규칙을 모두 빠져나간다.
+check("이미지 엔드포인트도 403 범위 안", qRe.test("/v1/image"), true);
+check("이미지 하위 경로도 403 범위 안", qRe.test("/v1/image/3.png"), true);
+// Observation picks the signatures: only what actually fired gets in.
+const qSigs = q403.sets.flatMap((s) => s.patterns);
+check("관측에 걸린 시그니처만 담김 (전체 세트 아님)", qSigs.length < SQLI_PATTERNS.length, true);
+check("관측에 걸린 시그니처는 SQLI_PATTERNS 소속", qSigs.some((p) => SQLI_PATTERNS.includes(p)), true);
+// URL-encoded injection is judged in decoded form, like the WAF will see it.
+const qSig = (s) => qSigs.some((p) => new RegExp(p).test(s));
+check("인코딩된 인젝션도 디코딩 후 걸림", qSig("id=1 or 1=1"), true);
+check("정상 쿼리스트링(requestid·uuid)은 안 걸림", qSig(NORMAL_Q.toLowerCase()), false);
+// An injected-looking query no fixed signature covers becomes a literal.
+check("시그니처 밖 XSS 는 리터럴 패턴화", qSig("q=<script>alert(1)</script>"), true);
+// Evidence carries only the abnormal observations, never the normal traffic.
+check("근거는 비정상 관측만", q403.evidence.length, 2);
+check("정상 쿼리는 근거에 없음", q403.evidence.some((e) => e.includes("dbdump")), false);
+// Console copy references the set by ARN placeholder; sandbox copy inlines it.
+const qConsole = JSON.parse(q403.ruleJson);
+const qRef = qConsole.Statement.AndStatement.Statements[1].RegexPatternSetReferenceStatement;
+check("콘솔용 ARN 은 자리표시자", qRef.ARN, q403.sets[0].arnPlaceholder);
+const qSandbox = JSON.parse(q403.sandboxRuleJson);
+check("샌드박스용은 패턴을 인라인으로 담음", qSandbox.RegexPatternSets[q403.sets[0].name], q403.sets[0].patterns);
+
+// "Nothing seen" and "nothing abnormal seen" are different operator answers.
+let qEmpty = null;
+try { assembleRule("query", summary()); } catch (e) { qEmpty = e.message; }
+check("쿼리 통계가 비면 수집 문제라고 말한다", qEmpty?.includes("WAF_LOG_GROUP"), true);
+let qClean = null;
+try { assembleRule("query", summary([], [], [{ key: NORMAL_Q, count: 900 }])); } catch (e) { qClean = e.message; }
+check("정상 쿼리뿐이면 만들 대상이 없다고 말한다", qClean !== null && qClean !== qEmpty, true);
+
+const s404 = assembleRule("surface", summary([p("/admin"), p("/v1/user", 900, false)]));
+const sPattern = s404.patterns[0];
+check("surface 규칙은 404 커스텀 응답", s404.ruleJson.includes('"ResponseCode": 404'), true);
+check("surface 규칙은 허용 패턴의 부정", s404.ruleJson.includes("NotStatement"), true);
+check("surface 규칙은 패턴 세트가 없음", s404.sets.length, 0);
+check("surface 패턴에 대문자 없음", noUppercase(s404.patterns), true);
+const sRe = new RegExp(sPattern);
+check("서비스 API 는 허용", sRe.test("/v1/user"), true);
+check("정적 이미지는 허용", sRe.test("/images/logo.png"), true);
+check("API 이미지도 허용", sRe.test("/v1/image/3.png"), true);
+check("image 가 들어간 경로는 형태 불문 허용", sRe.test("/product-images/42.jpg"), true);
+check("헬스체크는 허용", sRe.test("/healthcheck"), true);
+check("health 가 들어간 경로는 형태 불문 허용", sRe.test("/api/health"), true);
+check("readiness 경로도 허용", sRe.test("/ready"), true);
+check("서비스 밖 경로는 허용 안 됨 (=404 차단)", sRe.test("/admin"), false);
+check("미제공 API 도 허용 안 됨", sRe.test("/v1/none"), false);
+check("루트 경로도 허용 안 됨", sRe.test("/"), false);
+// Observation previews the impact; the task-sheet paths never appear as hits.
+check("관측된 차단 대상이 근거에 남음", s404.evidence.some((e) => e.includes("/admin") && e.includes("404")), true);
+check("과제지 정상 경로는 근거의 차단 목록에 없음", s404.evidence.some((e) => e.includes("/v1/user — ")), false);
+check(
+  "두 규칙의 Priority 가 달라 한 WebACL 에 공존 가능",
+  qConsole.Priority !== JSON.parse(s404.ruleJson).Priority,
+  true,
+);
+for (const [label, rule] of [["query", q403], ["surface", s404]]) {
+  check(`[${label}] 패턴이 전부 컴파일됨`, rule.patterns.every((s) => { try { new RegExp(s); return true; } catch { return false; } }), true);
+  check(`[${label}] 패턴에 대문자 없음`, noUppercase(rule.patterns), true);
+  check(`[${label}] 정규식 ${MAX_PATTERN_CHARS}자 이하`, rule.patterns.every((s) => s.length <= MAX_PATTERN_CHARS), true);
+  check(`[${label}] CustomResponse 는 Block 안에 있음`,
+    JSON.parse(rule.ruleJson).Action.Block.CustomResponse !== undefined, true);
+  check(`[${label}] 샌드박스용은 Rules 배열`, Array.isArray(JSON.parse(rule.sandboxRuleJson).Rules), true);
+}
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
