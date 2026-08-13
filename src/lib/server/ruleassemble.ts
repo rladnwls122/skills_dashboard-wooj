@@ -380,6 +380,9 @@ function assembleEndpointRule(kind: EndpointKind, summary: HttpSummary): Assembl
 interface KindSpec {
   name: string;
   setName: string;
+  // Distinct per kind so path/ua/sqli/query/surface can all land in the same
+  // WebACL at once — AWS rejects a WebACL with two rules sharing a Priority.
+  priority: number;
   // Every field the same pattern set is applied to. More than one produces an
   // OrStatement — a query-string injection and a request-body injection are the
   // same attack and deserve the same rule.
@@ -393,6 +396,7 @@ const SPEC: Record<Exclude<AssembleKind, EndpointKind>, KindSpec> = {
   path: {
     name: "dash-regex-path",
     setName: "dash-suspicious-paths",
+    priority: 100,
     fields: [{ UriPath: {} }],
     // NORMALIZE_PATH collapses /./ and /../ before the anchor is applied, so a
     // request for /x/./admin cannot slip past a ^/admin pattern.
@@ -406,6 +410,7 @@ const SPEC: Record<Exclude<AssembleKind, EndpointKind>, KindSpec> = {
   ua: {
     name: "dash-regex-ua",
     setName: "dash-threat-uas",
+    priority: 101,
     fields: [{ SingleHeader: { Name: "user-agent" } }],
     transforms: ["URL_DECODE", "COMPRESS_WHITE_SPACE", "LOWERCASE"],
     notes: [
@@ -421,6 +426,7 @@ const SPEC: Record<Exclude<AssembleKind, EndpointKind>, KindSpec> = {
   sqli: {
     name: "dash-regex-sqli",
     setName: "dash-sqli-signatures",
+    priority: 102,
     // QueryString alone would miss a POST body payload, which is where an
     // injection usually lives once a form is involved.
     fields: [{ QueryString: {} }, { Body: {} }],
@@ -500,7 +506,7 @@ function buildRule(
 
   const rule = {
     Name: spec.name,
-    Priority: 100,
+    Priority: spec.priority,
     Statement: refs.length === 1 ? refs[0] : { OrStatement: { Statements: refs } },
     Action: action === "BLOCK" ? { Block: {} } : { Count: {} },
     VisibilityConfig: {

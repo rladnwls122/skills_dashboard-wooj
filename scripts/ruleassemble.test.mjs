@@ -457,5 +457,14 @@ for (const [label, rule] of [["query", q403], ["surface", s404]]) {
   check(`[${label}] 샌드박스용은 Rules 배열`, Array.isArray(JSON.parse(rule.sandboxRuleJson).Rules), true);
 }
 
+// All five cards must be pastable into one WebACL together — AWS rejects a
+// WebACL with two rules sharing a Priority.
+const allFive = [sqli, uas, paths, q403, s404];
+check(
+  "다섯 카드 모두 Priority 가 서로 다름",
+  new Set(allFive.map((r) => JSON.parse(r.ruleJson).Priority)).size,
+  allFive.length,
+);
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
