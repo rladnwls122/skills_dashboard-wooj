@@ -12,13 +12,34 @@ import type {
   WarningEvent,
 } from "@/lib/types";
 
+// A rule that went up recently, carrying the grading keys as they stood at that
+// moment. The false-block alarm is the only reason this module knows the WebACL
+// exists (04).
+export interface RecentRuleApply {
+  ruleName: string;
+  action: string;
+  atMs: number;
+  keys: { label: string; pct: number }[];
+}
+
 export interface AnomalyInput {
   metrics: MetricSummary[];
   httpSummary: HttpSummary | null;
   pods: PodInfo[];
   events: WarningEvent[];
   fingerprints: FingerprintEntry[];
+  // Applies inside the alarm window, and the grading keys as they read now.
+  // Either one missing simply means the alarm cannot fire.
+  recentApplies?: RecentRuleApply[];
+  gradingNow?: { label: string; pct: number }[];
+  nowMs?: number;
 }
+
+// How long a rule stays suspect after going up, and how far a key has to fall
+// to blame it. A percentage point is outside the noise of an availability
+// window and inside "we are losing points".
+const APPLY_ALARM_MS = 5 * 60_000;
+const KEY_DROP_PP = 1;
 
 function metric(input: AnomalyInput, key: string): MetricSummary | undefined {
   return input.metrics.find((m) => m.key === key);
@@ -268,6 +289,33 @@ export function detectAnomalies(input: AnomalyInput): Anomaly[] {
       ],
       "LOW",
     );
+  }
+
+  // A rule we just put up, and a grading key that fell right after. Reported at
+  // CRITICAL without corroboration on purpose: this is the one case where the
+  // dashboard itself caused the damage, and the fix is one button away.
+  const applies = input.recentApplies ?? [];
+  const nowMs = input.nowMs ?? Date.now();
+  for (const a of applies) {
+    if (nowMs - a.atMs > APPLY_ALARM_MS) continue;
+    const before = new Map(a.keys.map((k) => [k.label, k.pct]));
+    const dropped = (input.gradingNow ?? [])
+      .map((k) => ({ label: k.label, now: k.pct, was: before.get(k.label) }))
+      .filter((k): k is { label: string; now: number; was: number } => k.was !== undefined)
+      .filter((k) => k.was - k.now >= KEY_DROP_PP);
+    if (dropped.length === 0) continue;
+    anomalies.push({
+      id: `false-block-${a.ruleName}-${a.atMs}`,
+      type: "TRAFFIC_ANOMALY_SUSPECTED",
+      severity: "CRITICAL",
+      title: `오탐 의심 — 규칙 ${a.ruleName} 적용 후 채점 키 하락`,
+      detail: `${a.ruleName} 을 ${a.action} 으로 올린 뒤 ${Math.round((nowMs - a.atMs) / 60_000)}분 내에 채점 키가 떨어졌습니다. 정상 요청이 403 을 맞고 있을 수 있습니다 — 규칙 생성 탭에서 내리고 정상 경로 프로브로 확인하세요.`,
+      evidence: dropped.map(
+        (k) => `${k.label}: ${k.was}% → ${k.now}% (${(k.was - k.now).toFixed(1)}%p 하락)`,
+      ),
+      confidence: "MEDIUM",
+      detectedAt: now,
+    });
   }
 
   return anomalies;

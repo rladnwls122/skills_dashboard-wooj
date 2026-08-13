@@ -2,7 +2,6 @@
 
 export type Status = "NORMAL" | "WARNING" | "CRITICAL";
 export type Confidence = "LOW" | "MEDIUM" | "HIGH";
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
 
 export interface MetricPoint {
   t: string;
@@ -94,20 +93,6 @@ export interface FingerprintEntry {
   firstSeen: string;
   lastSeen: string;
   sample: string;
-}
-
-export interface TimelineEntry {
-  ts: string;
-  source: string;
-  severity: Status;
-  text: string;
-}
-
-export interface CorrelationResult {
-  category: AnomalyType;
-  reason: string;
-  evidence: string[];
-  confidence: Confidence;
 }
 
 export interface PathStat {
@@ -266,10 +251,9 @@ export interface ResolvedWindow extends WindowSelection {
 }
 
 // A regex rule assembled for one purpose (see server/ruleassemble.ts).
-// "query" and "surface" are the endpoint rules: a query string on a served
-// endpoint → 403, a path outside the served surface → 404. Both are
-// observation-free and use no pattern set (the regex rides inline).
-export type AssembleKind = "path" | "ua" | "sqli" | "query" | "surface";
+// No "path": an undefined path already gets a 404 from the ALB, and blocking it
+// in the WAF would return 403 instead (04).
+export type AssembleKind = "ua" | "sqli";
 
 // A regex pattern set is a separate AWS resource, created before the rule that
 // references it. Both artefacts are produced here so neither has to be
@@ -295,30 +279,12 @@ export interface AssembledRule {
   // The Rule to paste into the console AFTER the sets exist. References them by
   // ARN placeholder; a set name in the ARN field is rejected by AWS.
   ruleJson: string;
-  // The same rule with the patterns inlined, which is the only form the local
-  // sandbox can evaluate before the sets exist.
-  sandboxRuleJson: string;
   // What each pattern came from, so an operator can judge it before applying.
   evidence: string[];
   // Why this field/transform combination, in the operator's language.
   notes: string[];
 }
 
-export type WafRuleKind =
-  | "RATE_BASED"
-  | "BYTE_MATCH"
-  | "REGEX_PATTERN"
-  | "IP_SET"
-  | "MANAGED_GROUP"
-  | "LABEL_MATCH";
-
-export interface WafCriteria {
-  path?: string;
-  userAgent?: string;
-  ip?: string;
-  query?: string;
-  header?: { name: string; value: string };
-}
 
 export interface WafSampleRow {
   ts: string;
@@ -519,8 +485,6 @@ export interface MetricsPanel {
   httpSummary: HttpSummary | null;
   httpSummaryError: string | null;
   anomalies: Anomaly[];
-  correlations: CorrelationResult[];
-  timeline: TimelineEntry[];
   // The window every number in this panel covers. Panels label themselves with
   // it so two figures on screen are never read as the same span by accident.
   window: ResolvedWindow;
@@ -572,74 +536,4 @@ export interface RequestLogQueryResult {
   windowLabel: string;
   // true when the row cap hid matches
   truncated: boolean;
-}
-
-export interface TestRequest {
-  // stable key for the UI row
-  id: string;
-  method: string;
-  path: string;
-  // query string without the leading "?"
-  query: string;
-  userAgent: string;
-  ip: string;
-  // ISO 3166-1 alpha-2 country code for GeoMatchStatement evaluation
-  country: string;
-  // false marks a deliberately malicious example — blocking it is a true
-  // positive, not a false positive.
-  benign: boolean;
-  // Headers beyond User-Agent (Cookie, Host, X-Forwarded-For, …). Absent
-  // headers evaluate as a definite no-match, so only what is listed exists.
-  headers?: Record<string, string>;
-  // request body, inspected by Body / JsonBody / SizeConstraint statements
-  body?: string;
-  // labels already on the request, for LabelMatchStatement
-  labels?: string[];
-}
-
-export type RuleTestAction = "Block" | "Count" | "Allow" | "Captcha" | "Challenge" | "(none)";
-
-export type RuleTestOutcome =
-  | "PASS"
-  | "BLOCKED"
-  | "COUNTED"
-  | "CAUGHT"
-  | "CHALLENGED"
-  | "MATCHED"
-  | "UNKNOWN";
-
-export interface RuleTestRow {
-  requestId: string;
-  // null when the statement could not be evaluated locally
-  matched: boolean | null;
-  outcome: RuleTestOutcome;
-  reason: string;
-  // the rule that decided this request; null when nothing matched
-  ruleName: string | null;
-}
-
-export interface RuleTestResult {
-  ruleName: string;
-  action: RuleTestAction;
-  // how many rules the pasted JSON contained
-  ruleCount: number;
-  // statement types encountered that cannot be evaluated locally
-  unsupported: string[];
-  // statement types answered by a local approximation of AWS behaviour
-  approximated: string[];
-  rows: RuleTestRow[];
-  passed: number;
-  blocked: number;
-  counted: number;
-  // matched by a Captcha/Challenge rule
-  challenged: number;
-  // matched by a rule that carries no action
-  matched: number;
-  // malicious examples the rule blocked (true positives)
-  caught: number;
-  // malicious examples the rule let through
-  missed: number;
-  unknown: number;
-  verdict: "SAFE" | "FALSE_POSITIVE_RISK" | "INCONCLUSIVE";
-  notes: string[];
 }

@@ -161,73 +161,35 @@ export function ZoomDialog({
   );
 }
 
+// No zoom affordance: enlarging a card shows the same rows bigger and gives no
+// next action, so drill-down is a tab move instead. The time window is global,
+// so it follows on its own.
 export function Card({
   title,
   right,
   children,
   className = "",
-  basis,
-  zoomable = true,
+  // A threshold worth acting on, shown next to the title in grey (e.g. "20/min").
+  // Not a caption — the window and the aggregation live in the window bar.
+  limit,
 }: {
   title: string;
   right?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
-  // What the panel's numbers were counted over, when the list is capped or the
-  // population is not obvious. A count that quietly drops rows reads as a total
-  // otherwise.
-  basis?: string;
-  zoomable?: boolean;
+  limit?: string;
 }) {
-  const [zoomed, setZoomed] = useState(false);
-
-  const header = (inDialog: boolean): React.ReactNode => (
-    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-neutral-800 px-3 py-2">
-      <h3 className="flex shrink-0 items-center gap-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
-        <span aria-hidden className="h-3 w-0.5 shrink-0 bg-sky-500/70" />
-        {title}
-      </h3>
-      <div className="flex min-w-0 items-center gap-2">
-        {right}
-        {zoomable && (
-          <button
-            type="button"
-            onClick={() => setZoomed(!inDialog)}
-            aria-label={inDialog ? `${title} 축소` : `${title} 확대`}
-            title={inDialog ? "닫기 (ESC)" : "크게 보기"}
-            className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
-          >
-            {inDialog ? "✕" : "⤢"}
-          </button>
-        )}
-      </div>
-    </div>
-  );
-
-  // The card and the dialog render the same children through the same code
-  // path, only in different containers — so the two can never drift into
-  // showing different rows or a different count for the same panel.
-  const body = (
-    <div className="p-3">
-      {basis && <div className="mb-1.5 font-mono text-[10px] text-neutral-600">기준: {basis}</div>}
-      {children}
-    </div>
-  );
-
   return (
     <div className={`rounded-[4px] border border-neutral-800 bg-neutral-900/70 ${className}`}>
-      {header(false)}
-      {zoomed ? (
-        <div className="p-3 text-center font-mono text-[10px] text-neutral-600">크게 보는 중…</div>
-      ) : (
-        body
-      )}
-      {zoomable && (
-        <ZoomDialog open={zoomed} onClose={() => setZoomed(false)} label={title}>
-          {header(true)}
-          {body}
-        </ZoomDialog>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-neutral-800 px-3 py-2">
+        <h3 className="flex shrink-0 items-center gap-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
+          <span aria-hidden className="h-3 w-0.5 shrink-0 bg-sky-500/70" />
+          {title}
+          {limit && <span className="font-normal text-neutral-600 normal-case">{limit}</span>}
+        </h3>
+        <div className="flex min-w-0 items-center gap-2">{right}</div>
+      </div>
+      <div className="p-3">{children}</div>
     </div>
   );
 }
@@ -406,48 +368,25 @@ const INTENT_TEXT: Record<Status, string> = {
   CRITICAL: "text-red-400",
 };
 
-// One headline number, with the exact thing it counted written underneath.
-//
-// `basis` is not decoration. Two stats can legitimately count different
-// populations of the same-sounding thing — "요청 수" over lines carrying a
-// status versus over lines carrying a latency — and with one shared card-level
-// caption there is no way to tell them apart.
-//
-// A tile with `points` also expands on its own. The card-level ⤢ enlarges six
-// metrics at once, which is the wrong move when the question is about one of
-// them: the tile carries a sparkline three characters tall, and reading a
-// spike off it is guesswork. Expanding the tile gives that one series a real
-// axis without hiding the other five behind a tab.
+// One headline number. No caption and no expand: the window bar says what span
+// every number covers, and the drill-down is a tab move.
 export function Stat({
   label,
   value,
   unit,
-  basis,
   status = "NORMAL",
   sub,
   copy,
-  points,
-  detail,
 }: {
   label: string;
   value: string;
   unit?: string;
-  // The field, the aggregation and the exclusions. "AWS/WAFV2 BlockedRequests
-  // Sum", not "WAF 기준".
-  basis?: string;
   status?: Status;
-  // A second line the caller owns — a delta, a share, a note.
+  // A second line the caller owns — a delta, a sparkline, a share.
   sub?: React.ReactNode;
   copy?: string;
-  // This metric's own series. Its presence is what makes the tile expandable —
-  // a tile with no history has nothing to enlarge.
-  points?: MetricPoint[];
-  // Extra rows for the expanded view only (previous value, delta, thresholds).
-  detail?: React.ReactNode;
 }) {
-  const [zoomed, setZoomed] = useState(false);
   const loud = status !== "NORMAL";
-  const expandable = (points?.length ?? 0) > 0;
 
   return (
     <div
@@ -457,20 +396,7 @@ export function Stat({
     >
       <div className="flex items-start justify-between gap-1">
         <span className="text-[10px] leading-4 text-neutral-500">{label}</span>
-        <div className="flex shrink-0 items-center gap-1">
-          {loud && <StatusBadge status={status} />}
-          {expandable && (
-            <button
-              type="button"
-              onClick={() => setZoomed(true)}
-              aria-label={`${label} 크게 보기`}
-              title="이 지표만 크게 보기"
-              className="rounded px-1 font-mono text-[10px] text-neutral-600 hover:bg-neutral-800 hover:text-neutral-200"
-            >
-              ⤢
-            </button>
-          )}
-        </div>
+        {loud && <StatusBadge status={status} />}
       </div>
       <div
         className={`font-mono font-bold tabular-nums ${loud ? "text-2xl" : "text-xl"} ${INTENT_TEXT[status]}`}
@@ -481,51 +407,6 @@ export function Stat({
         )}
       </div>
       {sub}
-      {basis && (
-        <div className="mt-0.5 text-[9.5px] leading-[1.35] break-keep text-neutral-600" title={basis}>
-          {basis}
-        </div>
-      )}
-
-      {expandable && (
-        <ZoomDialog open={zoomed} onClose={() => setZoomed(false)} label={label}>
-          <div className="flex items-center justify-between gap-3 border-b border-neutral-800 px-3 py-2">
-            <h3 className="flex items-center gap-2 font-mono text-[10px] font-semibold tracking-[0.14em] text-neutral-500 uppercase">
-              <span aria-hidden className="h-3 w-0.5 shrink-0 bg-sky-500/70" />
-              {label}
-            </h3>
-            <div className="flex items-center gap-2">
-              {loud && <StatusBadge status={status} />}
-              <button
-                type="button"
-                onClick={() => setZoomed(false)}
-                title="닫기 (ESC)"
-                className="rounded px-1.5 py-0.5 font-mono text-[11px] text-neutral-500 hover:bg-neutral-800 hover:text-neutral-200"
-              >
-                ✕
-              </button>
-            </div>
-          </div>
-          <div className="space-y-2 p-3">
-            <div className={`font-mono text-3xl font-bold tabular-nums ${INTENT_TEXT[status]}`}>
-              {value}
-              {unit && (
-                <span className="ml-1 font-sans text-xs font-normal text-neutral-500">{unit}</span>
-              )}
-            </div>
-            {detail}
-            {basis && <div className="text-[10px] text-neutral-500">기준: {basis}</div>}
-            {/* Its own sync key: the crosshair on the page behind belongs to the
-                other charts, and tying this one to them would move a chart the
-                reader cannot see. */}
-            <TimeChart
-              height={320}
-              syncKey={`stat-${label}`}
-              series={[{ label: `${label}${unit ? ` (${unit})` : ""}`, points: points ?? [] }]}
-            />
-          </div>
-        </ZoomDialog>
-      )}
     </div>
   );
 }

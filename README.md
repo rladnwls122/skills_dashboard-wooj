@@ -1,9 +1,9 @@
 # skills-dashboard
 
 국가기능경기대회 클라우드컴퓨팅 트러블슈팅용 통합 대시보드.
-CloudWatch(ALB/RDS Proxy/WAF) 메트릭, WAFv2 규칙 추천·시뮬레이션·적용·롤백,
+CloudWatch(ALB/RDS Proxy/WAF) 메트릭, WAFv2 규칙 조립·COUNT 적용·BLOCK 승격·내리기,
 Kubernetes Pod/Event/로그 추적, Deployment 리소스 조정, 사후 검증,
-Amazon Q용 Incident Context 생성을 하나의 화면에서 수행한다.
+채점기 입력값 집계를 하나의 화면에서 수행한다.
 
 대상 환경 (task-3): `skills-eks`(ap-northeast-2) · `skills-alb`(LBC Ingress) ·
 `skills-db-proxy`(MySQL 8.0) · `skills-waf`(CLOUDFRONT scope, us-east-1) ·
@@ -16,6 +16,10 @@ Amazon Q용 Incident Context 생성을 하나의 화면에서 수행한다.
 `0.0.0.0`에 열면 같은 네트워크의 누구나 이 화면으로 Deployment를 패치하고 WAF
 규칙을 적용할 수 있다. 다른 기기에서 봐야 하면 SSH 포트 포워딩을 쓰고, 바인딩
 주소를 넓히지 않는다.
+
+**대회 당일에 읽을 문서는 이게 아니라 [`docs/RUNBOOK.md`](docs/RUNBOOK.md)다** —
+무엇을 보고 무엇을 누르는지 한 장으로 적혀 있다. 이 README는 그 화면이 어떻게
+만들어졌는지를 적는다.
 
 ---
 
@@ -68,9 +72,13 @@ mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드�
 
 ## 화면 사용법
 
-좌측 상단 배너 6칸(ALB/RDS/WAF/K8S/PODS/ANOM)은 서브시스템별 실시간 상태등 —
-빨간색이 점멸하면 해당 영역에 문제가 있다는 뜻. 탭은 좌측 레일(모바일은 상단
-가로 스크롤)에서 전환한다.
+탭은 **`성능` / `트래픽` / `규칙 생성`** 3장이고, 좌측 레일(모바일은 상단 가로
+스크롤)에서 전환한다. 상단 상태등 6칸은 없앴다 — 바로 아래 타일과 같은 값을 두 번
+읽게 했다. 이상 유무는 `성능` 탭의 채점 키 8줄과 이상 목록이 직접 답한다.
+
+**설정은 탭이 아니라 헤더 우측 톱니(⚙)**다. 리소스 이름·로그 그룹은 자동 탐색이
+기본이고 설정 화면은 그 값이 틀렸을 때 사람이 덮어쓰는 안전장치라, 평소 감시
+화면에 자리를 차지할 이유가 없다. ESC나 배경 클릭으로 닫는다.
 
 **구간 막대**(헤더 아래 줄)는 화면 전체가 공유하는 하나의 시간 창이다.
 `15m / 30m / 1h / 2h / 4h` 버튼은 열지 않아도 현재 값이 보이고, 옆에 `갱신
@@ -87,72 +95,54 @@ mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드�
 클립보드로 복사된다. 목록은 **전체 / 조회 / 표시** 세 숫자를 따로 적는다 —
 한도에 걸려 잘린 배열 길이를 전체 건수로 읽는 일을 막기 위해서다.
 
-1. **요약 (Overview)** — 핵심 메트릭 카드, Pod 상태, Warning 이벤트, 감지된
-   이상 목록을 한 화면에 모아 보여줌. 장애 발생 시 가장 먼저 보는 탭.
-2. **성능 (Performance)** — 맨 위 **채점 지표 정렬**은 채점기(skills-grader)가 쓰는
-   지표 키에 관측 트래픽을 맞춰 세워 둔 표다. `(user|product|stress) availability` /
-   `performance`, `image download`, `Exception Handling` 순으로, 각 키의 비율과
-   충족/전체 건수를 보여준다. **점수는 매기지 않는다** — 점수는 채점기 실행 결과
-   (`results_<비번호>.log`)가 정하고, 이 표는 그 값이 왜 그렇게 나오는지 보라고
-   있는 것이다. 앱 로그 Logs Insights 한 번으로 집계하며 **조회를 눌러야** 실행된다.
-   그 아래로 Pod 상태 분포와 개수(min/current/max), Node 개수와
-   리소스 사용률, Pod Health 표, Target Group별 지표, 상태코드 분포, Warning
-   Event Board, 그리고 **Deployment 조정**(Replicas/CPU/Memory Limit 변경 →
-   승인 → 약 2분 뒤 사후 검증으로 IMPROVED/NO_CHANGE/DEGRADED/INCONCLUSIVE).
-   병목을 보고 같은 화면에서 바로 조치한다. 표의 "로그" 버튼은 로그 탭으로
-   이동하며 해당 Pod를 선택해 준다.
-3. **방화벽 (WAF)** — WAF 이상 요약, 경로/IP/쿼리/헤더/메소드별 통계(경로에는
-   "의심"·"헬스체크" 표시, IP는 점유율 30%↑ 강조), **샘플 요청 원본 테이블**
-   (BLOCK/ALLOW/COUNT 필터·검색). 규칙 추천 카드에서 **시뮬레이션 → COUNT
-   적용(승인 필요) → BLOCK 승격(COUNT 검증 이력 필요)** 순서로만 진행된다.
-   각 카드의 **"룰 JSON"**과 **"Q 프롬프트 복사"** 버튼, 적용 이력에서 롤백.
-4. **로그 (Logs)** — Pod 로그 터미널(검색·Previous·자동갱신, **"문제만"**으로
-   Error/Warn만, **"시간 숨김"**으로 타임스탬프 접기), 요청 로그 분석
-   (latency/비정상 응답/Error·Warn), 반복 오류 지문, 상태코드로 조회하는 앱
-   요청 로그. 브라우저에서 필터를 걸면 "표시 N줄 / 조회 M줄"로 모집단을 밝힌다.
-5. **점검 (Check)** — 입력한 주소로 대시보드가 **직접 GET 요청을 한 번** 보낸다.
-   다른 화면은 전부 CloudWatch를 읽는데, CloudWatch는 몇 분 늦고 값이 비었을 때
-   "트래픽이 없었다"와 "아직 게시되지 않았다"를 구분해 주지 않는다. "지금
-   응답하는가"는 데이터가 답할 수 없는 질문이라 서비스에 직접 묻는다.
-   기대 코드를 비우면 2xx, 넣으면 그 코드만 정상으로 본다. 반복(5/10/30초)을
-   켜면 그 주기로 계속 찌른다. 요청에는
-   `User-Agent: skills-dashboard/traffic-check`가 붙으므로 WAF·로그 탭에서 이
-   요청을 실제 트래픽과 구분할 수 있다. 응답 본문은 읽지 않고 버리며(스크린샷에
-   본문이 찍히지 않도록), 결과는 최근 30회까지 **메모리에만** 남는다 — 새로고침하면
-   사라진다. 실패한 점검도 결과로 표시되지 실패로 던지지 않는다: 대시보드가
-   고장난 것과 대상이 고장난 것은 다른 사실이다. `http`/`https`만 요청한다.
+1. **성능 (Performance)** — 대회 2시간 동안 띄워 두는 화면. 스크롤 없이 보이는
+   범위가 "지금 이상이 있는가"에 답한다.
+   - 맨 위 **채점기 입력값** — 채점기(skills-grader)가 쓰는 키에 관측 트래픽을 맞춘
+     8줄. `(user|product|stress) availability` / `performance`, `image download`,
+     `Exception Handling`. **점수는 매기지 않는다** — 점수는 채점기 실행 결과가
+     정하고, 이 표는 그 값이 왜 그렇게 나오는지 보라고 있다. 앱 로그 Logs Insights
+     집계라 **5분마다 자동**이고, 지금 보려면 `⟳`. (규칙을 올린 직후가 그 경우다.)
+   - 그 옆이 **노드 대수** 패널, 아래가 **TRT / 4XX / 5XX / RDS Conn** 4타일.
+     제목 옆 회색 숫자가 판단선이다 (`5XX 20/min` = 넘으면 앱 장애를 의심).
+   - **이상 목록** — 상태등을 없앴으므로 이 카드가 유일한 경보다. 각 줄을 펼치면
+     근거가 나온다.
+   - 아래로 Pod Health(상태 분포 포함), Pod/Node 리소스 사용률, Target Group별
+     지표, Warning Event Board, 맨 아래 **Deployment 조정**(Replicas/CPU/Memory
+     Limit 변경 → 승인 → 약 2분 뒤 IMPROVED/NO_CHANGE/DEGRADED/INCONCLUSIVE).
+2. **트래픽 (Traffic)** — 지금 무엇이 들어오고 있나. 경로별 요청·차단, User-Agent,
+   QueryString 패턴, 앱 요청 로그(상태코드 필터·경로 검색), WAF Blocked/Allowed
+   추이, Pod 로그 터미널과 반복 오류 지문.
 
-   **주소를 제한하지 않는 이유** — 내부 대역(loopback·사설 IP)을 막는 것이 보통의
-   SSRF 대책이지만, 여기서 점검할 대상이 바로 그 대역(내부 ALB, 클러스터 안
-   서비스, 이 PC의 포트)이라 막으면 기능이 없어진다. 대신 성립 조건을 없애 뒀다:
-   주소는 이 입력란에서만 오고(로그·WAF 샘플 같은 관측 데이터가 대상을 고르는
-   경로가 없다), 서버는 `127.0.0.1`에만 바인딩하며, 응답 본문은 읽지 않는다.
-   같은 PC의 `curl`이 이미 닿는 곳뿐이라 이 버튼이 새로 열어 주는 대상은 없다.
-   **이 대시보드를 공용 호스트에 올리거나 포트를 열면** 그때는 대상 허용 목록과
-   내부 대역 차단이 필요하다 — 호출자가 더 이상 그 네트워크의 주인이 아니기 때문이다.
-6. **시험 (Sandbox)** — WAF 규칙을 적용 전에 **로컬에서만** 돌려본다. AWS로
-   아무것도 보내지 않고 WebACL도 건드리지 않는다. 아래 "규칙 시험 샌드박스" 참고.
-7. **규칙생성 (AI)** — 용도별(의심 경로 / 의심 User-Agent / SQL 인젝션)로 규칙을
-   조립한다. 정규식 패턴 세트는 규칙과 **별개의 AWS 리소스**이므로 산출물도 둘로
-   나뉜다.
-   - **① 패턴 세트** — 세트에 넣을 정규식 목록과 `aws wafv2 create-regex-pattern-set`
+   **경로 목록에는 규칙 만들기 버튼이 없다.** 미지정 경로는 ALB가 이미 404를 내므로
+   WAF가 손댈 이유가 없다 — `의심` 배지는 "규칙을 만들라"가 아니라 "그 경로가 진짜
+   404로 끝났는지 `Exception Handling`과 대조하라"는 신호다. 규칙으로 가는 통로는
+   **User-Agent 목록**뿐이다.
+3. **규칙 생성 (AI)** — 한 규칙의 일생이 이 한 화면에서 끝난다.
+   - **① 패턴 세트** — 세트에 넣을 정규식과 `aws wafv2 create-regex-pattern-set`
      명령. 세트를 먼저 만들어 ARN을 받는다.
-   - **② 규칙 JSON** — ①의 세트를 **ARN으로 참조**한다. 만들기 전에는 ARN 자리가
-     자리표시자이고, 화면이 "그대로 붙여넣으면 AWS가 거부한다"고 경고한다.
-     ARN을 입력란에 붙여넣으면 규칙 JSON에 채워진다 (세트 이름을 ARN 자리에 넣으면
-     AWS가 거부하므로 이름을 넣지 않는다).
+   - **② 규칙 JSON** — ①의 세트를 **ARN으로 참조**한다. 자리표시자가 남아 있으면
+     전이 버튼이 비활성이다 (세트 이름을 ARN 자리에 넣으면 AWS가 거부한다).
+   - **③ 전이 버튼** — 상태는 `GetWebACL`에서 매번 파생한다. 로컬 상태 테이블이
+     없으므로 누가 콘솔에서 직접 바꿔도 화면이 거짓말하지 않는다.
+     **UA 규칙은 `추천됨 → BLOCK`**(버튼 2개), **SQLi 규칙은 `추천됨 → COUNT →
+     BLOCK`**(버튼 3개). UA는 관측된 문자열에서 조립되어 무엇을 막는지 이미 눈으로
+     확인한 상태라 COUNT를 거치지 않고, SQLi는 고정 시그니처라 우리 정상 쿼리가
+     걸리는지 실측해야 한다. `내리기`는 어느 상태에서든 같은 버튼이다.
+   - **COUNT 실측** — SQLi 규칙이 COUNT일 때만 열린다. `매칭 34건 (정상 0 ·
+     비정상 21 · 조인 불가 13)` 형태로 셋을 나란히 적는다. **조인 불가를 비정상에
+     합치지 않는다** — POST/PUT은 양쪽 로그에 `requestid`가 없어 조인이 불가능하고,
+     그걸 비정상으로 세면 없는 근거를 지어내는 것이 된다.
+   - **정상 경로 프로브** — 규칙을 올린 직후 정상 경로가 아직 200인지 확인한다.
+     UA 규칙은 COUNT를 안 거치므로 **이 확인이 절차다.**
+   - 같은 탭에서 WebACL 규칙 목록과 WCU를 본다.
 
-   **"시험 탭으로 보내기"**는 패턴을 인라인으로 담은 별도 형태를 보낸다 — 로컬
-   평가기는 그 형태만 읽을 수 있고, 덕분에 세트를 만들기 전에도 판정할 수 있다.
-   같은 탭에서 **Incident Context**(Amazon Q 프롬프트 / Markdown / JSON)를 생성한다.
+**경로 스코프다운은 강제다.** 조립되는 UA·SQLi 규칙은 `AND(제공 API 경로, 탐지 조건)`
+형태로만 나오고, 손으로 붙여넣은 JSON도 같은 검사를 통과해야 올라간다. WAF는 ALB
+**앞**에 있어서, 스코프다운이 없으면 미지정 경로로 들어온 악성 요청이 ALB의 404에
+닿기 전에 403으로 잘린다 — 요구사항은 404다.
 
-   **게이트웨이 기대 동작**: 이 환경의 게이트웨이는 미지정 경로 → `404`
-   (엔드포인트가 없는 것처럼 보이게 해 스캐닝 차단), 지정 경로 + 정상 요청 →
-   `200`, 지정 경로 + 비정상 요청(SQLi/XSS/Body 포맷 오류/차단 IP/rate limit
-   초과) → `403`으로 응답한다. 따라서 404·403 자체는 장애가 아니라 정책이
-   동작한 결과이며, **5XX와 "미지정 경로가 통과된 것"만이 계약 위반**이다.
-   보고서는 관측된 트래픽을 이 기준에 대고 `[정상]`/`[편차]`로 갈라 적고,
-   WAF 추천 규칙마다 Block 시 돌려줄 응답 코드를 함께 제안한다.
+**오탐 경보** — 규칙을 올리는 순간 채점 키 8줄을 스냅샷으로 남기고, 5분 안에 어느
+키든 1%p 이상 떨어지면 `성능` 탭 이상 목록에 CRITICAL로 뜬다.
 
 **규칙 조립이 지키는 표준** — 패턴은 한 줄에 하나(패턴 세트는 줄 단위로 독립
 평가), 전부 소문자(LOWERCASE 변환이 먼저 적용되므로 대문자는 영영 매칭되지
@@ -163,73 +153,15 @@ mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드�
 콘솔에서 몇 개를 만들어야 하는지 알려준다. 이 규약들은 테스트가 산출되는 모든
 패턴에 대해 검사한다.
 
-**패널 확대** — 카드 제목 옆 `⤢` 버튼이 같은 패널을 크게 연다. ESC와 배경
-클릭으로 닫히고, 카드와 확대창은 같은 코드 경로를 쓰므로 두 곳이 다른 행이나
-다른 분모를 보여줄 수 없다. 열려 있는 동안에도 자동 새로고침은 계속 돈다.
+**드릴다운은 탭 이동 하나로 통일했다.** 카드 확대(`⤢`)는 없앴다 — 같은 카드를 크게
+보여줄 뿐 다음 행동을 주지 않았다. 시간창은 전역이라 탭을 옮겨도 그대로 따라간다.
 
 **원칙**: 자동 차단·자동 정책 변경 없음. WAF/Deployment 변경은 항상 사람의
 명시적 승인을 거친다.
 
-### 규칙 시험 샌드박스 (시험 탭)
-
-붙여넣은 WAF 규칙을 합성 요청 목록에 대해 로컬에서 평가한다. 네트워크 호출이
-없으므로 AWS 자격증명 없이도 동작한다.
-
-**붙여넣을 수 있는 형태** — 넷 다 그대로 인식한다.
-
-- WAFv2 Rule 하나 (`{"Name":…,"Statement":…,"Action":…}`)
-- Rule 배열 (`[{…},{…}]`)
-- WebACL JSON 전체 (`aws wafv2 get-web-acl` 출력 그대로, `WebACL` 래퍼 포함 가능)
-- Statement 본문만 (`{"ByteMatchStatement":{…}}`)
-- 위 형태를 **여러 개 그냥 이어붙인 것** — 콘솔에서 규칙을 하나씩 복사해
-  `{…}{…}` 로 붙여넣어도 되고, 사이에 쉼표가 있어도 된다.
-  손으로 남긴 주석(`//`, `/* */`)과 마지막 쉼표도 허용한다.
-
-규칙이 여러 개면 **Priority 오름차순**으로 평가하고, Block/Allow/CAPTCHA/Challenge
-에서 멈춘다(Count는 계속 진행). 결과 표의 "결정 규칙" 열이 어느 규칙이 그 요청을
-결정했는지 보여주고, 앞선 규칙의 `RuleLabels`는 뒤 규칙의 `LabelMatchStatement`가
-그대로 본다.
-
-**요청 편집** — 각 행 왼쪽 `▸`를 누르면 헤더(한 줄에 `이름: 값`), 바디, 국가 코드,
-라벨을 넣을 수 있다. 요청에 없는 헤더는 "판정 불가"가 아니라 **미매칭**으로
-평가된다. Cookie 헤더는 `Cookies` 필드로, 바디는 `Body`/`JsonBody` 필드로 자동
-파싱된다.
-
-**IP 세트·정규식 세트 참조** — ARN만으로는 내용을 알 수 없으므로, 붙여넣는 JSON
-최상위에 내용을 같이 넣으면 평가된다 (세트 이름이나 ARN 어느 쪽으로 키를 잡아도 됨):
-
-```json
-{
-  "IPSets": { "office-ips": ["10.0.2.0/24"] },
-  "RegexPatternSets": { "bad-ua": ["sqlmap", "gobuster"] },
-  "Rules": [ … ]
-}
-```
-
-**근사 평가되는 항목** — 결과 화면에 노란 배지로 표시된다. 로컬 판정이 실제 WAF와
-다를 수 있으므로 **COUNT 검증은 여전히 필수**다.
-
-| 항목 | 로컬 처리 |
-|---|---|
-| `ManagedRuleGroupStatement` | CommonRuleSet·KnownBadInputs·SQLi·Linux/Unix·Windows·PHP·WordPress·AdminProtection·BotControl을 공개된 규칙 의도대로 근사. 매칭 시 라벨도 발행 |
-| `SqliMatchStatement` / `XssMatchStatement` | AWS 내부 토크나이저 대신 시그니처 탐지 (`SensitivityLevel` 반영) |
-| `RateBasedStatement` | 스코프다운 조건만 평가 — 요청량 임계치는 합성 요청으로 재현 불가 |
-| `RuleGroupReferenceStatement` | 문장 안에 `"Rules": […]`를 넣으면 평가 |
-
-**여전히 판정 불가로 남는 것** — 로컬에 정답이 없는 것만 남긴다. IP 평판/익명 IP
-목록(공인 IP일 때. 사설 IP는 미매칭으로 확정), ATP/ACFP 규칙 그룹, 서드파티
-마켓플레이스 규칙 그룹, `ASNMatchStatement`, TLS 핑거프린트 필드, `MD5`
-TextTransformation, 내용을 못 준 IP/정규식 세트 참조. 이때도 통과가 아니라
-**판정 불가**로 표시되고 어떤 문법 때문인지 이름이 나온다.
-
-TextTransformation은 `MD5`를 뺀 WAFv2 전 종류(`URL_DECODE_UNI`, `HEX_DECODE`,
-`SQL_HEX_DECODE`, `REPLACE_COMMENTS`, `ESCAPE_SEQ_DECODE`, `CSS_DECODE`,
-`JS_DECODE`, `NORMALIZE_PATH_WIN`, `BASE64_DECODE_EXT`, `UTF8_TO_UNICODE` 등)를
-지원한다.
-
 ### 대회 전 리허설 (선택)
 
-실제 공격 없이 탐지→추천→시뮬→적용 흐름을 검증하려면 리허설 트래픽 생성기를
+실제 공격 없이 탐지→추천→COUNT→승격 흐름을 검증하려면 리허설 트래픽 생성기를
 쓴다. **본인 소유 대상에만** 사용:
 
 ```bash
@@ -275,8 +207,25 @@ WAF 통계, Pod 로그, 앱 요청 로그가 **모두 같은 창**을 읽는다.
 WAF가 차단한 요청은 앱에 도달하지 않아 이 분모에 없으므로, 같은 구간의 WAF 차단
 건수를 옆에 따로 적는다. 두 수는 출처가 다르니 더하지 않는다.
 
-`cost ratio`는 이 도구가 관측할 수 없어 표에 없다. 0점으로 적으면 점수처럼 읽히기
-때문에 아예 빼고, 왜 뺐는지 적는다.
+`cost ratio`는 이 표에 없다. 다만 **관측할 수 없어서가 아니다** — 채점기가 쓰는
+입력은 채점 창 동안의 인스턴스 대수이고, 그 대수는 CloudTrail의
+`RunInstances`/`TerminateInstances`(사전 설정 불필요·90일 보존)로 대시보드가 꺼져
+있던 구간까지 사후 재구성된다. 대수에서 점수로 가는 계산식이 비공개 절대식이라
+**점수를 만들지 않을 뿐**이다.
+
+대수는 `성능` 탭 최상단 `채점 창 노드 대수` 패널이 센다. 실시간 값은
+`describe-instances` 30초 폴링이고, 대시보드가 꺼져 있던 구간은 기동 시 CloudTrail로
+한 번 메운다. 패널이 내놓는 숫자는 **최종 평균**(지금 대수를 창 끝까지 유지했을 때)과
+**1대 증감**(지금 한 대가 최종 평균을 움직이는 폭) 둘이고, 규격 외 인스턴스는 0이 아닐
+때만 나타난다. 색으로 된 판정도 목표선도 없다 — 채점식이 비공개인 이상 초록색은
+화면이 근거 없이 만들어낸 판단이 된다.
+
+경기 시작 시각은 톱니 모달에서 입력한다. **비어 있으면 평균을 만들지 않는다** — 창
+시작이 틀리면 시간가중 평균이 통째로 틀리고, 화면은 그게 틀렸다는 걸 보여줄 방법이
+없기 때문이다.
+
+노드 대수를 셀 때 **ASG 그룹 메트릭은 쓰지 않는다** — Karpenter가 띄운 노드는
+어떤 ASG에도 속하지 않아 채점 대상 노드를 통째로 놓친다.
 
 ### WAF 통계는 로그가 있으면 전수 집계
 
@@ -365,27 +314,20 @@ Logs Insights 집계**로 읽는다. 선택한 구간을 그대로 따르고, �
 ```
 src/app/actions/dashboard.ts   # 모든 서버 액션 (AWS/K8s 접근은 전부 서버)
 src/app/dashboard/page.tsx     # 대시보드 페이지
-src/app/dashboard/ui/          # 클라이언트 컴포넌트 (탭 7개 + 공용 표시 요소)
+src/app/dashboard/ui/          # 클라이언트 컴포넌트 (탭 3개 + 설정 모달 + 공용 표시 요소)
 src/lib/server/                # server-only 모듈
   config.ts     # env + 임계치 설정 객체
   aws.ts        # SDK 클라이언트, ALB/TG/리스너규칙 자동 탐색, EKS 노드그룹 스케일링
   cloudwatch.ts # GetMetricData, current/previous/delta/%/status, TG별 지표
-  waf.ts        # 샘플 수집, HTTP 요약, 규칙 추천/시뮬/적용/롤백
+  waf.ts        # 샘플 수집, HTTP 요약, setRuleAction (COUNT 적용/BLOCK 승격/내리기)
   k8s.ts        # Pod/Event/Deployment/로그, JSON Patch + 검증
   resources.ts  # Pod/Node 리소스 사용률(metrics.k8s.io), HPA/Nodegroup 스케일링, 상태 분포
   requestlog.ts # Gin 액세스로그 파싱 → latency/상태코드/에러·경고
-  rulesim.ts    # 규칙 시험 샌드박스: 입력 파싱(Rule/배열/WebACL/Statement) + 다중 규칙 평가
-  rulejson.ts      # 연속 붙여넣기({…}{…})·주석·트레일링 콤마를 받는 관대한 JSON 리더
-  rulestatement.ts # WAFv2 Statement 평가기 (3값 논리: true/false/UNKNOWN)
-  rulerequest.ts   # 합성 요청 정규화(헤더/쿠키/쿼리인자/바디) + CIDR 매칭
-  ruletransform.ts # TextTransformation 구현 (MD5 제외 전 종류)
-  ruleinjection.ts # SQLi/XSS 로컬 시그니처 탐지
-  rulemanaged.ts   # AWS 관리형 규칙 그룹 근사 + 라벨 발행
-  anomaly.ts    # 이상 감지 (오탐 방지 규칙 포함)
-  correlation.ts# 상관 분석 + 타임라인
+  ruleassemble.ts # 관측 트래픽 → 정규식 패턴 세트 + 규칙 JSON 조립
+  logfields.ts  # 앱 로그 JSON에서 뽑는 Insights parse 구문 (requestid/uuid 포함)
+  anomaly.ts    # 이상 감지 (오탐 방지 규칙 + 규칙 적용 후 채점 키 하락 경보)
+  wafcountevidence.ts # COUNT 매칭 요청 ↔ 앱 로그 requestid 조인 (GET 한정)
   fingerprint.ts# 오류 정규화·핑거프린트
-  incident.ts   # 스냅샷 + Markdown/JSON/Q 프롬프트 컨텍스트
-  gateway.ts    # 게이트웨이 응답 계약(404/200/403) 판정 + Q 프롬프트 길이 패킹
   probe.ts      # 트래픽 점검 (입력 주소로 GET 1회, http/https만, 10초 제한)
   mask.ts       # 민감정보 마스킹
   db.ts         # SQLite (이력/baseline/스냅샷)
@@ -395,9 +337,13 @@ k8s-dashboard-rbac.yaml        # 스펙 필수 산출물 (참고용, 미적용)
 
 ## 동작 원칙
 
-- WAF 변경은 항상 추천 → 시뮬레이션 → 승인 → COUNT 적용 → 검증 → (재승인 후) BLOCK.
-  BLOCK 전환은 동일 규칙의 COUNT 성공 이력이 서버에서 확인돼야 허용.
-- 적용 전 WebACL 규칙 스냅샷을 SQLite에 저장 — 언제든 롤백 가능.
+- WAF 변경은 항상 사람이 버튼을 누른다. SQLi는 조립 → COUNT 적용 → 실측 →
+  BLOCK 승격, UA는 조립 → BLOCK. 자동 승격도 자동 롤백도 없다.
+- 규칙은 **제공 API 경로 스코프다운 없이는 올라가지 않는다** — 조립 경로와
+  붙여넣기 경로가 같은 검사를 통과한다. 미지정 경로가 404 대신 403을 받으면
+  채점의 `Exception Handling`이 깨지기 때문이다.
+- 규칙을 올린 시점의 채점 키를 스냅샷으로 남기고, 5분 안에 1%p 이상 떨어지면
+  이상 목록에 CRITICAL로 띄운다.
 - 자동 차단·자동 정책 변경 없음. Deployment 패치도 명시적 승인 후에만 실행.
 - 단일 메트릭만으로 CRITICAL 판정 없음. `/healthcheck` 등 헬스체크 경로는
   이상 판정에서 저순위 처리.

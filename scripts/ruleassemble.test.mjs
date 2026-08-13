@@ -5,7 +5,7 @@ const SRC = new URL("../src/lib/server/", import.meta.url).href;
 const {
   assembleRule,
   escapeLiteral,
-  pathPattern,
+  scopeDownRefusal,
   uaPattern,
   SQLI_PATTERNS,
   MAX_PATTERNS_PER_SET,
@@ -22,7 +22,7 @@ const check = (name, actual, expected) => {
   );
 };
 
-const summary = (byPath = [], byUa = [], queryPatterns = []) => ({
+const summary = (byPath = [], byUa = []) => ({
   totalSampled: 1000,
   windowLabel: "15m",
   source: "test",
@@ -30,7 +30,7 @@ const summary = (byPath = [], byUa = [], queryPatterns = []) => ({
   byIp: [],
   byUa,
   byMethod: [],
-  queryPatterns,
+  queryPatterns: [],
   headerPatterns: [],
   blockedTotal: 0,
   statusDist: null,
@@ -49,12 +49,6 @@ check("dot is escaped", escapeLiteral("/wp-login.php"), "\\/wp-login\\.php");
 check("parens and plus are escaped", escapeLiteral("a(b)+c"), "a\\(b\\)\\+c");
 check("brackets are escaped", escapeLiteral("x[1]?"), "x\\[1\\]\\?");
 
-// --- path patterns ---
-check("path anchors and bounds the segment", pathPattern("/admin"), "^\\/admin(/|$)");
-check("path is lowercased", pathPattern("/Admin/Panel"), "^\\/admin\\/panel(/|$)");
-check("query string is dropped", pathPattern("/x?a=1"), "^\\/x(/|$)");
-check("trailing slash is dropped", pathPattern("/admin/"), "^\\/admin(/|$)");
-
 // --- UA patterns ---
 check("ua pattern is bounded and lowercase", uaPattern("SQLMap"), "(^|[^a-z0-9])sqlmap([^a-z0-9]|$)");
 
@@ -70,7 +64,7 @@ check("sqli needs no observed traffic", sqli.patterns.length, SQLI_PATTERNS.leng
 check("sqli patterns carry no uppercase", noUppercase(sqli.patterns), true);
 check("sqli patterns use no POSIX class", noPosixClass(sqli.patterns), true);
 check("sqli patterns all compile", sqli.patterns.every((s) => { try { new RegExp(s); return true; } catch { return false; } }), true);
-check("sqli blocks", sqli.ruleJson.includes('"Block"'), true);
+check("sqli counts rather than blocks", sqli.ruleJson.includes('"Count"'), true);
 check("sqli decodes html entities before matching", sqli.ruleJson.includes("HTML_ENTITY_DECODE"), true);
 
 const sqliMatches = (q) => sqli.patterns.some((s) => new RegExp(s).test(q));
@@ -80,31 +74,74 @@ check("sleep() is caught", sqliMatches("id=1;sleep(5)"), true);
 check("ordinary query is not caught", sqliMatches("id=3&name=kim&sort=asc"), false);
 check("a word containing 'or' is not caught", sqliMatches("color=red&order=1"), false);
 
-// --- path: off-surface only ---
-const paths = assembleRule(
-  "path",
-  summary([p("/wp-login.php"), p("/v1/user", 900, false), p("/healthcheck", 400, false), p("/.env")]),
+// --- scope-down: the gate every rule passes through ---
+//
+// This is the one check whose failure is silent and expensive. A rule without a
+// path scope-down fires on undefined paths too, so a request that should have
+// reached the ALB and come back 404 gets a 403 from WAF instead — and the
+// grader's Exception Handling key drops with nothing on screen saying why.
+// Both entry points (the assembler's own output and pasted JSON) go through
+// `scopeDownRefusal`, so it is tested against both shapes.
+const byteMatch = (path) => ({
+  ByteMatchStatement: {
+    SearchString: path,
+    FieldToMatch: { UriPath: {} },
+    PositionalConstraint: "STARTS_WITH",
+  },
+});
+const detection = { RegexPatternSetReferenceStatement: { FieldToMatch: { SingleHeader: {} } } };
+const and = (...stmts) => ({ Statement: { AndStatement: { Statements: stmts } } });
+
+check("the assembler's own SQLi rule passes", scopeDownRefusal(JSON.parse(sqli.ruleJson)), null);
+check(
+  "a served path scopes the rule down",
+  scopeDownRefusal(and(byteMatch("/v1/user"), detection)),
+  null,
 );
-check("served path is never patterned", paths.patterns.some((s) => s.includes("v1")), false);
-check("health check is never patterned", paths.patterns.some((s) => s.includes("healthcheck")), false);
-check("off-surface paths are patterned", paths.patterns.length, 2);
-check("path patterns carry no uppercase", noUppercase(paths.patterns), true);
-// A path list is a sample, so it instruments rather than blocks.
-check("path rule counts rather than blocks", paths.ruleJson.includes('"Count"'), true);
+check(
+  "an Or of served paths also scopes it down",
+  scopeDownRefusal(and({ OrStatement: { Statements: [byteMatch("/v1/user"), byteMatch("/v1/stress")] } }, detection)),
+  null,
+);
+check(
+  "a pattern set on UriPath is taken at its word",
+  scopeDownRefusal(
+    and({ RegexPatternSetReferenceStatement: { FieldToMatch: { UriPath: {} } } }, detection),
+  ),
+  null,
+);
 
-const pathMatches = (path) => paths.patterns.some((s) => new RegExp(s).test(path));
-check("the observed path matches", pathMatches("/wp-login.php"), true);
-check("a subpath matches", pathMatches("/.env/x"), true);
-check("a prefix-sharing path does not match", pathMatches("/wp-login.php.bak"), false);
-check("a served path does not match", pathMatches("/v1/user"), false);
-
-let threw = null;
-try {
-  assembleRule("path", summary([p("/v1/user", 900, false)]));
-} catch (e) {
-  threw = e.message;
-}
-check("no off-surface path is an error, not an empty rule", threw !== null, true);
+const refused = (rule) => scopeDownRefusal(rule) !== null;
+check("a bare detection statement is refused", refused({ Statement: detection }), true);
+check("an And with no path condition is refused", refused(and(detection, detection)), true);
+// The trap: it looks scoped, but /admin is not a path we serve, so the rule
+// still fires everywhere the detection matches outside the surface.
+check(
+  "scoping onto a path we do not serve is not a scope-down",
+  refused(and(byteMatch("/admin"), detection)),
+  true,
+);
+check(
+  "one unserved path in the Or spoils it",
+  refused(and({ OrStatement: { Statements: [byteMatch("/v1/user"), byteMatch("/admin")] } }, detection)),
+  true,
+);
+// A UriPath match is what narrows the rule; the same bytes matched against a
+// header narrow nothing.
+check(
+  "a ByteMatch on some other field is not a path scope",
+  refused(
+    and(
+      { ByteMatchStatement: { SearchString: "/v1/user", FieldToMatch: { SingleHeader: {} } } },
+      detection,
+    ),
+  ),
+  true,
+);
+check("an And of one is not an And", refused(and(byteMatch("/v1/user"))), true);
+check("a rule with no Statement is refused", refused({ Name: "r" }), true);
+check("garbage is refused", refused("not json"), true);
+check("null is refused", refused(null), true);
 
 // --- ua: everything that is not an expected client ---
 // The rule covers each observed UA that is not on the allow list, not only the
@@ -198,47 +235,16 @@ check("a real browser UA is not matched", spoofedMatches(
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120",
 ), false);
 
-// A served-path prefix must not launder a traversal: NORMALIZE_PATH resolves it
-// before the served/off-surface decision, so the pattern describes the target.
-const traversal = assembleRule("path", summary([p("/v1/image/../../etc/passwd")]));
-check("traversal under a served prefix is still patterned", traversal.patterns, ["^\\/etc\\/passwd(/|$)"]);
-check(
-  "the evidence shows the resolved path",
-  traversal.evidence[0]?.includes("→ /etc/passwd"),
-  true,
-);
-
-// Image delivery is normal traffic here, and it arrives under more than one
-// shape — through the API and as static assets. A rule built against either
-// blocks the traffic the score depends on, so neither may become a pattern.
-const withImages = assembleRule(
-  "path",
-  summary([p("/images/product-1.png"), p("/v1/image/42"), p("/IMAGES/x.PNG"), p("/wp-login.php")]),
-);
-check("image 경로는 패턴이 되지 않음", withImages.patterns, ["^\\/wp-login\\.php(/|$)"]);
-check(
-  "근거에도 image 경로가 남지 않음",
-  withImages.evidence.some((e) => e.toLowerCase().includes("image")),
-  false,
-);
-// The traversal case must still win: the resolved target is what decides, so a
-// served image prefix cannot smuggle one through.
-check(
-  "image 접두어를 단 traversal 은 그대로 걸린다",
-  assembleRule("path", summary([p("/v1/image/../../etc/passwd")])).patterns,
-  ["^\\/etc\\/passwd(/|$)"],
-);
-let noneLeft = null;
-try {
-  assembleRule("path", summary([p("/images/a.png")]));
-} catch (e) {
-  noneLeft = e.message;
-}
-check("image 경로만 있으면 만들 대상이 없다고 알린다", noneLeft !== null, true);
+// Every rule is now AND(path scope-down, detection), so the detection half has
+// to be unwrapped before the field/transform conventions can be read off it.
+const detectionOf = (rule) => {
+  const and = JSON.parse(rule.ruleJson).Statement.AndStatement.Statements;
+  return and[1];
+};
 
 // Query-string-only SQLi misses the POST body, which is where an injection
 // usually sits once a form is involved.
-const sqliStmt = JSON.parse(sqli.ruleJson).Statement;
+const sqliStmt = detectionOf(sqli);
 check(
   "sqli inspects both the query string and the body",
   sqliStmt.OrStatement.Statements.map((s) => Object.keys(s.RegexPatternSetReferenceStatement.FieldToMatch)[0]),
@@ -263,7 +269,7 @@ check(
 // A single-field kind stays a bare statement rather than a one-armed Or.
 check(
   "a single-field rule is not wrapped in OrStatement",
-  JSON.parse(uas.ruleJson).Statement.RegexPatternSetReferenceStatement !== undefined,
+  detectionOf(uas).RegexPatternSetReferenceStatement !== undefined,
   true,
 );
 
@@ -273,19 +279,23 @@ check(
 const everyRule = [
   ["sqli", sqli],
   ["ua", uas],
-  ["path", paths],
   ["ua-spoofed", spoofed],
-  ["path-traversal", traversal],
-  // Enough off-surface paths to need more than one pattern set.
-  ["path-many", assembleRule("path", summary(
-    Array.from({ length: 23 }, (_, i) => p(`/probe-${i}`, 100 - i)),
-  ))],
+  // Enough distinct User-Agents to need more than one pattern set.
+  ["ua-many", assembleRule("ua", summary([], Array.from({ length: 23 }, (_, i) => ({
+    key: `scanner-${i}/1.0`,
+    count: 100 - i,
+  }))))],
 ];
 
 for (const [label, rule] of everyRule) {
   const sets = rule.sets.map((s) => s.patterns);
-  const stmt = JSON.parse(rule.ruleJson).Statement;
+  const stmt = detectionOf(rule);
   const refs = stmt.OrStatement ? stmt.OrStatement.Statements : [stmt];
+
+  // 0. Detection is never allowed to stand alone: without the path AND, a
+  //    malicious UA on an undefined path is answered 403 by the WAF instead of
+  //    404 by the ALB, and Exception Handling drops for it (04).
+  check(`[${label}] 스코프다운 통과`, scopeDownRefusal(JSON.parse(rule.ruleJson)), null);
 
   // 1. LOWERCASE runs first, so an uppercase letter could never match.
   check(`[${label}] 패턴에 대문자 없음`, rule.patterns.every((s) => !/[A-Z]/.test(s)), true);
@@ -322,16 +332,6 @@ for (const [label, rule] of everyRule) {
     true);
   check(`[${label}] 콘솔용 규칙에는 패턴이 인라인되지 않음`,
     JSON.parse(rule.ruleJson).RegexPatternSets, undefined);
-  // The sandbox copy is the opposite: patterns inline, referenced by name, so a
-  // rule can be judged before the set exists.
-  const sandbox = JSON.parse(rule.sandboxRuleJson);
-  const sbStmt = sandbox.Rules[0].Statement;
-  const sbRefs = sbStmt.OrStatement ? sbStmt.OrStatement.Statements : [sbStmt];
-  check(`[${label}] 샌드박스용은 패턴을 인라인으로 담음`,
-    Object.keys(sandbox.RegexPatternSets).length, rule.sets.length);
-  check(`[${label}] 샌드박스용은 이름으로 참조`,
-    sbRefs.every((r) => sandbox.RegexPatternSets[r.RegexPatternSetReferenceStatement.ARN] !== undefined),
-    true);
   // Creating the set is the operator's step, so the command must be shown.
   check(`[${label}] 세트마다 생성 CLI 가 있음`,
     rule.sets.every((s) => s.createCli.includes("create-regex-pattern-set") && s.createCli.includes(s.name)),
@@ -339,7 +339,7 @@ for (const [label, rule] of everyRule) {
 }
 
 // Splitting must add sets rather than drop patterns.
-const many = everyRule.find(([l]) => l === "path-many")[1];
+const many = everyRule.find(([l]) => l === "ua-many")[1];
 check("23개 패턴은 버려지지 않음", many.patterns.length, 23);
 check("세트 3개로 쪼개짐", many.sets.length, 3);
 check("세트 이름이 서로 다름", new Set(many.sets.map((s) => s.name)).size, 3);
@@ -347,124 +347,13 @@ check("세트마다 ARN 자리표시자가 다름", new Set(many.sets.map((s) =>
 check("쪼개진 사실이 판단 기준에 적힘",
   many.notes.some((n) => n.includes("세트 3개")), true);
 
-// --- endpoint rules: abnormal-request 403 / off-surface 404 ---
-// The task appends requestid/uuid query strings to EVERY legitimate request,
-// so the 403 rule keys on what observed traffic actually carried — injection
-// shapes — never on the query string's mere presence. The custom response
-// carries only a ResponseCode — the one shape AWS cannot reject (a body key
-// must preexist in the WebACL's CustomResponseBodies map).
-const NORMAL_Q = "email=dbdump500001@example.org&requestid=999999999999&uuid=7c5a3c6a-758f-4bc5-9bdf-3e573a0ad729";
-const q403 = assembleRule("query", summary([], [], [
-  { key: NORMAL_Q, count: 900 },
-  { key: "id=1%20or%201%3D1&requestid=1&uuid=x", count: 12 },
-  { key: "q=%3Cscript%3Ealert(1)%3C%2Fscript%3E", count: 7 },
-]));
-const qPattern = q403.patterns[0];
-// The editable form the whole feature exists for: one lowercase word list.
-check("query 경로 패턴은 편집 가능한 목록 형태", qPattern, "^/v1/(user|product|stress|image)(/|$)");
-check("query 규칙은 403 커스텀 응답", q403.ruleJson.includes('"ResponseCode": 403'), true);
-check("커스텀 응답에 body key 없음", q403.ruleJson.includes("CustomResponseBodyKey"), false);
-check("쿼리스트링 존재만으로 차단하지 않음", q403.ruleJson.includes("SizeConstraintStatement"), false);
-check("경로 조건과 시그니처 조건의 AND", q403.ruleJson.includes("AndStatement"), true);
-const qRe = new RegExp(qPattern);
-check("서비스 엔드포인트가 매칭됨", qRe.test("/v1/user"), true);
-check("하위 경로도 매칭됨", qRe.test("/v1/product/3"), true);
-check("이름이 비슷한 다른 경로는 매칭 안 됨", qRe.test("/v1/users"), false);
-// 404 규칙은 "image" 가 든 경로를 전부 통과시키므로, 403 규칙이 이미지 엔드포인트를
-// 범위에서 빼면 /v1/image 인젝션이 두 규칙을 모두 빠져나간다.
-check("이미지 엔드포인트도 403 범위 안", qRe.test("/v1/image"), true);
-check("이미지 하위 경로도 403 범위 안", qRe.test("/v1/image/3.png"), true);
-// Observation picks the signatures: only what actually fired gets in.
-const qSigs = q403.sets.flatMap((s) => s.patterns);
-check("관측에 걸린 시그니처만 담김 (전체 세트 아님)", qSigs.length < SQLI_PATTERNS.length, true);
-check("관측에 걸린 시그니처는 SQLI_PATTERNS 소속", qSigs.some((p) => SQLI_PATTERNS.includes(p)), true);
-// URL-encoded injection is judged in decoded form, like the WAF will see it.
-const qSig = (s) => qSigs.some((p) => new RegExp(p).test(s));
-check("인코딩된 인젝션도 디코딩 후 걸림", qSig("id=1 or 1=1"), true);
-check("정상 쿼리스트링(requestid·uuid)은 안 걸림", qSig(NORMAL_Q.toLowerCase()), false);
-// An injected-looking query no fixed signature covers becomes a literal.
-check("시그니처 밖 XSS 는 리터럴 패턴화", qSig("q=<script>alert(1)</script>"), true);
-// Evidence carries only the abnormal observations, never the normal traffic.
-check("근거는 비정상 관측만", q403.evidence.length, 2);
-check("정상 쿼리는 근거에 없음", q403.evidence.some((e) => e.includes("dbdump")), false);
-// The endpoint-scope statement and the signature/obfuscation OR sit as the
-// two AndStatement arms; Sqli/XssMatchStatement always ride along inside the
-// Or so obfuscated payloads our regex can't decode still get caught.
-const qConsole = JSON.parse(q403.ruleJson);
-const qOr = qConsole.Statement.AndStatement.Statements[1].OrStatement.Statements;
-check("OrStatement 에 SqliMatchStatement 포함", qOr.some((s) => s.SqliMatchStatement), true);
-check("OrStatement 에 XssMatchStatement 포함", qOr.some((s) => s.XssMatchStatement), true);
+// Both generated cards can be pasted into one WebACL: AWS rejects duplicate
+// rule priorities before evaluating the statements.
 check(
-  "SqliMatchStatement 는 SensitivityLevel HIGH",
-  qOr.find((s) => s.SqliMatchStatement)?.SqliMatchStatement.SensitivityLevel,
-  "HIGH",
-);
-const qRef = qOr.find((s) => s.RegexPatternSetReferenceStatement).RegexPatternSetReferenceStatement;
-check("콘솔용 ARN 은 자리표시자", qRef.ARN, q403.sets[0].arnPlaceholder);
-const qSandbox = JSON.parse(q403.sandboxRuleJson);
-check("샌드박스용은 패턴을 인라인으로 담음", qSandbox.RegexPatternSets[q403.sets[0].name], q403.sets[0].patterns);
-
-// "Nothing seen at all" still blocks (WAF_LOG_GROUP 확인 필요); "traffic seen
-// but all clean" no longer throws — SqliMatch/XssMatch alone is still a
-// meaningful rule, so the operator gets it instead of an error.
-let qEmpty = null;
-try { assembleRule("query", summary()); } catch (e) { qEmpty = e.message; }
-check("쿼리 통계가 비면 수집 문제라고 말한다", qEmpty?.includes("WAF_LOG_GROUP"), true);
-const qClean = assembleRule("query", summary([], [], [{ key: NORMAL_Q, count: 900 }]));
-check("정상 쿼리뿐이어도 규칙은 만들어짐 (Sqli/XssMatch 만)", qClean.sets.length, 0);
-check(
-  "정상 쿼리뿐이면 근거에 그렇게 적힘",
-  qClean.evidence.some((e) => e.includes("AWS 자체 탐지")),
-  true,
-);
-check(
-  "정상 쿼리뿐이어도 SqliMatchStatement 는 남음",
-  qClean.ruleJson.includes("SqliMatchStatement"),
-  true,
+  "UA와 SQLi 규칙의 Priority 가 서로 다름",
+  new Set([sqli, uas].map((rule) => JSON.parse(rule.ruleJson).Priority)).size,
+  2,
 );
 
-const s404 = assembleRule("surface", summary([p("/admin"), p("/v1/user", 900, false)]));
-const sPattern = s404.patterns[0];
-check("surface 규칙은 404 커스텀 응답", s404.ruleJson.includes('"ResponseCode": 404'), true);
-check("surface 규칙은 허용 패턴의 부정", s404.ruleJson.includes("NotStatement"), true);
-check("surface 규칙은 패턴 세트가 없음", s404.sets.length, 0);
-check("surface 패턴에 대문자 없음", noUppercase(s404.patterns), true);
-const sRe = new RegExp(sPattern);
-check("서비스 API 는 허용", sRe.test("/v1/user"), true);
-check("정적 이미지는 허용", sRe.test("/images/logo.png"), true);
-check("API 이미지도 허용", sRe.test("/v1/image/3.png"), true);
-check("image 가 들어간 경로는 형태 불문 허용", sRe.test("/product-images/42.jpg"), true);
-check("헬스체크는 허용", sRe.test("/healthcheck"), true);
-check("health 가 들어간 경로는 형태 불문 허용", sRe.test("/api/health"), true);
-check("readiness 경로도 허용", sRe.test("/ready"), true);
-check("서비스 밖 경로는 허용 안 됨 (=404 차단)", sRe.test("/admin"), false);
-check("미제공 API 도 허용 안 됨", sRe.test("/v1/none"), false);
-check("루트 경로도 허용 안 됨", sRe.test("/"), false);
-// Observation previews the impact; the task-sheet paths never appear as hits.
-check("관측된 차단 대상이 근거에 남음", s404.evidence.some((e) => e.includes("/admin") && e.includes("404")), true);
-check("과제지 정상 경로는 근거의 차단 목록에 없음", s404.evidence.some((e) => e.includes("/v1/user — ")), false);
-check(
-  "두 규칙의 Priority 가 달라 한 WebACL 에 공존 가능",
-  qConsole.Priority !== JSON.parse(s404.ruleJson).Priority,
-  true,
-);
-for (const [label, rule] of [["query", q403], ["surface", s404]]) {
-  check(`[${label}] 패턴이 전부 컴파일됨`, rule.patterns.every((s) => { try { new RegExp(s); return true; } catch { return false; } }), true);
-  check(`[${label}] 패턴에 대문자 없음`, noUppercase(rule.patterns), true);
-  check(`[${label}] 정규식 ${MAX_PATTERN_CHARS}자 이하`, rule.patterns.every((s) => s.length <= MAX_PATTERN_CHARS), true);
-  check(`[${label}] CustomResponse 는 Block 안에 있음`,
-    JSON.parse(rule.ruleJson).Action.Block.CustomResponse !== undefined, true);
-  check(`[${label}] 샌드박스용은 Rules 배열`, Array.isArray(JSON.parse(rule.sandboxRuleJson).Rules), true);
-}
-
-// All five cards must be pastable into one WebACL together — AWS rejects a
-// WebACL with two rules sharing a Priority.
-const allFive = [sqli, uas, paths, q403, s404];
-check(
-  "다섯 카드 모두 Priority 가 서로 다름",
-  new Set(allFive.map((r) => JSON.parse(r.ruleJson).Priority)).size,
-  allFive.length,
-);
-
-console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
+console.log(failures === 0 ? "\nALL PASS" : `${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

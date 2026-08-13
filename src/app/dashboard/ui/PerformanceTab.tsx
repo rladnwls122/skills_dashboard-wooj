@@ -5,6 +5,7 @@ import { getResourceHistoryAction } from "@/app/actions/dashboard";
 import type {
   KubePanel,
   MetricsPanel,
+  MetricSummary,
   NamedSeries,
   ResourceHistory,
   WarningEvent,
@@ -12,13 +13,17 @@ import type {
 } from "@/lib/types";
 import { ActionTab } from "./ActionTab";
 import { GradingCard } from "./GradingCard";
+import { NodeCostPanel } from "./NodeCostPanel";
 import {
   Card,
   ErrorNote,
   SectionLoading,
+  Sparkline,
+  Stat,
   StatusBadge,
   Truncate,
   WarningEventDetailModal,
+  fmtDelta,
   fmtTs,
   usePoll,
   type PollState,
@@ -29,13 +34,6 @@ import { TimeChart } from "./TimeChart";
 // in the latency chart is the same colour as the one throwing errors below it.
 const TG_COLORS = ["#54b8ff", "#3ddc97", "#c792ea", "#7fdbca"] as const;
 const ERR_COLORS = ["#ff5c5c", "#ffb454", "#f78c6c", "#e57373"] as const;
-
-const STATUS_SERIES = [
-  { key: "http2xx", label: "2XX", color: "#3ddc97" },
-  { key: "http3xx", label: "3XX", color: "#54b8ff" },
-  { key: "http4xx", label: "4XX", color: "#ffb454" },
-  { key: "http5xx", label: "5XX", color: "#ff5c5c" },
-] as const;
 
 // Distinct enough that eight pods stay tellable apart in a legend.
 const USAGE_COLORS = [
@@ -194,38 +192,84 @@ export function PerformanceTab({
     ]).filter((s) => s.points.length > 0),
   };
 
-  const statusSeries = STATUS_SERIES.map(({ key, label, color }) => {
-    const m = metrics.data?.metrics.find((x) => x.key === key);
-    return { label, points: m?.points ?? [], color };
-  }).filter((s) => s.points.length > 0);
+  // The four tiles that answer "is anything wrong" without scrolling. Rendered
+  // from explicit keys rather than the whole metric list, so adding a metric
+  // server-side never quietly grows the watch screen.
+  const tile = (key: string): MetricSummary | undefined =>
+    metrics.data?.metrics.find((m) => m.key === key);
+  const TILES = [
+    { key: "targetResponseTime", label: "TRT", limit: "0.5s" },
+    { key: "http4xx", label: "4XX", limit: "50/min" },
+    { key: "http5xx", label: "5XX", limit: "20/min" },
+    { key: "rdsClientConnections", label: "RDS Conn", limit: "80" },
+  ] as const;
 
   return (
     <div className="space-y-3">
       <GradingCard window={win} />
+      <NodeCostPanel />
+
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        {TILES.map((t) => {
+          const m = tile(t.key);
+          return (
+            <Stat
+              key={t.key}
+              label={`${t.label} ${t.limit}`}
+              value={m ? String(m.current) : "—"}
+              unit={m?.unit}
+              status={m?.status ?? "NORMAL"}
+              sub={
+                m ? (
+                  <div className="flex items-center justify-between gap-1">
+                    <span
+                      className={`font-mono text-[10px] tabular-nums ${
+                        m.delta > 0
+                          ? "text-amber-400"
+                          : m.delta < 0
+                            ? "text-emerald-400"
+                            : "text-neutral-500"
+                      }`}
+                    >
+                      {fmtDelta(m.delta, m.percentChange)}
+                    </span>
+                    <Sparkline points={m.points} status={m.status} />
+                  </div>
+                ) : null
+              }
+            />
+          );
+        })}
+      </div>
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-        <Card title="Pod 상태 분포">
-          {kube.data ? (
-            <div className="grid grid-cols-3 gap-2 text-[11px]">
-              {(
-                [
-                  ["Running", kube.data.statusBreakdown.running, "text-emerald-400"],
-                  ["Pending", kube.data.statusBreakdown.pending, "text-sky-400"],
-                  ["CrashLoop", kube.data.statusBreakdown.crashLoop, "text-red-400"],
-                  ["OOM", kube.data.statusBreakdown.oom, "text-red-400"],
-                  ["Failed", kube.data.statusBreakdown.failed, "text-amber-400"],
-                  ["기타", kube.data.statusBreakdown.other, "text-neutral-400"],
-                ] as const
-              ).map(([label, v, color]) => (
-                <div key={label} className="rounded bg-neutral-950 p-2 text-center">
-                  <div className={`text-lg font-bold tabular-nums ${color}`}>{v}</div>
-                  <div className="text-neutral-500">{label}</div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <SectionLoading />
-          )}
+        <Card
+          title={`이상 (${metrics.data?.anomalies.length ?? 0})`}
+          className="lg:col-span-1"
+          right={<ErrorNote error={metrics.error} />}
+        >
+          {/* With the annunciator gone this list is the only alarm on screen,
+              so it carries its own evidence instead of pointing at a card that
+              no longer exists. */}
+          <div className="max-h-40 space-y-1 overflow-y-auto text-[11px]">
+            {(metrics.data?.anomalies ?? []).map((a) => (
+              <details key={a.id} className="rounded bg-neutral-950 px-2 py-1">
+                <summary className="flex cursor-pointer items-center gap-2">
+                  <StatusBadge status={a.severity} />
+                  <span className="font-semibold text-neutral-200">{a.title}</span>
+                </summary>
+                <p className="mt-1 text-neutral-400">{a.detail}</p>
+                <ul className="mt-1 list-inside list-disc text-neutral-500">
+                  {a.evidence.map((ev, i) => (
+                    <li key={i}>{ev}</li>
+                  ))}
+                </ul>
+              </details>
+            ))}
+            {(metrics.data?.anomalies.length ?? 0) === 0 && (
+              <div className="text-emerald-500">감지된 이상 없음</div>
+            )}
+          </div>
         </Card>
 
         <Card
@@ -275,6 +319,27 @@ export function PerformanceTab({
           <SectionLoading />
         ) : (
           <div className="overflow-x-auto">
+            {/* The breakdown used to be its own card next to this table, which
+                is the same population counted twice. One card, one count. */}
+            {kube.data && (
+              <div className="mb-2 grid grid-cols-3 gap-2 text-[11px] md:grid-cols-6">
+                {(
+                  [
+                    ["Running", kube.data.statusBreakdown.running, "text-emerald-400"],
+                    ["Pending", kube.data.statusBreakdown.pending, "text-sky-400"],
+                    ["CrashLoop", kube.data.statusBreakdown.crashLoop, "text-red-400"],
+                    ["OOM", kube.data.statusBreakdown.oom, "text-red-400"],
+                    ["Failed", kube.data.statusBreakdown.failed, "text-amber-400"],
+                    ["기타", kube.data.statusBreakdown.other, "text-neutral-400"],
+                  ] as const
+                ).map(([label, v, color]) => (
+                  <div key={label} className="rounded bg-neutral-950 p-2 text-center">
+                    <div className={`text-lg font-bold tabular-nums ${color}`}>{v}</div>
+                    <div className="text-neutral-500">{label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
             <table className="w-full text-left text-[11px]">
               <thead className="text-neutral-500">
                 <tr>
@@ -349,7 +414,6 @@ export function PerformanceTab({
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card
           title="Pod 리소스 사용률 (CPU/Memory)"
-          basis="이 대시보드가 켜져 있는 동안 기록한 값 (metrics.k8s.io 는 이력을 남기지 않음) · 비율은 limit 대비"
           right={<ErrorNote error={kube.data?.podResourceError ?? history.error} />}
         >
           <UsageCharts
@@ -367,7 +431,6 @@ export function PerformanceTab({
 
         <Card
           title="Node 리소스 사용률 (CPU/Memory)"
-          basis="이 대시보드가 켜져 있는 동안 기록한 값 · 선이 끊긴 구간은 사용량 0 이 아니라 꺼져 있던 구간"
           right={<ErrorNote error={kube.data?.nodeResourceError ?? history.error} />}
         >
           <UsageCharts
@@ -387,7 +450,6 @@ export function PerformanceTab({
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card
           title="Target Group별 지표"
-          basis={metrics.data ? `조회 구간 ${metrics.data.window.label}` : undefined}
           right={<ErrorNote error={metrics.data?.targetGroupError ?? null} />}
         >
           <div className="overflow-x-auto">
@@ -447,60 +509,6 @@ export function PerformanceTab({
           )}
         </Card>
 
-        <Card
-          title="Status Code 분포"
-          basis={
-            metrics.data
-              ? `ALB 메트릭 · ${metrics.data.metrics[0]?.basis ?? ""} · 조회 구간 ${metrics.data.window.label}`
-              : undefined
-          }
-        >
-          {statusDist ? (
-            <div className="space-y-2 text-[11px]">
-              {(
-                [
-                  ["2xx", statusDist.c2xx, "bg-emerald-600"],
-                  ["3xx", statusDist.c3xx, "bg-sky-600"],
-                  ["4xx", statusDist.c4xx, "bg-amber-600"],
-                  ["5xx", statusDist.c5xx, "bg-red-600"],
-                ] as const
-              ).map(([label, v, color]) => {
-                const pct = statusDist.total > 0 ? Math.round((v / statusDist.total) * 100) : 0;
-                return (
-                  <div key={label}>
-                    <div className="flex justify-between text-neutral-400">
-                      <span>{label}</span>
-                      <span className="tabular-nums">
-                        {v} ({pct}%)
-                      </span>
-                    </div>
-                    <div className="h-1.5 rounded bg-neutral-800">
-                      <div className={`h-1.5 rounded ${color}`} style={{ width: `${pct}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
-              <div className="text-neutral-600">
-                코드별(400/403/429/500/502/503/504…) 세분화는 ALB 메트릭 미제공 — WAF/ALB 로그 활성화
-                시 확장 가능
-              </div>
-            </div>
-          ) : (
-            <div className="text-[11px] text-neutral-500">ALB 메트릭 수집 중…</div>
-          )}
-
-          {/* The bars are the mix at one instant. A 5XX share that has been
-              flat all hour and one that appeared four minutes ago are the same
-              bar and different incidents. */}
-          {statusSeries.length > 0 && (
-            <div className="mt-3">
-              <div className="mb-1 font-mono text-[10px] text-neutral-500">
-                상태코드 추이 (req/min)
-              </div>
-              <TimeChart height={160} syncKey="perf" series={statusSeries} />
-            </div>
-          )}
-        </Card>
       </div>
 
       <Card title={`Warning Event Board (${kube.data?.events.length ?? 0})`}>

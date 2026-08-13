@@ -37,7 +37,7 @@ function verdict(r: ProbeResult): { text: string; icon: string; cls: string } {
   return { text: "비정상 응답", icon: "✕", cls: "text-red-400" };
 }
 
-export function CheckTab() {
+export function ProbePanel() {
   const [url, setUrl] = useState("");
   const [expect, setExpect] = useState("");
   const [results, setResults] = useState<ProbeResult[]>([]);
@@ -101,11 +101,7 @@ export function CheckTab() {
         이 화면에만 남습니다.
       </div>
 
-      <Card
-        title="점검 대상"
-        zoomable={false}
-        basis="입력한 주소로의 단발 GET · 응답 코드와 소요 시간만 기록"
-      >
+      <Card title="정상 경로 프로브">
         <div className="space-y-2">
           <div className="flex flex-wrap items-end gap-2">
             <label className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -181,23 +177,20 @@ export function CheckTab() {
       </Card>
 
       {results.length > 0 && (
-        <Card title={`최근 ${results.length}회`} basis={`이 화면에서 보낸 요청만 · 최대 ${HISTORY}회 보관`}>
+        <Card title={`최근 ${results.length}회`}>
           <div className="mb-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <Mini label="정상 비율" value={okRate === null ? "—" : `${okRate}%`} basis={`${results.length}회 중`} />
+            <Mini label="정상 비율" value={okRate === null ? "—" : `${okRate}%`} />
             <Mini
               label="평균 응답"
               value={avg === null ? "—" : `${fmtNum(avg)}ms`}
-              basis={`응답이 온 ${done.length}회만`}
             />
             <Mini
               label="최대 응답"
               value={done.length ? `${fmtNum(Math.max(...done.map((r) => r.elapsedMs)))}ms` : "—"}
-              basis={`응답이 온 ${done.length}회만`}
             />
             <Mini
               label="실패"
               value={fmtNum(results.filter((r) => !r.ok).length)}
-              basis="기대 코드와 다르거나 응답 없음"
             />
           </div>
 
@@ -240,12 +233,11 @@ export function CheckTab() {
   );
 }
 
-function Mini({ label, value, basis }: { label: string; value: string; basis: string }) {
+function Mini({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-2">
       <div className="text-[10px] text-neutral-500">{label}</div>
       <div className="font-mono text-lg font-bold tabular-nums text-neutral-100">{value}</div>
-      <div className="text-[9.5px] leading-[1.35] text-neutral-600">{basis}</div>
     </div>
   );
 }

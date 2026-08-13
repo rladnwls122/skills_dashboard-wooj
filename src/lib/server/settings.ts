@@ -27,7 +27,8 @@ export type SettingKey =
   | "RDS_PROXY_NAME"
   | "APP_LOG_GROUP"
   | "TARGET_NAMESPACE"
-  | "MAX_REPLICAS";
+  | "MAX_REPLICAS"
+  | "MATCH_START";
 
 // The built-in fallback for each key, used when neither an override nor an
 // .env value exists. Kept here rather than inline in config.ts so the settings
@@ -56,6 +57,12 @@ function builtin(key: SettingKey): string {
       return "default";
     case "MAX_REPLICAS":
       return "20";
+    case "MATCH_START":
+      // Deliberately empty. The scoring window is derived from this value, and
+      // a guessed start time produces a time-weighted average that is wrong in
+      // a way the screen cannot show — so the cost panel says "not set" instead
+      // of inventing a provisional number.
+      return "";
   }
 }
 
@@ -118,6 +125,12 @@ export const SETTING_SPECS: SettingSpec[] = [
     key: "MAX_REPLICAS",
     label: "최대 replica",
     hint: "Deployment 조정 화면이 허용하는 상한.",
+    discover: null,
+  },
+  {
+    key: "MATCH_START",
+    label: "경기 시작 시각",
+    hint: "채점 창(경기 시작 +1h ~ +3h)의 기준. 로컬 시각으로 2026-08-14 09:00 또는 09:00 형태. 비워 두면 비용 패널이 평균을 만들지 않고 현재 대수만 보여줍니다.",
     discover: null,
   },
 ];

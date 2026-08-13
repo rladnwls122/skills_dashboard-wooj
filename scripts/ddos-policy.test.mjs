@@ -140,9 +140,6 @@ const asmSrc = await readFile(new URL(`${SRC}ruleassemble.ts`), "utf8");
 check("규칙 조립기는 RateBasedStatement 를 만들지 않음", asmSrc.includes("RateBasedStatement"), false);
 check("규칙 조립기는 요청량 임계치를 쓰지 않음", asmSrc.includes("AggregateKeyType"), false);
 
-const incSrc = await readFile(new URL(`${SRC}incident.ts`), "utf8");
-check("buildSnapshot blanks byIp", incSrc.includes("byIp: []"), true);
-
 // New malicious-client detection must not disturb the volumetric policy:
 // Go-http-client is bypassed, so the load generator and the off-surface scan
 // (both Go UA) keep their existing anomaly counts.

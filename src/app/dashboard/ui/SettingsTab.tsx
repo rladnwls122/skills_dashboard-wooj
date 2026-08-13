@@ -102,7 +102,7 @@ export function SettingsTab() {
         </div>
       )}
 
-      <Card title="환경 설정" zoomable={false} basis="화면 설정 > .env > 기본값 순으로 적용">
+      <Card title="환경 설정" limit="화면 설정 > .env > 기본값 순">
         {!view ? (
           <SectionLoading />
         ) : (
@@ -239,8 +239,6 @@ export function SettingsTab() {
       {view && view.envText && (
         <Card
           title=".env 로 고정하기"
-          zoomable={false}
-          basis="화면 설정은 이 컴퓨터의 SQLite 에만 있습니다 — 저장소를 새로 받으면 사라집니다"
         >
           <div className="space-y-1">
             <pre className="rounded bg-black p-2 font-mono text-[10px] leading-4 whitespace-pre-wrap text-emerald-300">
