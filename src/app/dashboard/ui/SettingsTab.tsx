@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { discoverAction, getSettingsAction, saveSettingsAction } from "@/app/actions/dashboard";
+import { discoverAction, getSettingsAction, saveSettingsAction } from "@/lib/api/dashboard";
 import type { DiscoverKind, DiscoveryResult, SettingRow, SettingsView } from "@/lib/types";
 import { Card, CopyValue, ErrorNote, SectionLoading } from "./shared";
 

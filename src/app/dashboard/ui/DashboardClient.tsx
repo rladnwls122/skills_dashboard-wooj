@@ -5,7 +5,7 @@ import {
   getKubePanelAction,
   getMetricsPanelAction,
   getWafPanelAction,
-} from "@/app/actions/dashboard";
+} from "@/lib/api/dashboard";
 import type {
   KubePanel,
   MetricsPanel,

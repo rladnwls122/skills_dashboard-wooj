@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { assembleRuleAction } from "@/app/actions/dashboard";
+import { assembleRuleAction } from "@/lib/api/dashboard";
 import type { AssembledRule, AssembleKind, WindowSelection } from "@/lib/types";
 import { Card, ErrorNote } from "./shared";
 import { IncidentTab } from "./IncidentTab";

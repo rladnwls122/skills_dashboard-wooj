@@ -1,0 +1,334 @@
+// Package live is the real service.Provider: AWS reads through awsx,
+// Kubernetes through kube, the rule engine through rules. It also owns the
+// panel-level TTL caches the TS actions layer kept (kube 3s tier, metrics 30s
+// tier, log reads 30s), including the cross-panel peeks the anomaly detector
+// and the incident report depend on.
+package live
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/analysis"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/awsx"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/cache"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/config"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/kube"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/rules"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/service"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/store"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/types"
+)
+
+type Provider struct {
+	AWS      *awsx.AWS
+	Kube     *kube.Kube
+	Store    *store.Store
+	Settings *config.Settings
+	Now      func() time.Time
+}
+
+func New(settings *config.Settings, st *store.Store) *Provider {
+	return &Provider{
+		AWS:      awsx.New(settings, st),
+		Kube:     kube.New(settings, st),
+		Store:    st,
+		Settings: settings,
+		Now:      time.Now,
+	}
+}
+
+func (p *Provider) Reset() {
+	p.AWS.Reset()
+}
+
+// windowKey: cache keys have to change when the window does, or a panel serves
+// the previous span's numbers under the new label.
+func windowKey(w types.ResolvedWindow) string {
+	return fmt.Sprintf("%d-%d-%d", w.WindowMin, w.IntervalMin, w.EndMs)
+}
+
+// --- Kubernetes panel — 3s tier ---------------------------------------------
+
+func (p *Provider) KubePanel(ctx context.Context) (types.KubePanel, error) {
+	return cache.Cached("panel:kube", config.Polling.KubeTTL, func() (types.KubePanel, error) {
+		pods, podsErr := p.Kube.ListPods(ctx)
+		events, _ := p.Kube.ListWarningEvents(ctx)
+		deployments, _ := p.Kube.ListDeployments(ctx)
+		nodesReady, nodesTotal, _ := p.Kube.CountReadyNodes(ctx)
+
+		if pods == nil {
+			pods = []types.PodInfo{}
+		}
+		if events == nil {
+			events = []types.WarningEvent{}
+		}
+		if deployments == nil {
+			deployments = []types.DeploymentInfo{}
+		}
+
+		podResources, podResourceError := p.Kube.GetPodResourceUsage(ctx, pods)
+		nodeResources, nodeResourceError := p.Kube.GetNodeResourceUsage(ctx)
+		podScaling := p.Kube.GetPodScaling(ctx, deployments)
+		nodeScaling, scalingError := p.nodeScaling(ctx, nodesTotal)
+
+		panel := types.KubePanel{
+			Pods:              pods,
+			Events:            events,
+			Deployments:       deployments,
+			NodesReady:        nodesReady,
+			NodesTotal:        nodesTotal,
+			StatusBreakdown:   kube.SummarizePodStatus(pods),
+			PodResources:      podResources,
+			PodResourceError:  podResourceError,
+			NodeResources:     nodeResources,
+			NodeResourceError: nodeResourceError,
+			PodScaling:        podScaling,
+			NodeScaling:       nodeScaling,
+			ScalingError:      scalingError,
+		}
+		if podsErr != nil {
+			return types.KubePanel{}, podsErr
+		}
+		// metrics.k8s.io keeps no history, so the reading is appended here — on
+		// the poll that already exists. Recording must never break the panel.
+		_ = service.RecordResourceSamplesTo(p.Store, panel.PodResources, panel.NodeResources, p.Now().UnixMilli())
+		return panel, nil
+	}, 0)
+}
+
+func (p *Provider) nodeScaling(ctx context.Context, currentNodeCount int) ([]types.ScaleInfo, *string) {
+	groups, err := p.AWS.DiscoverNodeGroupScaling(ctx)
+	if err != nil {
+		return []types.ScaleInfo{{
+			Name: "cluster", Current: currentNodeCount,
+			Source: "조회 실패: " + awsx.ErrMsg(err),
+		}}, nil
+	}
+	if len(groups) == 0 {
+		return []types.ScaleInfo{{
+			Name: "cluster", Current: currentNodeCount,
+			Source: "managed nodegroup 없음 (Karpenter 등 — min/max 미검출)",
+		}}, nil
+	}
+	out := make([]types.ScaleInfo, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, types.ScaleInfo{
+			Name: g.Name, Current: g.DesiredSize,
+			Min: types.Ptr(g.MinSize), Max: types.Ptr(g.MaxSize),
+			Source: "EKS Managed Nodegroup",
+		})
+	}
+	return out, nil
+}
+
+// --- metrics + analysis panel — 30s tier ------------------------------------
+
+// visibleMetrics mirrors VISIBLE_METRICS in the TS actions layer.
+var visibleMetrics = []string{
+	"targetResponseTime", "http4xx", "http5xx",
+	"rdsClientConnections", "rdsDatabaseConnections", "wafBlocked", "wafAllowed",
+}
+
+func (p *Provider) MetricsPanel(ctx context.Context, win types.ResolvedWindow) (types.MetricsPanel, error) {
+	panel, err := cache.Cached("panel:metrics:"+windowKey(win), config.Polling.MetricsTTL, func() (types.MetricsPanel, error) {
+		core, err := p.AWS.FetchCoreMetrics(ctx, win)
+		if err != nil {
+			return types.MetricsPanel{}, err
+		}
+		byKey := map[string]types.MetricSummary{}
+		for _, m := range core.Summaries {
+			byKey[m.Key] = m
+		}
+		var statusDist *types.StatusDistribution
+		if c2, ok := byKey["http2xx"]; ok {
+			c3 := byKey["http3xx"].Current
+			c4 := byKey["http4xx"].Current
+			c5 := byKey["http5xx"].Current
+			statusDist = &types.StatusDistribution{
+				C2xx: c2.Current, C3xx: c3, C4xx: c4, C5xx: c5,
+				Total: c2.Current + c3 + c4 + c5,
+			}
+		}
+
+		var httpSummary *types.HttpSummary
+		var httpSummaryError *string
+		if hs, err := p.AWS.BuildHttpSummary(ctx, statusDist, win); err == nil {
+			httpSummary = &hs
+		} else {
+			httpSummaryError = types.Ptr(awsx.ErrMsg(err))
+		}
+
+		targetGroupMetrics := []types.TargetGroupMetrics{}
+		var targetGroupError *string
+		if tg, err := p.AWS.FetchTargetGroupMetrics(ctx, win); err == nil {
+			targetGroupMetrics = tg
+		} else {
+			targetGroupError = types.Ptr(awsx.ErrMsg(err))
+		}
+
+		kubePanel, _ := cache.Peek[types.KubePanel]("panel:kube")
+		fingerprints, _ := cache.Peek[[]types.FingerprintEntry]("panel:fingerprints")
+		input := analysis.AnomalyInput{
+			Metrics:      core.Summaries,
+			HttpSummary:  httpSummary,
+			Pods:         kubePanel.Pods,
+			Events:       kubePanel.Events,
+			Fingerprints: fingerprints,
+		}
+		now := p.Now()
+		anomalies := analysis.DetectAnomalies(input, now)
+		correlations := analysis.Correlate(anomalies)
+		timeline := analysis.BuildTimeline(input, anomalies, p.historyInput(), now)
+
+		visible := []types.MetricSummary{}
+		for _, k := range visibleMetrics {
+			if m, ok := byKey[k]; ok {
+				visible = append(visible, m)
+			}
+		}
+		metricErrors := core.Errors
+		if metricErrors == nil {
+			metricErrors = []string{}
+		}
+		return types.MetricsPanel{
+			Metrics:           visible,
+			MetricErrors:      metricErrors,
+			TargetGroupMetric: targetGroupMetrics,
+			TargetGroupError:  targetGroupError,
+			HttpSummary:       httpSummary,
+			HttpSummaryError:  httpSummaryError,
+			Anomalies:         anomalies,
+			Correlations:      correlations,
+			Timeline:          timeline,
+			Window:            win,
+		}, nil
+	}, 0)
+	if err == nil {
+		// The window-free alias other panels peek (grading's WAF-blocked figure,
+		// the incident report).
+		cache.Put("panel:metrics:latest", config.Polling.MetricsTTL, panel)
+	}
+	return panel, err
+}
+
+// historyInput folds SQLite history into the timeline; a missing DB must not
+// take the panel down.
+func (p *Provider) historyInput() analysis.HistoryInput {
+	h := analysis.HistoryInput{}
+	if events, err := p.Store.RecentRestartEvents(p.Now().UnixMilli() - 60*60_000); err == nil {
+		for _, e := range events {
+			h.RestartEvents = append(h.RestartEvents, analysis.RestartEvent{Pod: e.Pod, Ts: e.Ts, Delta: e.Delta})
+		}
+	}
+	if rows, err := p.Store.ListDeployHistory(); err == nil {
+		for _, r := range rows {
+			h.DeployHistory = append(h.DeployHistory, types.DeployChangeEntry{
+				ID: r.ID, Ts: time.UnixMilli(r.Ts).UTC().Format(time.RFC3339Nano),
+				Namespace: r.Namespace, Name: r.Name, Change: r.Change, Verdict: r.Verdict,
+			})
+		}
+	}
+	if rows, err := p.Store.ListWafHistoryRows(); err == nil {
+		for _, r := range rows {
+			h.WafHistory = append(h.WafHistory, analysis.WafHistoryRow{
+				ID: r.ID, Ts: r.Ts, RuleName: r.RuleName, Action: r.Action, Status: r.Status, Detail: r.Detail,
+			})
+		}
+	}
+	return h
+}
+
+// --- WAF panel — 30s tier ----------------------------------------------------
+
+func (p *Provider) WafPanel(ctx context.Context, win types.ResolvedWindow) (types.WafPanel, error) {
+	return cache.Cached("panel:waf:"+windowKey(win), config.Polling.WafTTL, func() (types.WafPanel, error) {
+		panel := types.WafPanel{History: []types.ApplyHistoryEntry{}}
+		if acl, err := p.AWS.GetAclInfo(ctx); err == nil {
+			panel.Acl = &acl
+		} else {
+			panel.AclError = types.Ptr(awsx.ErrMsg(err))
+		}
+		if history, err := p.Store.ApplyHistory(); err == nil {
+			panel.History = history
+		}
+		return panel, nil
+	}, 0)
+}
+
+func (p *Provider) WafSamples(ctx context.Context) ([]types.WafSampleRow, error) {
+	return p.AWS.ListSampleRows(ctx)
+}
+
+// --- grading — on-demand, cached like every other Insights read --------------
+
+func (p *Provider) GradingPanel(ctx context.Context, win types.ResolvedWindow) (types.GradingPanel, error) {
+	wafBlocked := 0
+	if metrics, ok := cache.Peek[types.MetricsPanel]("panel:metrics:latest"); ok && metrics.HttpSummary != nil {
+		wafBlocked = metrics.HttpSummary.BlockedTotal
+	}
+	return cache.Cached("panel:grading:"+windowKey(win), config.Polling.LogCacheTTL, func() (types.GradingPanel, error) {
+		return p.AWS.FetchGradingPanel(ctx, win, wafBlocked)
+	}, config.Polling.LogFailTTL)
+}
+
+// --- deployments -------------------------------------------------------------
+
+func (p *Provider) Deployment(ctx context.Context, namespace, name string) (types.DeploymentInfo, error) {
+	return p.Kube.GetDeployment(ctx, namespace, name)
+}
+
+func toKubePatch(req service.DeploymentPatchRequest) kube.PatchRequest {
+	return kube.PatchRequest{
+		Namespace:     req.Namespace,
+		Name:          req.Name,
+		Replicas:      req.Replicas,
+		ContainerName: req.ContainerName,
+		CPULimit:      req.CPULimit,
+		MemLimit:      req.MemLimit,
+	}
+}
+
+func (p *Provider) PatchDeployment(ctx context.Context, req service.DeploymentPatchRequest) (types.DeploymentInfo, error) {
+	return p.Kube.PatchDeployment(ctx, toKubePatch(req))
+}
+
+// --- discovery / rules -------------------------------------------------------
+
+func (p *Provider) Discover(ctx context.Context, kind string) (types.DiscoveryResult, error) {
+	return p.AWS.Discover(ctx, kind)
+}
+
+// emptySummary is the stand-in for the one assembly kind that reads no traffic
+// at all.
+var emptySummary = types.HttpSummary{
+	ByPath:         []types.PathStat{},
+	ByIp:           []types.IpStat{},
+	ByUa:           []types.KeyCount{},
+	ByMethod:       []types.KeyCount{},
+	QueryPatterns:  []types.KeyCount{},
+	HeaderPatterns: []types.KeyCount{},
+	Notes:          []string{},
+}
+
+func (p *Provider) assembleEnv() rules.AssembleEnv {
+	return rules.AssembleEnv{WafScope: p.Settings.WafScope(), WafRegion: p.Settings.WafRegion()}
+}
+
+func (p *Provider) AssembleRule(ctx context.Context, kind string, win types.ResolvedWindow) (types.AssembledRule, error) {
+	// SQLi is a fixed signature set, so it must not fail when the WAF summary
+	// is unavailable — only the observed kinds need live traffic.
+	if kind == "sqli" {
+		return rules.AssembleRule("sqli", emptySummary, p.assembleEnv())
+	}
+	summary, err := p.AWS.BuildHttpSummary(ctx, nil, win)
+	if err != nil {
+		return types.AssembledRule{}, err
+	}
+	return rules.AssembleRule(kind, summary, p.assembleEnv())
+}
+
+func (p *Provider) TestRule(ctx context.Context, params service.RuleTestParams) (types.RuleTestResult, error) {
+	return rules.TestRule(params.RuleJson, params.Requests)
+}

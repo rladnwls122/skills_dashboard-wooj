@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getRequestLogRowsAction } from "@/app/actions/dashboard";
+import { getRequestLogRowsAction } from "@/lib/api/dashboard";
 import type { RequestLogQueryResult, WindowSelection } from "@/lib/types";
 import { Card, Counts, ErrorNote, SectionLoading, Truncate, fmtBytes, fmtTs } from "./shared";
 

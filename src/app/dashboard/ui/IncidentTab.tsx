@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { generateIncidentContextAction } from "@/app/actions/dashboard";
+import { generateIncidentContextAction } from "@/lib/api/dashboard";
 import type { IncidentContextResult } from "@/lib/types";
 import { Card } from "./shared";
 

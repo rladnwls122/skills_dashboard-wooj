@@ -5,7 +5,7 @@ import {
   getDefaultTestRequestsAction,
   getMaliciousExampleRequestsAction,
   testRuleJsonAction,
-} from "@/app/actions/dashboard";
+} from "@/lib/api/dashboard";
 import type { RuleTestResult, TestRequest, WafPanel } from "@/lib/types";
 import { Card, ErrorNote, SectionLoading, Truncate, type PollState } from "./shared";
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { getWafSamplesAction } from "@/app/actions/dashboard";
+import { getWafSamplesAction } from "@/lib/api/dashboard";
 import type { MetricsPanel, WafPanel, WafSampleRow } from "@/lib/types";
 import {
   Card,
