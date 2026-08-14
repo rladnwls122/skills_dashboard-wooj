@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { probeUrlAction } from "@/app/actions/dashboard";
+import { probeUrlAction } from "@/lib/api/dashboard";
 import type { ProbeResult } from "@/lib/types";
 import { Card, CopyValue, ErrorNote, fmtNum } from "./shared";
 

@@ -5,7 +5,7 @@ import {
   listDeployHistoryAction,
   patchDeploymentAction,
   verifyActionAction,
-} from "@/app/actions/dashboard";
+} from "@/lib/api/dashboard";
 import type { DeployChangeEntry, KubePanel, VerificationResult } from "@/lib/types";
 import { Card, ErrorNote, fmtTs, usePoll, type PollState } from "./shared";
 

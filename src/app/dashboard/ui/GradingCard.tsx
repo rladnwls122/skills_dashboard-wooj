@@ -1,6 +1,6 @@
 "use client";
 
-import { getGradingPanelAction } from "@/app/actions/dashboard";
+import { getGradingPanelAction } from "@/lib/api/dashboard";
 import type { GradingPanel, WindowSelection } from "@/lib/types";
 import { Card, ErrorNote, SectionLoading, fmtBytes, usePoll, type PollState } from "./shared";
 

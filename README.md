@@ -65,9 +65,64 @@ mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드�
 일이 있다 — 탭을 추가·삭제하거나 파일을 옮긴 뒤에 특히 그렇다. 캐시만 지우려면
 `mise run clean`.
 
+### 3-1. 백엔드(Go) 실행
+
+데이터 API는 `backend/`의 Go(Fiber) 서비스로 분리돼 있다. UI는
+`src/lib/api/dashboard.ts`를 통해 이 서비스를 호출한다 — 화면 코드의 함수
+이름과 반환 계약(`ActionResult`)은 서버 액션 시절과 동일하다.
+
+```bash
+cd backend
+go test ./...                              # 단위 테스트
+API_ADDR=127.0.0.1:8787 go run .           # 개발 실행
+# 또는
+go build -o bin/backend . && ./bin/backend
+```
+
+프런트와 마찬가지로 **`127.0.0.1`에만 바인딩한다** (기본값 `API_ADDR`).
+인증이 없는 API이므로 `0.0.0.0`으로 열지 않는다. 브라우저에서 오는 호출은
+`CORS_ALLOW_ORIGINS`에 나열된 origin만 허용한다.
+
+확인:
+
+```bash
+curl -s http://127.0.0.1:8787/healthz                      # {"status":"ok"}
+curl -s -XPOST http://127.0.0.1:8787/api/settings | head -c 200
+```
+
+백엔드는 `.env` 파일을 읽지 않는다. 프로세스 환경변수(`API_ADDR`,
+`CORS_ALLOW_ORIGINS`, `DB_PATH`, 리소스 이름들)와 SQLite `settings` 테이블
+(설정 화면에서 저장한 값)만 본다. `.env`를 쓰고 싶으면 실행 시 로더를 거친다
+(`mise`, `direnv`, `dotenv-cli` 등).
+
+서버 액션의 동작은 전부 Go 백엔드로 이식됐다. 실제 AWS·Kubernetes 를 읽는
+경로까지 포함한다:
+
+| 동작 | 처리 |
+|---|---|
+| `/healthz`, 설정 조회·저장, 배포 이력, WAF 적용 이력, 리소스 사용률 히스토리 | 로컬(SQLite·설정) |
+| 샌드박스 기본/공격 예시 요청, 규칙 조립·시뮬레이션, 트래픽 점검(probe), Deployment 패치 사전 검증 | 로컬(순수 로직) |
+| CloudWatch 지표·Target Group 지표, WAFv2 조회·샘플, Logs Insights(앱 로그·WAF 로그·채점), 리소스 자동 탐색 | AWS SDK |
+| Pod·이벤트·Deployment 조회, metrics.k8s.io 사용률, Pod 로그, Deployment 패치, HPA/노드그룹 스케일링 | Kubernetes / EKS |
+| 이상 탐지·상관관계·타임라인·인시던트 컨텍스트(Amazon Q 프롬프트 포함) | 위 소스를 조합한 순수 분석 |
+
+`Provider` 인터페이스(`backend/internal/service/provider.go`)의 실제 구현은
+`backend/internal/live` 다. AWS 는 `backend/internal/awsx`(aws-sdk-go-v2),
+Kubernetes 는 `backend/internal/kube`(client-go + metrics), 규칙 엔진은
+`backend/internal/rules`, 분석은 `backend/internal/analysis` 에 있다. 자격증명은
+표준 AWS 체인(`~/.aws`, 환경변수, IAM 역할)과 kubeconfig(`~/.kube/config`,
+클러스터 내부에서는 서비스어카운트)로 로드한다 — 어느 쪽이든 없으면 그 패널만
+`{ok:false, error}` 로 응답하고 나머지는 정상 동작한다.
+
+`Unavailable`(같은 파일)은 네트워크 호출을 전혀 하지 않는 기본 구현으로,
+테스트와 자격증명 없는 실행에 쓴다. TypeScript 원본(`src/lib/server/`,
+`src/app/actions/dashboard.ts`)은 이식 대조용으로 남겨 뒀고 현재 UI 는 호출하지
+않는다.
+
 ### 4. 종료
 
 터미널에서 `Ctrl+C`. (백그라운드 실행 시 `mise run start` PID를 kill)
+백엔드도 `Ctrl+C`로 내려간다 — SIGINT/SIGTERM에서 5초 안에 정리하고 포트를 놓는다.
 
 ---
 
@@ -289,7 +344,10 @@ Logs Insights 집계**로 읽는다. 선택한 구간을 그대로 따르고, �
 | `EKS_CLUSTER_NAME` | `skills-eks` | Nodegroup min/max 조회용 |
 | `TARGET_NAMESPACE` | `default` | |
 | `MAX_REPLICAS` | `20` | Deployment 패치 시 허용 상한 |
-| `DB_PATH` | `./data/dashboard.db` | 이력 SQLite 경로 |
+| `DB_PATH` | `./data/dashboard.db` | 이력 SQLite 경로 (Go 백엔드와 공용, 스키마 동일) |
+| `API_ADDR` | `127.0.0.1:8787` | Go 백엔드 바인딩 주소 |
+| `CORS_ALLOW_ORIGINS` | `http://localhost:3100,http://127.0.0.1:3100` | API 호출을 허용할 브라우저 origin |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://127.0.0.1:8787` | UI가 호출할 백엔드 주소 (빌드 시 인라인) |
 
 리소스 이름을 비우면 자동 탐색 (ALB는 LBC가 TargetGroup 이름을 자동 생성하므로
 자동 탐색이 기본 경로).
@@ -336,7 +394,21 @@ Logs Insights 집계**로 읽는다. 선택한 구간을 그대로 따르고, �
 ## 프로젝트 구조
 
 ```
-src/app/actions/dashboard.ts   # 모든 서버 액션 (AWS/K8s 접근은 전부 서버)
+backend/main.go                # Go(Fiber) 데이터 API 진입점
+backend/internal/api/          # 라우트 + ActionResult 봉투 (POST /api/*, GET /healthz)
+backend/internal/service/      # 동작 본체: 조회 구간·probe·샌드박스 데이터·검증·리소스 히스토리
+  provider.go   # AWS/K8s/규칙엔진 경계 인터페이스 + 무연결 기본 구현(Unavailable)
+backend/internal/live/         # Provider 실제 구현 — 패널별 TTL 캐시·교차 참조·인시던트 조립
+backend/internal/awsx/         # CloudWatch·WAFv2·Logs Insights·ELB·EKS (aws-sdk-go-v2)
+backend/internal/kube/         # Pod·Deployment·이벤트·metrics.k8s.io·패치 (client-go)
+backend/internal/rules/        # WAFv2 규칙 평가·조립, UA 위협 분류 (순수, 네트워크 없음)
+backend/internal/analysis/     # 이상 탐지·상관관계·핑거프린트·마스킹·인시던트 리포트 (순수)
+backend/internal/cache/        # TTL 캐시 + in-flight 중복 제거 (cache.ts 이식)
+backend/internal/config/       # 환경변수 + 설정 화면(오버라이드 → env → 기본값) + 임계치·경로 정책
+backend/internal/store/        # SQLite (src/lib/server/db.ts 와 동일 스키마)
+backend/internal/types/        # src/lib/types.ts 를 필드 단위로 옮긴 JSON 계약
+src/lib/api/dashboard.ts       # UI가 쓰는 fetch 클라이언트 (액션과 같은 함수명·계약)
+src/app/actions/dashboard.ts   # 이식 원본 서버 액션 (현재 UI는 호출하지 않음)
 src/app/dashboard/page.tsx     # 대시보드 페이지
 src/app/dashboard/ui/          # 클라이언트 컴포넌트 (탭 3개 + 설정 모달 + 공용 표시 요소)
 src/lib/awscreds.ts            # 붙여넣은 자격증명 블록 파싱·마스킹 (서버·클라이언트 공용)
@@ -387,6 +459,7 @@ k8s-dashboard-rbac.yaml        # 스펙 필수 산출물 (참고용, 미적용)
 
 ## 스택
 
+Go 1.25 · Fiber v2 · modernc.org/sqlite (백엔드) ·
 Next.js 15 App Router · React 19 · TypeScript strict · Tailwind CSS v4 ·
 AWS SDK v3 (cloudwatch, wafv2, elbv2, cloudwatch-logs, eks) · @kubernetes/client-node 1.x ·
 better-sqlite3 (이력·baseline 저장) · pnpm · mise

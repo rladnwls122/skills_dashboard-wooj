@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { getResourceHistoryAction } from "@/app/actions/dashboard";
+import { getResourceHistoryAction } from "@/lib/api/dashboard";
 import type {
   KubePanel,
   MetricsPanel,
