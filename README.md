@@ -34,6 +34,7 @@ Kubernetes Pod/Event/로그 추적, Deployment 리소스 조정, 사후 검증,
 ### 2. 설치 및 설정
 
 ```bash
+winget install jdx.mise --source winget
 git clone https://github.com/rladnwls122/skills_dashboard-wooj.git
 cd skills_dashboard-wooj
 mise run install          # pnpm install (better-sqlite3 네이티브 빌드 포함)
