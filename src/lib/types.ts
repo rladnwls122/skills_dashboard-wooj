@@ -661,3 +661,42 @@ export interface WafLogQueryResult {
   truncated: boolean;
   logGroup: string;
 }
+
+
+export interface TestRequest {
+  id: string;
+  method: string;
+  path: string;
+  query: string;
+  userAgent: string;
+  ip: string;
+  country: string;
+  benign: boolean;
+  headers?: Record<string, string>;
+  body?: string;
+  labels?: string[];
+}
+
+export interface RuleTestRow {
+  requestId: string;
+  matched: boolean | null;
+  outcome: string;
+  reason: string;
+  ruleName: string | null;
+}
+
+export interface RuleTestResult {
+  ruleName: string;
+  action: string;
+  ruleCount: number;
+  unsupported: string[];
+  approximated: string[];
+  rows: RuleTestRow[];
+  passed: number;
+  blocked: number;
+  counted: number;
+  challenged: number;
+  matched: number;
+  caught: number;
+  missed: number;
+}
