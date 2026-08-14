@@ -28,7 +28,7 @@ Kubernetes Pod/Event/로그 추적, Deployment 리소스 조정, 사후 검증,
 ### 1. 사전 준비
 
 - [mise](https://mise.jdx.dev) 설치 (Node 20 버전은 `mise.toml`이 자동으로 맞춰줌)
-- AWS 자격증명 설정: `aws configure` 또는 `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` 환경변수
+- AWS 자격증명: `aws configure` / `aws sso login` 으로 로컬 세션만 있으면 된다. 화면(톱니 → `AWS 자격증명` → `aws CLI 세션 불러오기`)에서 그 세션을 그대로 주입하며, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` 환경변수나 `.env` 도 그대로 쓰인다
 - Kubernetes 클러스터 접근 가능한 `~/.kube/config` (`aws eks update-kubeconfig --name skills-eks --region ap-northeast-2`)
 
 ### 2. 설치 및 설정
@@ -73,13 +73,24 @@ mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드�
 
 ## 화면 사용법
 
-탭은 **`성능` / `트래픽` / `규칙 생성`** 3장이고, 좌측 레일(모바일은 상단 가로
-스크롤)에서 전환한다. 상단 상태등 6칸은 없앴다 — 바로 아래 타일과 같은 값을 두 번
+탭은 **`성능` / `트래픽` / `규칙 생성`** 3장이고 **상단바**에서 전환한다. 좌측
+레일을 없앤 이유는 폭이다 — 버튼 세 개를 담자고 모든 화면에서 176px을 가져갔고,
+그 폭은 Target Group 표와 로그 테이블이 훨씬 잘 쓴다. 소스별 갱신 시각(K8S·CW·WAF)도
+같은 줄 오른쪽으로 옮겼다. 상단 상태등 6칸은 없앴다 — 바로 아래 타일과 같은 값을 두 번
 읽게 했다. 이상 유무는 `성능` 탭의 채점 키 8줄과 이상 목록이 직접 답한다.
 
 **설정은 탭이 아니라 헤더 우측 톱니(⚙)**다. 리소스 이름·로그 그룹은 자동 탐색이
 기본이고 설정 화면은 그 값이 틀렸을 때 사람이 덮어쓰는 안전장치라, 평소 감시
 화면에 자리를 차지할 이유가 없다. ESC나 배경 클릭으로 닫는다.
+
+그 모달 맨 위가 **AWS 자격증명**이다. 리소스 이름이 틀리면 패널 하나가 비지만
+키가 틀리거나 만료되면 전부 한꺼번에 비므로, 가장 먼저 확인할 것을 가장 위에 뒀다.
+`aws CLI 세션 불러오기`는 로컬에 로그인된 세션(`aws sso login` 포함)의 임시 키와
+session token 을 읽어 주입하고, **만료가 가까워지면 스스로 다시 읽는다** — 대회 중에
+세션이 끊겨 모든 패널이 죽는 상황을 없애기 위한 것이다. CLI 가 없으면 `키 직접 입력`
+에 통째로 붙여넣으면 된다(`export …` 블록, `.env`, `[profile]` 섹션, CLI JSON 모두
+인식). 주입한 키는 기본적으로 **프로세스 메모리에만** 남고, 체크박스를 켤 때만
+SQLite 에 저장된다(평문). 화면에는 언제나 마스킹된 값만 돌아온다.
 
 **구간 막대**(헤더 아래 줄)는 화면 전체가 공유하는 하나의 시간 창이다.
 `15m / 30m / 1h / 2h / 4h` 버튼은 열지 않아도 현재 값이 보이고, 옆에 `갱신
@@ -113,6 +124,11 @@ mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드�
 2. **트래픽 (Traffic)** — 지금 무엇이 들어오고 있나. 경로별 요청·차단, User-Agent,
    QueryString 패턴, 앱 요청 로그(상태코드 필터·경로 검색), WAF Blocked/Allowed
    추이, Pod 로그 터미널과 반복 오류 지문.
+
+   앱 요청 로그에는 **User-Agent 열**이 있고, 행을 클릭하면 **로그 원문**이 열린다.
+   파싱한 열은 어떤 필드가 중요한지에 대한 우리 쪽 추측이라, 앱이 예상 밖의 이름으로
+   남긴 헤더는 원문에서만 보인다. 앱이 UA 를 아예 안 남기면 열은 `—` 로 비며 그것도
+   정상적인 답이다. 원문은 다른 로그와 같은 마스킹(`server/mask.ts`)을 거친다.
 
    **경로 목록에는 규칙 만들기 버튼이 없다.** 미지정 경로는 ALB가 이미 404를 내므로
    WAF가 손댈 이유가 없다 — `의심` 배지는 "규칙을 만들라"가 아니라 "그 경로가 진짜
@@ -300,10 +316,17 @@ Logs Insights 집계**로 읽는다. 선택한 구간을 그대로 따르고, �
 - **"WebACL not found"** — `WAF_SCOPE`/`WAF_WEB_ACL_NAME` 확인. CLOUDFRONT
   scope인데 리전을 us-east-1로 착각하고 다른 값 넣지 않았는지 체크(자동 처리됨,
   수동 설정 불필요).
+- **모든 패널이 한꺼번에 빈다 / `could not load credentials` / `ExpiredToken`** —
+  자격증명 문제다. 톱니 → `AWS 자격증명` → `aws CLI 세션 불러오기`, 그 다음 `연결 확인`.
+  `유효 (권한 제한)` 은 통과다 — 키는 맞고 확인용 `ec2:DescribeVpcs` 만 막힌 상태다.
+  `.env` 만 고치고 재시작하지 않았다면 값이 반영되지 않는다(`.env` 는 기동 시점에만 읽힌다).
 - **Kubernetes 조회 실패 (HTTP protocol is not allowed 등)** — `~/.kube/config`
   컨텍스트가 올바른 클러스터를 가리키는지 `kubectl config current-context`로 확인.
 - **Pod/Node 리소스 사용률이 항상 비어있음** — 클러스터에 metrics-server가
   설치되어 있는지 `kubectl top nodes`로 확인.
+- **`kubeconfig 의 인증 명령 "aws" 을(를) 찾지 못했습니다`** — AWS CLI 자체가 없다.
+  설치하거나(`C:\Program Files\Amazon\AWSCLIV2` 는 PATH 에 없어도 자동 탐색된다)
+  `~/.kube/config` 의 `users[].user.exec.command` 를 전체 경로로 바꾼다.
 - **빌드가 `Cannot find module for page: /` 로 실패** (`✓ Compiled successfully`
   가 먼저 찍히는데도) — `.next` 캐시가 낡은 것. `mise run clean` 후 다시 빌드하거나
   처음부터 `mise run build-clean`을 쓴다. 소스 문제가 아니다.
@@ -316,8 +339,12 @@ Logs Insights 집계**로 읽는다. 선택한 구간을 그대로 따르고, �
 src/app/actions/dashboard.ts   # 모든 서버 액션 (AWS/K8s 접근은 전부 서버)
 src/app/dashboard/page.tsx     # 대시보드 페이지
 src/app/dashboard/ui/          # 클라이언트 컴포넌트 (탭 3개 + 설정 모달 + 공용 표시 요소)
+src/lib/awscreds.ts            # 붙여넣은 자격증명 블록 파싱·마스킹 (서버·클라이언트 공용)
 src/lib/server/                # server-only 모듈
   config.ts     # env + 임계치 설정 객체
+  credentials.ts# 화면에서 주입한 AWS 키의 저장·해소(만료 시 자동 갱신)
+  awslogin.ts   # 로컬 aws CLI 세션 읽기 (export-credentials → ~/.aws/credentials)
+  credcheck.ts  # 주입된 키 확인 (인증 실패와 권한 거부를 구분)
   aws.ts        # SDK 클라이언트, ALB/TG/리스너규칙 자동 탐색, EKS 노드그룹 스케일링
   cloudwatch.ts # GetMetricData, current/previous/delta/%/status, TG별 지표
   waf.ts        # 샘플 수집, HTTP 요약, setRuleAction (COUNT 적용/BLOCK 승격/내리기)
@@ -325,7 +352,7 @@ src/lib/server/                # server-only 모듈
   resources.ts  # Pod/Node 리소스 사용률(metrics.k8s.io), HPA/Nodegroup 스케일링, 상태 분포
   requestlog.ts # Gin 액세스로그 파싱 → latency/상태코드/에러·경고
   ruleassemble.ts # 관측 트래픽 → 정규식 패턴 세트 + 규칙 JSON 조립
-  logfields.ts  # 앱 로그 JSON에서 뽑는 Insights parse 구문 (requestid/uuid 포함)
+  logfields.ts  # 앱 로그 JSON에서 뽑는 Insights parse 구문 (requestid/uuid/User-Agent)
   anomaly.ts    # 이상 감지 (오탐 방지 규칙 + 규칙 적용 후 채점 키 하락 경보)
   wafcountevidence.ts # COUNT 매칭 요청 ↔ 앱 로그 requestid 조인 (GET 한정)
   fingerprint.ts# 오류 정규화·핑거프린트
@@ -346,8 +373,14 @@ k8s-dashboard-rbac.yaml        # 스펙 필수 산출물 (참고용, 미적용)
 - 규칙을 올린 시점의 채점 키를 스냅샷으로 남기고, 5분 안에 1%p 이상 떨어지면
   이상 목록에 CRITICAL로 띄운다.
 - 자동 차단·자동 정책 변경 없음. Deployment 패치도 명시적 승인 후에만 실행.
-- 단일 메트릭만으로 CRITICAL 판정 없음. `/healthcheck` 등 헬스체크 경로는
-  이상 판정에서 저순위 처리.
+- 단일 메트릭만으로 CRITICAL 판정 없음. 헬스체크 경로는 이상 판정에서 저순위
+  처리하는데, 그 경로는 **`/healthcheck` 하나뿐**이다 — `/health`·`/healthz` 같은
+  관용 경로는 이 앱이 서비스하지 않으므로 저순위가 아니라 **미지정 경로**이고,
+  그쪽을 훑는 요청은 의심 경로로 보여야 한다 (`HEALTH_PATHS` 로 변경 가능).
+- 서비스 경로(`APP_TRAFFIC_PATHS`)는 `/v1/user,/v1/product,/v1/stress,/v1/image,/images`.
+  이 목록은 허용 목록이자 **모든 규칙의 경로 스코프다운 재료**다 — 실제로 서비스되는
+  경로가 빠지면 그 경로로 오는 트래픽에는 규칙이 걸리지 않는다. 이미지가
+  `/images/*.png` 정적 자산으로도 나가므로 두 형태를 모두 넣었다.
 - 폴링 계층: K8s 3초 / 로그 5초(자동갱신 시) / CloudWatch·WAF 30초.
   서버 캐시가 in-flight 중복과 과도한 API 호출을 차단.
 - 서브시스템 장애는 영역별로 격리 — 한 곳이 죽어도 화면 전체는 유지.

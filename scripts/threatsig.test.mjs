@@ -64,9 +64,37 @@ check("nikto is a scanner", cat("Mozilla/5.00 (Nikto/2.1.6)"), "SCANNER");
 check("dirbuster is a scanner", cat("DirBuster-1.0-RC1"), "SCANNER");
 check("acunetix is a scanner", cat("acunetix-wvs"), "SCANNER");
 
+check("nuclei is a scanner", cat("Nuclei - Open-source project (github.com/projectdiscovery/nuclei)"), "SCANNER");
+check("feroxbuster is a scanner", cat("feroxbuster/2.10.1"), "SCANNER");
+check("wpscan is a scanner", cat("WPScan v3.8.24 (https://wpscan.com/wordpress-security-scanner)"), "SCANNER");
+check("wfuzz is a scanner", cat("Wfuzz/3.1.0"), "SCANNER");
+check("hydra is a scanner", cat("Mozilla/4.0 (Hydra)"), "SCANNER");
+// ffuf does not put its own name in its UA — the default is the phrase.
+check("ffuf's default phrase classifies", cat("Fuzz Faster U Fool v2.1.0-dev"), "SCANNER");
+check("ffuf by name classifies too", cat("ffuf/2.1.0"), "SCANNER");
+// Longer tool names must win over the shorter tokens they contain, or the
+// label lands on the wrong tool and the rule is written against "zap".
+check("zaproxy label is not truncated to zap", classifyUa("zaproxy/2.14.0")?.label, "zaproxy");
+check("ZAP alone still classifies", classifyUa("Mozilla/5.0 (compatible; ZAP/2.14)")?.label, "zap");
+check("burpsuite label is not truncated to burp", classifyUa("burpsuite/2024.1")?.label, "burpsuite");
+check("dirbuster label is not truncated to dirb", classifyUa("DirBuster-1.0-RC1")?.label, "dirbuster");
+
 // --- Recon tools classify ---
 check("nmap is recon", cat("Mozilla/5.0 (compatible; Nmap Scripting Engine)"), "RECON");
 check("masscan is recon", cat("masscan/1.3"), "RECON");
+check("masscan-ng is recon", cat("masscan-ng/1.3"), "RECON");
+check("censys is recon", cat("Mozilla/5.0 (compatible; CensysInspect/1.1)"), "RECON");
+check("leakix l9explore is recon", cat("l9explore/1.3.0"), "RECON");
+check("internet measurement is recon", cat("Mozilla/5.0 (compatible; InternetMeasurement/1.0)"), "RECON");
+check("netsystemsresearch is recon", cat("NetSystemsResearch studies the availability of various services"), "RECON");
+
+// --- Widening the tool list must not widen what it hits ---
+// Every token added is a string a legitimate client could in principle carry;
+// these are the ones close enough to a real UA to be worth pinning.
+check("a browser is still not a scanner", cat("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"), null);
+check("the token must stand alone: zapier is not zap", cat("Mozilla/5.0 (compatible; Zapier/1.0; AppleWebKit/537.36 (KHTML, like Gecko))"), null);
+check("burped is not burp", cat("Mozilla/5.0 (compatible; Burped/2.0; Gecko/20100101)"), null);
+check("mitmproxy is automation, not a weapon", cat("mitmproxy/10.1.5"), "AUTOMATION");
 
 // --- Tool signature wins over the Go bypass (gobuster/zgrab are Go-based) ---
 check("gobuster inside a Go client still classifies", cat("Go-http-client/2.0 gobuster/3.6"), "SCANNER");

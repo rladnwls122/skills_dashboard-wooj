@@ -9,6 +9,13 @@ export function resolve(specifier, context, next) {
   if (specifier === "server-only") {
     return { url: "data:text/javascript,export{}", shortCircuit: true };
   }
+  // tsconfig's "@/*" -> "src/*". Type-only imports of it vanish during
+  // transpilation, but a value import (a shared parser, a constant) survives
+  // and Node has no idea what "@/lib" is.
+  if (specifier.startsWith("@/")) {
+    const url = new URL(`../../src/${specifier.slice(2)}`, import.meta.url).href;
+    return next(/\.[cm]?[jt]sx?$/.test(url) ? url : `${url}.ts`, context);
+  }
   if (specifier.startsWith(".") && !/\.[cm]?[jt]s$/.test(specifier)) {
     try {
       return next(`${specifier}.ts`, context);

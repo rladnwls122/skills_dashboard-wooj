@@ -110,6 +110,16 @@ export interface KeyCount {
   count: number;
 }
 
+// One User-Agent's verdict split on the served API surface: how much of its
+// traffic the WebACL is currently letting through, and how much it is already
+// cutting. `allowed` is the false-positive guard — a client with allowed
+// service traffic is carrying requests the score depends on.
+export interface UaActionStat {
+  key: string;
+  allowed: number;
+  blocked: number;
+}
+
 export interface IpStat {
   key: string;
   count: number;
@@ -134,6 +144,13 @@ export interface HttpSummary {
   byPath: PathStat[];
   byIp: IpStat[];
   byUa: KeyCount[];
+  // Per-UA verdict split on the served API surface. Empty when the summary came
+  // from sampled requests, which cannot answer "was this client's ordinary
+  // traffic being allowed" — only the full log can.
+  uaActions: UaActionStat[];
+  // Arrival counts per surface. null in sampled mode, where a count is a
+  // sample and would understate every total it is put next to.
+  surface: SurfaceCounts | null;
   byMethod: KeyCount[];
   queryPatterns: KeyCount[];
   headerPatterns: KeyCount[];
@@ -158,6 +175,26 @@ export interface GradingScore {
   pct: number;
   okCount: number;
   total: number;
+  // Where this line's numbers came from. Not decoration: the keys are
+  // measurable from different places — the app log answers the three APIs, but
+  // undefined paths never reach it (the ALB answers them with a fixed 404) and
+  // images never reach it either (CloudFront serves them from S3). A ratio
+  // without its source reads as more certain than it is.
+  source: string;
+  // Set when okCount means "arrived and was not blocked" rather than
+  // "confirmed 2xx" — the response code for this key is not observable without
+  // CloudFront access logs.
+  approximate?: boolean;
+}
+
+// What the WAF log says arrived at each part of the surface, taken from the
+// full path×action fold rather than a second query. This is the only source
+// that sees requests the origin never answered.
+export interface SurfaceCounts {
+  imageArrived: number;
+  imageBlocked: number;
+  undefinedArrived: number;
+  undefinedBlocked: number;
 }
 
 export interface GradingPanel {
@@ -215,6 +252,45 @@ export interface SettingsView {
   rows: SettingRow[];
   // The overridden values as .env lines, for making a screen change permanent.
   envText: string;
+}
+
+// --- AWS credentials (see server/credentials.ts) ----------------------------
+
+// How the injected keys were obtained. "cli" is the only one that can be
+// refreshed on its own, which is why the screen distinguishes them.
+export type CredentialOrigin = "paste" | "cli";
+
+// Never carries a secret. The access key id is masked, the secret and the
+// session token are reported as presence and length only — the screen has to
+// say which key is in force without being a place to read one out of.
+export interface CredentialsView {
+  // 화면 주입 > .env > SDK 기본 체인(~/.aws · IRSA · 인스턴스 역할).
+  source: "screen" | "env" | "chain";
+  origin: CredentialOrigin | null;
+  // false = 이 프로세스 메모리에만 있음 (재시작하면 사라짐).
+  persisted: boolean;
+  // The aws CLI profile a "cli" import came from.
+  profile: string;
+  accessKeyIdMasked: string;
+  secretMasked: string;
+  hasSessionToken: boolean;
+  // ASIA… — a temporary key, which is the shape that expires mid-exercise.
+  temporary: boolean;
+  expiration: string;
+  // Negative once expired; null when the key does not expire or said nothing.
+  expiresInMs: number | null;
+  envAccessKeyIdMasked: string;
+  defaultProfile: string;
+}
+
+// The answer to "do these keys work, and as whom".
+export interface CredentialCheck {
+  // AUTH_FAIL is the credentials being rejected; DENIED is them being accepted
+  // and the probe call not being allowed, which still proves they are valid.
+  status: "OK" | "DENIED" | "AUTH_FAIL" | "NO_CREDENTIALS";
+  account: string;
+  region: string;
+  detail: string;
 }
 
 // One candidate from an AWS listing.
@@ -526,6 +602,19 @@ export interface RequestLogRow {
   path: string;
   status: number;
   latencyMs: number;
+  // The task's own request id, carried in the query string and written to the
+  // app log — the key that lines this row up with the WAF's record of the same
+  // request. Empty on POST/PUT, which the app does not read it from.
+  requestId: string;
+  // As the app logged it, or joined from the WAF log on requestId. Empty when
+  // neither had it — a normal answer, not a failure.
+  userAgent: string;
+  // Where the User-Agent came from, so a joined value is never mistaken for
+  // something the app logged.
+  uaSource: "app" | "waf" | "";
+  // The whole log line, masked. The parsed columns are a guess at which fields
+  // matter; this is where the headers nobody predicted stay readable.
+  raw: string;
 }
 
 export interface RequestLogQueryResult {
@@ -536,4 +625,39 @@ export interface RequestLogQueryResult {
   windowLabel: string;
   // true when the row cap hid matches
   truncated: boolean;
+  // How many rows got their User-Agent from the WAF log, and why the rest did
+  // not — the join is only as good as the requestId both sides carry.
+  uaJoined: number;
+  uaJoinNote: string;
+}
+
+// One request as the WAF recorded it. The app log's counterpart, from the other
+// side of the same hop: this one has the User-Agent and the verdict, and it
+// exists even for requests the app never saw because they were blocked.
+export interface WafLogRow {
+  ts: string;
+  action: string;
+  // The WebACL rule that ended the request — a managed group reports the group
+  // name here, which is why the sub-rule is worth showing next to it.
+  rule: string;
+  subRule: string;
+  ip: string;
+  country: string;
+  method: string;
+  uri: string;
+  args: string;
+  requestId: string;
+  userAgent: string;
+  // What WAF sent when it answered the request itself (Block/CAPTCHA). null for
+  // requests it passed to the origin.
+  responseCode: number | null;
+}
+
+export interface WafLogQueryResult {
+  rows: WafLogRow[];
+  totalMatched: number;
+  scannedBytes: number;
+  windowLabel: string;
+  truncated: boolean;
+  logGroup: string;
 }

@@ -20,7 +20,7 @@ import "server-only";
 //     COMPRESS_WHITE_SPACE) run before the match so %20, &#x2f; and /./ style
 //     evasion is normalised away rather than pattern-matched.
 
-import { APP_TRAFFIC_PATHS, ENV, wafRegion } from "./config";
+import { ENV, RULE_SCOPE_PATHS, wafRegion } from "./config";
 import { classifyUa, spoofedUaPatterns, type ThreatCategory } from "./threatsig";
 import type { AssembledRule, AssembleKind, HttpSummary } from "@/lib/types";
 
@@ -30,6 +30,11 @@ import type { AssembledRule, AssembleKind, HttpSummary } from "@/lib/types";
 // https://docs.aws.amazon.com/waf/latest/developerguide/limits.html
 export const MAX_PATTERNS_PER_SET = 10;
 export const MAX_PATTERN_CHARS = 200;
+
+// How much allowed service traffic makes a User-Agent untouchable. One allowed
+// request could be a probe that slipped through a gap between rules; a hundred
+// is a client the environment is being served by, and blocking it is an outage.
+export const UA_ALLOWED_LIMIT = 100;
 
 // Escapes every regex metacharacter so a literal is matched as text.
 export function escapeLiteral(s: string): string {
@@ -78,14 +83,42 @@ export function uaPatternsFor(category: ThreatCategory, label: string, rawUa: st
 // Grouped by attack shape rather than one signature per line: a pattern set
 // holds at most MAX_PATTERNS_PER_SET records, so related signatures share a
 // record through alternation instead of spending one each.
+//
+// Every signature here has to survive one question: can this appear in text a
+// person would legitimately send? The loose ones were removed after a rule
+// built from them blocked 12,024 consecutive PUT /v1/product requests — the
+// whole product-update workload, from every client including the load
+// generator — because the shapes below matched ordinary product text:
+//
+//   `select\s+.+\s+from\s+`  → ".+" spans anything, so "select the small one
+//                              from the list" in a description matches.
+//   `--\s*$`                 → a body that happens to end in a dash pair.
+//   `/\*.*\*/`               → CSS/JS text quoted inside a payload.
+//   `sleep\s*\(\d+\)`        → product copy: "sleep (8 hours)".
+//
+// What is left needs SQL structure, not a SQL word: an injection keyword pair,
+// a comparison of two constants, a comment marker right after a quote. The
+// benign corpus in scripts/ruleassemble.test.mjs is the regression test — every
+// pattern is checked against real request text from this scenario.
 export const SQLI_PATTERNS = [
-  "union\\s+(all\\s+)?select|select\\s+.+\\s+from\\s+",
-  "insert\\s+into\\s+|drop\\s+table\\s+|;\\s*(select|insert|update|delete|drop)\\b",
+  // Keyword pairs that only occur together in a statement. The gap between
+  // SELECT and FROM may not cross a quote or a brace: "select comfort
+  // pillow","description":"chosen from …" is a product, not a query, and the
+  // punctuation is what says so.
+  "union\\s+(all\\s+)?select|\\bselect\\b[^\"'{};]{0,60}?\\bfrom\\s+[a-z_]",
+  // INSERT needs its table and an opening paren or VALUES — "insert into your
+  // summer wardrobe" is ad copy and reaches neither.
+  "insert\\s+into\\s+[a-z_][a-z0-9_.]*\\s*(\\(|values\\b)|drop\\s+table\\s+[a-z_]|;\\s*(select|insert|update|delete|drop)\\b",
+  // Tautologies. Two constants compared is the shape; prose does not do it.
   "\\bor\\s+1\\s*=\\s*1\\b|\\bor\\s+'[^']*'\\s*=\\s*'|(^|[^a-z])(and|or)\\s+\\d+\\s*=\\s*\\d+",
-  "sleep\\s*\\(\\s*\\d+\\s*\\)|benchmark\\s*\\(|waitfor\\s+delay\\s+",
+  // Time-based probes, but only where the call follows injection punctuation —
+  // "sleep(8)" on its own is a mattress, not an attack.
+  "['\");]\\s*(sleep|benchmark|pg_sleep)\\s*\\(|waitfor\\s+delay\\s+'",
   "load_file\\s*\\(|into\\s+outfile\\s+",
   "information_schema",
-  "--\\s*$|/\\*.*\\*/",
+  // A comment marker that terminates a quoted value — the classic tail of an
+  // injected string. Not a bare "--", which is ordinary punctuation.
+  "['\")]\\s*(--|#)\\s*$|['\")]\\s*/\\*",
 ] as const;
 
 interface KindSpec {
@@ -123,16 +156,20 @@ const SPEC: Record<AssembleKind, KindSpec> = {
     name: "dash-regex-sqli",
     setName: "dash-sqli-signatures",
     priority: 102,
-    // QueryString alone would miss a POST body payload, which is where an
-    // injection usually lives once a form is involved.
-    fields: [{ QueryString: {} }, { Body: {} }],
+    // Query string only. Inspecting the body as well is what turned this rule
+    // into an outage: the observed injections all arrive in the query string
+    // (`id=1' OR '1'='1`), while the request body is where the scenario's
+    // legitimate PUT /v1/product payload lives — product text that a loose
+    // signature will eventually match. The body is the higher-risk field and
+    // the lower-value one here, so it is out.
+    fields: [{ QueryString: {} }],
     transforms: ["URL_DECODE", "HTML_ENTITY_DECODE", "COMPRESS_WHITE_SPACE", "LOWERCASE"],
     notes: [
       "관측과 무관한 고정 시그니처 세트 — 트래픽이 조용해도 항상 같은 패턴을 냄",
-      "쿼리 문자열과 요청 본문을 모두 검사 (OrStatement) — POST 본문에 실린 주입도 잡음",
+      "쿼리 문자열만 검사한다 — 요청 본문은 검사하지 않음. 본문 검사를 켰던 규칙이 정상 PUT /v1/product 12,024건을 전부 차단한 사고가 있었고(모든 UA 균등, 통과 0건), 관측된 주입은 전부 쿼리 문자열에 있었다",
       "URL_DECODE + HTML_ENTITY_DECODE 로 %20·&#x2f; 인코딩 우회를 먼저 풀고, COMPRESS_WHITE_SPACE 로 공백 삽입 우회를 정규화",
-      "본문은 WAF 검사 상한까지만 읽힘 — CloudFront 기본 16KB(최대 64KB로 상향 가능), ALB 는 8KB 고정. 그 뒤에 실린 주입은 놓침",
-      "AWS 관리형 SQLi 규칙 그룹과 겹칠 수 있음 — 중복 차단이 문제되면 COUNT 로 먼저 확인",
+      "시그니처는 SQL 단어가 아니라 SQL 구조를 요구한다 — 키워드 쌍(union select, from <테이블>), 상수 비교(or 1=1), 따옴표 뒤 주석(' --). 정상 텍스트에 섞인 select·sleep·-- 는 매칭하지 않음",
+      "AWS 관리형 SQLi 규칙 그룹(SQLi_QUERYARGUMENTS)이 이미 같은 트래픽을 잡고 있음 — 중복이면 이 규칙 없이도 차단된다. COUNT 로 겹침을 먼저 확인할 것",
     ],
   },
 };
@@ -180,15 +217,18 @@ function createSetCli(setName: string, patterns: string[]): string {
 // The WAF sits in front of the ALB. Without this, a malicious-UA request to an
 // undefined path is cut with 403 before the ALB can answer it with the 404 the
 // task requires, and `Exception Handling` drops for a request nobody meant to
-// touch. So detection is AND'ed with "the URI is one of the served API paths"
-// — the rule can only ever fire inside the surface we own.
+// touch. So detection is AND'ed with "the URI is one we serve" (the API surface
+// plus the health check) — the rule can only ever fire inside the surface we
+// own. The health check is inside that surface on purpose: a scanner probing it
+// should be blocked like any other, and the probes that must never be blocked
+// (ELB-HealthChecker, kube-probe) are excluded by UA, not by path.
 export function pathScopeStatement(): Record<string, unknown> {
   const transforms = [
     { Priority: 0, Type: "URL_DECODE" },
     { Priority: 1, Type: "NORMALIZE_PATH" },
     { Priority: 2, Type: "LOWERCASE" },
   ];
-  const matches = APP_TRAFFIC_PATHS.map((p) => ({
+  const matches = RULE_SCOPE_PATHS.map((p) => ({
     ByteMatchStatement: {
       SearchString: p.toLowerCase(),
       FieldToMatch: { UriPath: {} },
@@ -214,7 +254,7 @@ function isPathScope(stmt: unknown): boolean {
   }
   if (s.ByteMatchStatement?.FieldToMatch?.UriPath) {
     const needle = String(s.ByteMatchStatement.SearchString ?? "").toLowerCase();
-    return APP_TRAFFIC_PATHS.some((p) => needle.startsWith(p.toLowerCase()));
+    return RULE_SCOPE_PATHS.some((p) => needle.startsWith(p.toLowerCase()));
   }
   // The set's contents live in AWS, not in the JSON, so this is taken at its
   // word — the operator wrote the set and can see what is in it.
@@ -231,10 +271,10 @@ export function scopeDownRefusal(rule: unknown): string | null {
   if (!stmt) return "규칙에 Statement 가 없습니다.";
   const and = (stmt as Record<string, any>).AndStatement?.Statements as unknown[] | undefined;
   if (!and || and.length < 2) {
-    return `경로 스코프다운이 없습니다 — AndStatement 로 제공 API 경로(${APP_TRAFFIC_PATHS.join(", ")}) 조건과 묶여야 합니다. 스코프다운 없이 올리면 미지정 경로가 404 대신 403 을 받아 Exception Handling 이 깨집니다.`;
+    return `경로 스코프다운이 없습니다 — AndStatement 로 제공 API 경로(${RULE_SCOPE_PATHS.join(", ")}) 조건과 묶여야 합니다. 스코프다운 없이 올리면 미지정 경로가 404 대신 403 을 받아 Exception Handling 이 깨집니다.`;
   }
   if (!and.some(isPathScope)) {
-    return `AndStatement 안에 제공 API 경로(${APP_TRAFFIC_PATHS.join(", ")}) 조건이 없습니다.`;
+    return `AndStatement 안에 제공 API 경로(${RULE_SCOPE_PATHS.join(", ")}) 조건이 없습니다.`;
   }
   return null;
 }
@@ -283,16 +323,35 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
   const spec = SPEC[kind];
   const patterns: string[] = [];
   const evidence: string[] = [];
+  // Candidates the gate below refused, kept so the operator sees what was left
+  // out and why — a rule that silently drops a UA reads as a missed detection.
+  const skipped: string[] = [];
 
   if (kind === "ua") {
-    // Every observed UA that is not a client this environment expects, not just
-    // the ones matching a named tool. classifyUa now returns UNKNOWN rather
-    // than null for anything unrecognised, so a plain "Mozilla/5.0
-    // (compatible)" or a bare curl no longer walks through.
+    // Every observed UA that is not a client this environment expects — minus
+    // the ones the measurement says are carrying live service traffic.
     const seen = new Set<string>();
+    const allowedByUa = new Map(summary.uaActions.map((u) => [u.key, u]));
     for (const ua of summary.byUa) {
       const hit = classifyUa(ua.key);
       if (!hit) continue;
+
+      // The false-positive gate. A client the WebACL is currently allowing
+      // through on /v1/* is serving the scenario's own traffic, whatever its
+      // name looks like: here the load generator rotates curl, wget,
+      // python-requests, okhttp, axios, Postman and Apache-HttpClient, each
+      // with thousands of allowed requests, and a UA rule built from the name
+      // alone would have blocked every one of them. Blocking is reserved for
+      // clients whose service traffic is not being served — measured per
+      // assembly, never assumed.
+      const seenTraffic = allowedByUa.get(ua.key);
+      if (seenTraffic && seenTraffic.allowed >= UA_ALLOWED_LIMIT) {
+        skipped.push(
+          `"${ua.key}" — ${hit.category}${hit.category === "UNKNOWN" ? "" : ` "${hit.label}"`} 이지만 /v1/* 정상 통과 ${seenTraffic.allowed}건 · 차단 ${seenTraffic.blocked}건 → 차단 대상에서 제외 (오탐 위험)`,
+        );
+        continue;
+      }
+
       const fresh = uaPatternsFor(hit.category, hit.label, ua.key);
       if (fresh.length === 0) continue;
       let added = false;
@@ -303,12 +362,20 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
         added = true;
       }
       if (added) {
+        const traffic = seenTraffic
+          ? ` · /v1/* 통과 ${seenTraffic.allowed}건 · 차단 ${seenTraffic.blocked}건`
+          : "";
         evidence.push(
           `"${ua.key}" — ${ua.count}건 · ${hit.category}${
             hit.category === "UNKNOWN" ? " (알려진 정상 클라이언트가 아님)" : ` 시그니처 "${hit.label}"`
-          }`,
+          }${traffic}`,
         );
       }
+    }
+    if (patterns.length === 0 && skipped.length > 0) {
+      throw new Error(
+        `관측된 User-Agent 가 전부 /v1/* 정상 통과 트래픽을 가지고 있어 차단 패턴을 만들지 않았습니다 — 지금 규칙을 올리면 정상 요청이 함께 막힙니다. 제외 내역: ${skipped.join(" / ")}`,
+      );
     }
     if (patterns.length === 0) {
       // "Nothing suspicious was seen" and "nothing was seen" need different
@@ -360,10 +427,18 @@ export function assembleRule(kind: AssembleKind, summary: HttpSummary): Assemble
       arnPlaceholder: placeholder(set.name),
     })),
     ruleJson: buildRule(spec, sets, action, placeholder),
-    evidence,
+    // The data this rule was written from, named on the artefact itself: a rule
+    // is only as current as the summary behind it, and the summary says whether
+    // it was read live or served from a cache.
+    evidence: kind === "ua" ? [`관측 출처: ${summary.source}`, ...evidence] : evidence,
     notes: [
       ...spec.notes,
       ...capNote,
+      ...(skipped.length > 0
+        ? [
+            `오탐 가드로 제외된 후보 ${skipped.length}건 — /v1/* 에서 정상 통과 중인 클라이언트는 이름이 도구처럼 보여도 패턴화하지 않습니다: ${skipped.join(" / ")}`,
+          ]
+        : []),
       "제공 API 경로 조건과 AND 로 묶여 있음 — 미지정 경로 요청은 이 규칙에 걸리지 않고 ALB 의 404 로 간다",
       action === "COUNT"
         ? "Action 은 COUNT — 매칭 건수와 앱 응답을 확인한 뒤 Block 으로 승격하세요."

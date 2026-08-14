@@ -1,8 +1,9 @@
 import "server-only";
-import { AutoscalingV2Api, CoreV1Api, KubeConfig, Metrics } from "@kubernetes/client-node";
+import { AutoscalingV2Api, CoreV1Api, Metrics } from "@kubernetes/client-node";
 import { discoverNodeGroupScaling } from "./aws";
 import { ENV } from "./config";
 import { errMsg } from "./cloudwatch";
+import { kubeConfig as kc } from "./kubeconfig";
 import type {
   ContainerResourceUsage,
   DeploymentInfo,
@@ -12,17 +13,6 @@ import type {
   PodStatusBreakdown,
   ScaleInfo,
 } from "@/lib/types";
-
-let kubeConfig: KubeConfig | null = null;
-
-function kc(): KubeConfig {
-  if (!kubeConfig) {
-    kubeConfig = new KubeConfig();
-    if (process.env.KUBERNETES_SERVICE_HOST) kubeConfig.loadFromCluster();
-    else kubeConfig.loadFromDefault();
-  }
-  return kubeConfig;
-}
 
 // Kubernetes resource.Quantity parsers (metrics.k8s.io reports usage as
 // Quantity strings — not necessarily the same suffix family as requests/limits).
@@ -58,6 +48,19 @@ export function parseMemBytes(qty: string): number {
   const value = Number(m[1]);
   const suffix = m[2];
   return suffix ? value * (MEM_UNITS[suffix] ?? 1) : value;
+}
+
+// metrics.k8s.io answering 404 because the addon is not installed is the usual
+// cause here, but the same call also fails on kubeconfig/auth problems — and
+// pinning those on the addon sends the operator to install something that is
+// already there. So the hint is attached only when the cause is not one of the
+// connection-side failures the message already names.
+const NOT_A_METRICS_PROBLEM =
+  /spawn|ENOENT|EINVAL|ECONNREFUSED|ETIMEDOUT|kubeconfig|Unauthorized|Forbidden|401|403/i;
+
+function metricsErr(e: unknown): string {
+  const msg = errMsg(e);
+  return NOT_A_METRICS_PROBLEM.test(msg) ? msg : `${msg} (metrics-server addon 필요)`;
 }
 
 function pct(usage: number, limit: number | null): number | null {
@@ -113,10 +116,7 @@ export async function getPodResourceUsage(
     });
     return { data, error: null };
   } catch (e) {
-    return {
-      data: [],
-      error: `${errMsg(e)} (metrics-server addon 필요)`,
-    };
+    return { data: [], error: metricsErr(e) };
   }
 }
 
@@ -155,7 +155,7 @@ export async function getNodeResourceUsage(): Promise<{
     });
     return { data, error: null };
   } catch (e) {
-    return { data: [], error: `${errMsg(e)} (metrics-server addon 필요)` };
+    return { data: [], error: metricsErr(e) };
   }
 }
 

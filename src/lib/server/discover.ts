@@ -15,12 +15,16 @@ import { ListMetricsCommand } from "@aws-sdk/client-cloudwatch";
 import { DescribeLogGroupsCommand } from "@aws-sdk/client-cloudwatch-logs";
 import { ListClustersCommand } from "@aws-sdk/client-eks";
 import { DescribeLoadBalancersCommand } from "@aws-sdk/client-elastic-load-balancing-v2";
+import { GetLoggingConfigurationCommand, ListWebACLsCommand } from "@aws-sdk/client-wafv2";
 import {
-  GetLoggingConfigurationCommand,
-  ListWebACLsCommand,
-  WAFV2Client,
-} from "@aws-sdk/client-wafv2";
-import { cloudWatch, eksClient, elbClient, logsClient, logsClientRegional, wafClient } from "./aws";
+  cloudWatch,
+  eksClient,
+  elbClient,
+  logsClient,
+  logsClientRegional,
+  wafClient,
+  wafClientFor,
+} from "./aws";
 import { errMsg } from "./cloudwatch";
 import { ENV, wafRegion } from "./config";
 import type { DiscoverKind, DiscoveredResource, DiscoveryResult } from "@/lib/types";
@@ -41,7 +45,7 @@ async function webAcls(): Promise<DiscoveryResult> {
   for (const scope of ["CLOUDFRONT", "REGIONAL"] as const) {
     const region = scope === "CLOUDFRONT" ? "us-east-1" : ENV.region;
     try {
-      const client = new WAFV2Client({ region });
+      const client = wafClientFor(region);
       const res = await client.send(new ListWebACLsCommand({ Scope: scope, Limit: PAGE_LIMIT }));
       for (const acl of res.WebACLs ?? []) {
         if (!acl.Name) continue;

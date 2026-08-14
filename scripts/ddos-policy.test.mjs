@@ -25,10 +25,16 @@ const check = (name, actual, expected) => {
 
 console.log("APP_TRAFFIC_PATHS =", APP_TRAFFIC_PATHS.join(", "), "\n");
 
-for (const p of ["/v1/user", "/v1/product", "/v1/stress", "/v1/image", "/v1/user/42", "/v1/image?id=3"]) {
+for (const p of [
+  "/v1/user", "/v1/product", "/v1/stress", "/v1/image", "/v1/user/42", "/v1/image?id=3",
+  // Image delivery arrives as a static asset, not only through the API. This
+  // list is what every rule's path scope-down is built from, so a served shape
+  // missing here means a rule that stops covering the traffic hitting it.
+  "/images", "/images/seed200p00000022.png",
+]) {
   check(`isAppTrafficPath("${p}")`, isAppTrafficPath(p), true);
 }
-for (const p of ["/admin.php", "/v1", "/v1/userx", "/.env", "/wp-login.php"]) {
+for (const p of ["/admin.php", "/v1", "/v1/userx", "/.env", "/wp-login.php", "/imagesx"]) {
   check(`isAppTrafficPath("${p}")`, isAppTrafficPath(p), false);
 }
 
@@ -39,7 +45,15 @@ for (const p of ["/v1/image/../../etc/passwd", "/v1/user/../../../admin", "/v1/.
   check(`traversal escapes the served surface: ${p}`, isAppTrafficPath(p), false);
 }
 check("a plain served path still matches", isAppTrafficPath("/v1/image/logo.png"), true);
-check("health check with a dot segment is still a health check", isLowPriorityPath("/health/./x"), true);
+// /healthcheck is the app's health path — exactly that string. The standard
+// alternatives are NOT served here, so a probe walking them is undefined-path
+// traffic that must stay visible to the suspicious-path detector.
+check("health check with a dot segment is still a health check", isLowPriorityPath("/healthcheck/./x"), true);
+check("/healthcheck is the health path", isLowPriorityPath("/healthcheck"), true);
+for (const p of ["/health", "/healthz", "/ready", "/readyz", "/liveness"]) {
+  check(`unserved health guess is not low priority: ${p}`, isLowPriorityPath(p), false);
+}
+check("a probe walking /health is suspicious like any undefined path", isPathSuspicious("/health", 990, 1000), true);
 
 // The single suspicious-path rule both UI tabs and the anomaly detector share.
 check("off-surface + concentrated is suspicious", isPathSuspicious("/wp-login.php", 990, 1000), true);

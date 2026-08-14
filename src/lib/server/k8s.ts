@@ -2,7 +2,6 @@ import "server-only";
 import {
   AppsV1Api,
   CoreV1Api,
-  KubeConfig,
   PatchStrategy,
   setHeaderOptions,
   type V1Container,
@@ -11,6 +10,7 @@ import {
   type V1Pod,
 } from "@kubernetes/client-node";
 import { ENV } from "./config";
+import { kubeConfig } from "./kubeconfig";
 import { trackRestarts } from "./db";
 import { maskLines } from "./mask";
 import type {
@@ -25,12 +25,7 @@ let apps: AppsV1Api | null = null;
 
 function clients(): { core: CoreV1Api; apps: AppsV1Api } {
   if (!core || !apps) {
-    const kc = new KubeConfig();
-    if (process.env.KUBERNETES_SERVICE_HOST) {
-      kc.loadFromCluster();
-    } else {
-      kc.loadFromDefault();
-    }
+    const kc = kubeConfig();
     core = kc.makeApiClient(CoreV1Api);
     apps = kc.makeApiClient(AppsV1Api);
   }

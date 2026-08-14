@@ -15,11 +15,13 @@ import {
   GetQueryResultsCommand,
   StartQueryCommand,
 } from "@aws-sdk/client-cloudwatch-logs";
-import { cached } from "./cache";
+import { cached, invalidateCached, putCached } from "./cache";
 import {
   ENV,
   POLLING,
   WAF_LIMITS,
+  isAppTrafficPath,
+  isImageAssetPath,
   isIpConcentrated,
   isLowPriorityPath,
   isPathSuspicious,
@@ -41,6 +43,8 @@ import type {
   PathStat,
   ResolvedWindow,
   StatusDistribution,
+  SurfaceCounts,
+  UaActionStat,
   WafAclInfo,
   WafSampleRow,
 } from "@/lib/types";
@@ -106,7 +110,12 @@ export interface SampleSet {
   windowMinutes: number;
 }
 
-export async function fetchSampledRequests(): Promise<SampleSet> {
+export async function fetchSampledRequests(fresh = false): Promise<SampleSet> {
+  // `fresh` exists for rule assembly. A rule is written from these numbers and
+  // then applied to live traffic, so it must not be built from a value that was
+  // true half a minute ago — the UA that appeared since is exactly the one the
+  // rule would be missing.
+  if (fresh) invalidateCached("waf:samples");
   return cached("waf:samples", 30_000, async () => {
     const client = wafClient();
     const { webAcl, arn } = await getAclHandle();
@@ -185,6 +194,10 @@ function topCounts(map: Map<string, number>, n: number): KeyCount[] {
 export async function buildHttpSummary(
   statusDist: StatusDistribution | null,
   win: ResolvedWindow,
+  // Set by the rule assembler: skip every cache and re-read the window now.
+  // The panels can show a value that is 2 minutes old; a rule cannot be built
+  // from one, because it goes live against the traffic arriving this second.
+  opts: { fresh?: boolean } = {},
 ): Promise<HttpSummary> {
   // Real counts over the shared window when WAF logs are available; the
   // sampled-requests path below is the fallback and says so, because its
@@ -192,14 +205,18 @@ export async function buildHttpSummary(
   // follow the selected window.
   if (ENV.wafLogGroup) {
     try {
-      const agg = await fetchWafLogInsightsCached(win);
+      const agg = opts.fresh
+        ? await fetchWafLogInsightsFresh(win)
+        : await fetchWafLogInsightsCached(win);
       return {
         totalSampled: agg.total,
         windowLabel: win.label,
-        source: `WAF 로그 Logs Insights(${ENV.wafLogGroup}) · 구간 ${win.label} · 스캔 ${fmtBytes(agg.bytesScanned)} · 표본이 아닌 전수 집계${insightsAgeNote(agg.coveredEndMs, Date.now())}`,
+        source: `WAF 로그 Logs Insights(${ENV.wafLogGroup}) · 구간 ${win.label} · 스캔 ${fmtBytes(agg.bytesScanned)} · 표본이 아닌 전수 집계${opts.fresh ? " · 규칙 조립용 실시간 조회(캐시 미사용)" : insightsAgeNote(agg.coveredEndMs, Date.now())}`,
         byPath: agg.byPath,
         byIp: agg.byIp,
         byUa: agg.byUa,
+        uaActions: agg.uaActions,
+        surface: agg.surface,
         byMethod: agg.byMethod,
         queryPatterns: agg.queryPatterns,
         headerPatterns: [],
@@ -216,7 +233,7 @@ export async function buildHttpSummary(
     }
   }
 
-  const { samples, windowMinutes } = await fetchSampledRequests();
+  const { samples, windowMinutes } = await fetchSampledRequests(opts.fresh);
   const byPath = new Map<string, { count: number; blocked: number }>();
   const byIp = new Map<string, number>();
   const byUa = new Map<string, number>();
@@ -293,7 +310,15 @@ export async function buildHttpSummary(
     source,
     byPath: pathStats,
     byIp: ipStats,
-    byUa: topCounts(byUa, 10),
+    byUa: topCounts(byUa, WAF_LIMITS.uaTopN),
+    // Sampled requests cannot answer the false-positive question: WAF only
+    // samples what a rule matched, so "this client is being allowed through"
+    // is exactly the fact this source is blind to. Left empty rather than
+    // filled with a number that would read as evidence of no risk.
+    uaActions: [],
+    // Same reason: a sampled count is not an arrival count, and putting one
+    // under "이미지 도착" would understate it by whatever the sampler dropped.
+    surface: null,
     byMethod: topCounts(byMethod, 8),
     queryPatterns: topCounts(byQuery, 10),
     headerPatterns: topCounts(byHeader, 10),
@@ -343,6 +368,8 @@ interface WafLogAggregation {
   byPath: PathStat[];
   byIp: IpStat[];
   byUa: KeyCount[];
+  uaActions: UaActionStat[];
+  surface: SurfaceCounts;
   byMethod: KeyCount[];
   queryPatterns: KeyCount[];
   total: number;
@@ -356,13 +383,26 @@ interface WafLogAggregation {
 // Keyed by span alone: the aggregation groups by key, never by time bucket, so
 // the interval does not change the result, and keying on the exact end would
 // miss on every poll and defeat the cache.
+function insightsKey(win: ResolvedWindow): string {
+  return `waf:insights:${ENV.wafLogGroup}:${win.windowMin}`;
+}
+
 function fetchWafLogInsightsCached(win: ResolvedWindow): Promise<WafLogAggregation> {
   return cached(
-    `waf:insights:${ENV.wafLogGroup}:${win.windowMin}`,
+    insightsKey(win),
     POLLING.wafInsightsTtlMs,
     () => fetchWafLogInsights(win),
     POLLING.logFailTtlMs,
   );
+}
+
+// The same read with the cache stepped over, for rule assembly. The result is
+// written back so the panels get the fresh numbers too rather than serving the
+// older ones they were about to.
+async function fetchWafLogInsightsFresh(win: ResolvedWindow): Promise<WafLogAggregation> {
+  const agg = await fetchWafLogInsights(win);
+  putCached(insightsKey(win), POLLING.wafInsightsTtlMs, agg);
+  return agg;
 }
 
 async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregation> {
@@ -378,7 +418,7 @@ async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregati
   };
   // The User-Agent lives inside httpRequest.headers[], whose index varies per
   // request, so it is pulled off the raw message rather than a JSON field.
-  const [pathRes, ipRes, uaRes, methodRes, argsRes] = await Promise.all([
+  const [pathRes, ipRes, uaRes, methodRes, argsRes, uaActionRes] = await Promise.all([
     runInsightsQuery({
       ...bounds,
       query:
@@ -391,8 +431,7 @@ async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregati
     }),
     runInsightsQuery({
       ...bounds,
-      query:
-        'parse @message /"name":"(?i)user-agent","value":"(?<ua>[^"]*)"/ | stats count(*) as cnt by ua | sort cnt desc | limit 20',
+      query: `parse @message /"name":"(?i)user-agent","value":"(?<ua>[^"]*)"/ | stats count(*) as cnt by ua | sort cnt desc | limit ${WAF_LIMITS.uaQueryLimit}`,
     }),
     runInsightsQuery({
       ...bounds,
@@ -403,10 +442,42 @@ async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregati
       query:
         "filter httpRequest.args != '' | stats count(*) as cnt by httpRequest.args as args | sort cnt desc | limit 20",
     }),
+    // Per-UA verdict split, scoped to the served API surface. This is the
+    // false-positive check the UA rule is built on: a client the WebACL is
+    // already letting through in bulk on /v1/* is carrying the scenario's
+    // normal traffic, and turning its name into a Block pattern takes that
+    // traffic down with it. Measured, not assumed — in this environment the
+    // load generator rotates curl / wget / python-requests / okhttp / axios /
+    // Postman / Apache-HttpClient, every one of which reads like a tool.
+    runInsightsQuery({
+      ...bounds,
+      query: `parse @message /"name":"(?i)user-agent","value":"(?<ua>[^"]*)"/ | filter httpRequest.uri like "/v1/" | stats count(*) as cnt by ua, action | sort cnt desc | limit ${WAF_LIMITS.uaQueryLimit}`,
+    }),
   ]);
 
   const pathFolded = foldByAction(pathRes.rows, "path");
   const { total, blockedTotal } = totals(pathFolded);
+
+  // Arrivals per surface, read off the full fold before it is truncated to the
+  // 20 rows the panel draws. Free — the query has already run — and it is the
+  // only place two of the grader's keys can be counted at all: image requests
+  // are served by CloudFront from S3 and undefined paths are answered by the
+  // ALB's fixed 404, so neither ever reaches the application log.
+  const surface: SurfaceCounts = {
+    imageArrived: 0,
+    imageBlocked: 0,
+    undefinedArrived: 0,
+    undefinedBlocked: 0,
+  };
+  for (const [path, v] of pathFolded) {
+    if (isImageAssetPath(path)) {
+      surface.imageArrived += v.count;
+      surface.imageBlocked += v.blocked;
+    } else if (!isAppTrafficPath(path) && !isLowPriorityPath(path)) {
+      surface.undefinedArrived += v.count;
+      surface.undefinedBlocked += v.blocked;
+    }
+  }
 
   const byPath: PathStat[] = [...pathFolded.entries()]
     .map(([path, v]) => ({
@@ -436,12 +507,30 @@ async function fetchWafLogInsights(win: ResolvedWindow): Promise<WafLogAggregati
     ipRes.bytesScanned +
     uaRes.bytesScanned +
     methodRes.bytesScanned +
-    argsRes.bytesScanned;
+    argsRes.bytesScanned +
+    uaActionRes.bytesScanned;
+
+  const uaFolded = new Map<string, { allowed: number; blocked: number }>();
+  for (const row of uaActionRes.rows) {
+    const key = row["ua"];
+    if (!key) continue;
+    const acc = uaFolded.get(key) ?? { allowed: 0, blocked: 0 };
+    const cnt = Number(row["cnt"] ?? "0");
+    if (row["action"] === "ALLOW") acc.allowed += Number.isFinite(cnt) ? cnt : 0;
+    else acc.blocked += Number.isFinite(cnt) ? cnt : 0;
+    uaFolded.set(key, acc);
+  }
+  const uaActions: UaActionStat[] = [...uaFolded.entries()]
+    .map(([key, v]) => ({ key, allowed: v.allowed, blocked: v.blocked }))
+    .sort((a, b) => b.allowed + b.blocked - (a.allowed + a.blocked))
+    .slice(0, WAF_LIMITS.uaTopN);
 
   return {
     byPath,
     byIp,
-    byUa: topKeyCounts(uaRes.rows, "ua", 10),
+    byUa: topKeyCounts(uaRes.rows, "ua", WAF_LIMITS.uaTopN),
+    uaActions,
+    surface,
     byMethod: topKeyCounts(methodRes.rows, "method", 8),
     queryPatterns: topKeyCounts(argsRes.rows, "args", 10).map((r) => ({
       key: r.key.slice(0, 120),

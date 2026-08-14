@@ -4,6 +4,7 @@ import { POLLING } from "@/lib/server/config";
 import { cached, invalidateCached, peekCached, putCached } from "@/lib/server/cache";
 import { errMsg, fetchCoreMetrics, fetchTargetGroupMetrics } from "@/lib/server/cloudwatch";
 import { fetchRequestLogRows } from "@/lib/server/applog";
+import { fetchWafLogRows, type WafActionFilter } from "@/lib/server/waflog";
 import type { StatusClass } from "@/lib/server/applogquery";
 import {
   countReadyNodes,
@@ -24,6 +25,14 @@ import { loadResourceHistory, recordResourceSamples } from "@/lib/server/reshist
 import { saveSettings, settingsView } from "@/lib/server/settings";
 import { discover } from "@/lib/server/discover";
 import { resetAwsClients } from "@/lib/server/aws";
+import {
+  clearCredentials,
+  credentialsView,
+  importCliSession,
+  setCredentials,
+} from "@/lib/server/credentials";
+import { checkCredentials } from "@/lib/server/credcheck";
+import { parseCredentialBlob } from "@/lib/awscreds";
 
 import {
   getNodeResourceUsage,
@@ -70,9 +79,12 @@ import type {
   MetricSummary,
   PodLogsResult,
   ProbeResult,
+  CredentialCheck,
+  CredentialsView,
   DiscoverKind,
   DiscoveryResult,
   RequestLogQueryResult,
+  WafLogQueryResult,
   SettingsView,
   ResourceHistory,
   StatusDistribution,
@@ -116,6 +128,8 @@ const EMPTY_SUMMARY = {
   byPath: [],
   byIp: [],
   byUa: [],
+  uaActions: [],
+  surface: null,
   byMethod: [],
   queryPatterns: [],
   headerPatterns: [],
@@ -440,6 +454,92 @@ export async function saveSettingsAction(
   }
 }
 
+// --- AWS credentials -------------------------------------------------------
+//
+// The keys never travel back to the browser — every action here returns the
+// masked view, and the input is one-way. See server/credentials.ts.
+
+export async function getCredentialsAction(): Promise<ActionResult<CredentialsView>> {
+  try {
+    return ok(credentialsView(Date.now()));
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export interface CredentialsResult {
+  view: CredentialsView;
+  check: CredentialCheck;
+}
+
+// Injecting changes which account every panel is reading, so the SDK clients
+// and every cached answer taken with the previous identity have to go — the
+// same reasoning as a settings save, for the same reason.
+async function applied(): Promise<CredentialsResult> {
+  resetAwsClients();
+  invalidateCached("");
+  return { view: credentialsView(Date.now()), check: await checkCredentials() };
+}
+
+// Typed in, or pasted as a blob — an `export` block, an .env fragment, a
+// `~/.aws/credentials` section, the JSON the CLI prints. The blob is parsed on
+// the server as well as in the browser so a paste that only the server sees
+// (autofill, a form post) lands the same way.
+export async function saveCredentialsAction(input: {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken: string;
+  blob?: string;
+  persist: boolean;
+}): Promise<ActionResult<CredentialsResult>> {
+  try {
+    const pasted = input.blob ? parseCredentialBlob(input.blob) : null;
+    setCredentials({
+      accessKeyId: input.accessKeyId || pasted?.accessKeyId || "",
+      secretAccessKey: input.secretAccessKey || pasted?.secretAccessKey || "",
+      sessionToken: input.sessionToken || pasted?.sessionToken || "",
+      expiration: pasted?.expiration ?? "",
+      origin: "paste",
+      persist: input.persist,
+    });
+    return ok(await applied());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// Reads the session the local `aws` CLI is holding — including an SSO one — and
+// injects it. This is the path that keeps working on its own: the provider
+// re-runs the import when the session token expires.
+export async function importAwsSessionAction(input: {
+  profile: string;
+  persist: boolean;
+}): Promise<ActionResult<CredentialsResult>> {
+  try {
+    await importCliSession(input.profile || undefined, input.persist);
+    return ok(await applied());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function clearCredentialsAction(): Promise<ActionResult<CredentialsResult>> {
+  try {
+    clearCredentials();
+    return ok(await applied());
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+export async function checkCredentialsAction(): Promise<ActionResult<CredentialsResult>> {
+  try {
+    return ok({ view: credentialsView(Date.now()), check: await checkCredentials() });
+  } catch (e) {
+    return fail(e);
+  }
+}
+
 export async function discoverAction(kind: DiscoverKind): Promise<ActionResult<DiscoveryResult>> {
   try {
     return ok(await discover(kind));
@@ -468,11 +568,16 @@ export async function getGradingPanelAction(
     const win = resolveWindow(sel, Date.now());
     const metrics = peekCached<MetricsPanel>("panel:metrics");
     const wafBlocked = metrics?.httpSummary?.blockedTotal ?? 0;
+    // The WAF summary is peeked, not fetched: the two keys it feeds are
+    // arrival counts, and the metrics panel has already paid for that scan on
+    // its own tier. Absent (first load, or sampled mode) the panel falls back
+    // to the app log and labels the source accordingly.
+    const surface = metrics?.httpSummary?.surface ?? null;
     return ok(
       await cached(
         `panel:grading:${windowKey(win)}`,
         POLLING.logCacheTtlMs,
-        () => fetchGradingPanel(win, wafBlocked),
+        () => fetchGradingPanel(win, wafBlocked, surface),
         POLLING.logFailTtlMs,
       ),
     );
@@ -494,6 +599,26 @@ export async function getRequestLogRowsAction(params: {
   try {
     return ok(
       await fetchRequestLogRows({ ...params, win: resolveWindow(params.window, Date.now()) }),
+    );
+  } catch (e) {
+    return fail(e);
+  }
+}
+
+// The same window, one hop earlier: what the WAF recorded for each request,
+// including the ones it blocked and the app therefore never logged.
+export async function getWafLogRowsAction(params: {
+  action: WafActionFilter;
+  pathContains: string;
+  window?: WindowSelection;
+}): Promise<ActionResult<WafLogQueryResult>> {
+  try {
+    return ok(
+      await fetchWafLogRows({
+        action: params.action,
+        pathContains: params.pathContains,
+        win: resolveWindow(params.window, Date.now()),
+      }),
     );
   } catch (e) {
     return fail(e);
@@ -667,7 +792,16 @@ export async function assembleRuleAction(
     // is unavailable — every other kind (path/ua/query/surface) reads the
     // observed traffic.
     if (kind === "sqli") return ok(assembleRule("sqli", EMPTY_SUMMARY));
-    return ok(assembleRule(kind, await buildHttpSummary(null, resolveWindow(sel, Date.now()))));
+    // fresh: the summary behind a rule is read now, not taken from the panel
+    // caches. A rule goes live against the traffic arriving this second, so it
+    // is written from that traffic — including the UA verdict split the
+    // false-positive gate depends on.
+    return ok(
+      assembleRule(
+        kind,
+        await buildHttpSummary(null, resolveWindow(sel, Date.now()), { fresh: true }),
+      ),
+    );
   } catch (e) {
     return fail(e);
   }

@@ -5,6 +5,7 @@ import { getPodLogsAction } from "@/app/actions/dashboard";
 import type { KubePanel, MetricsPanel, PodLogsResult, WindowSelection } from "@/lib/types";
 import type { PodSelection } from "./DashboardClient";
 import { RequestLogPanel } from "./RequestLogPanel";
+import { WafLogPanel } from "./WafLogPanel";
 import { TimeChart } from "./TimeChart";
 import {
   Card,
@@ -210,6 +211,10 @@ export function TrafficTab({
       </div>
 
       <RequestLogPanel window={win} />
+
+      {/* One hop earlier than the panel above: the app log only holds requests
+          that reached the origin, so a WAF block is invisible there. */}
+      <WafLogPanel window={win} />
 
       {wafSeries.length > 0 && (
         <Card title="WAF Blocked / Allowed 추이">

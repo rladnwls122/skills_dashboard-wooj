@@ -22,13 +22,14 @@ const check = (name, actual, expected) => {
   );
 };
 
-const summary = (byPath = [], byUa = []) => ({
+const summary = (byPath = [], byUa = [], uaActions = []) => ({
   totalSampled: 1000,
   windowLabel: "15m",
   source: "test",
   byPath,
   byIp: [],
   byUa,
+  uaActions,
   byMethod: [],
   queryPatterns: [],
   headerPatterns: [],
@@ -70,9 +71,58 @@ check("sqli decodes html entities before matching", sqli.ruleJson.includes("HTML
 const sqliMatches = (q) => sqli.patterns.some((s) => new RegExp(s).test(q));
 check("union select is caught", sqliMatches("id=1 union select password from users"), true);
 check("or 1=1 is caught", sqliMatches("id=1 or 1=1"), true);
-check("sleep() is caught", sqliMatches("id=1;sleep(5)"), true);
+check("sleep() is caught", sqliMatches("id=1';sleep(5)"), true);
 check("ordinary query is not caught", sqliMatches("id=3&name=kim&sort=asc"), false);
 check("a word containing 'or' is not caught", sqliMatches("color=red&order=1"), false);
+
+// The signatures observed in this scenario's own attack traffic, lowercased and
+// whitespace-collapsed the way the transforms deliver them.
+const attackSamples = [
+  "id=1' or '1'='1",
+  "id=1 union all select null,null,version()--",
+  "id=1'; drop table products; --",
+  "email=a@b.c' or 1=1 -- ",
+  "id=1 and 1=1",
+  "id=-1 union select 1,2,3 from information_schema.tables",
+  "id=1'); waitfor delay '0:0:5'--",
+  "q=' or ''='",
+];
+for (const sample of attackSamples) {
+  check(`attack sample is caught: ${sample}`, sqliMatches(sample), true);
+}
+
+// The benign corpus. This is the regression test for the incident where a
+// body-inspecting SQLi rule blocked 12,024 consecutive legitimate PUT
+// /v1/product requests: every string below is request text this scenario
+// actually produces, and a signature that matches any of them is a signature
+// that takes real traffic down. Anything added to SQLI_PATTERNS has to keep
+// this list clean.
+const benignSamples = [
+  // Query strings the load generator sends, verbatim in shape.
+  "id=gr200p00000485&requestid=325230325475&uuid=165c5c9b-e26e-49c0-82b8-2c1f5c9b1a2f",
+  "email=gr20000001404@example.org&requestid=696625763434&uuid=a0f0cf07-bdf4-4a1e-9f2e-1d0b2b9a77c1",
+  "id=seed200p00000044&requestid=593682255061",
+  // Product payload text — the field that made the old rule fire.
+  '{"name":"select comfort pillow","description":"chosen from our premium range","price":39000}',
+  '{"name":"memory foam mattress","description":"deep sleep (8 hours) support","price":250000}',
+  '{"name":"drop shoulder tee","description":"insert into your summer wardrobe","price":19000}',
+  '{"name":"table lamp","description":"update your desk -- warm light","price":45000}',
+  '{"name":"or1 gaming mouse","description":"order now and save","price":58000}',
+  '{"description":"select from 12 colors, and 3 sizes"}',
+  '{"note":"css block: /* rounded */ and code sample"}',
+  // Ordinary reads.
+  "page=2&sort=price_desc&category=home",
+  "keyword=sleep&limit=20",
+];
+for (const sample of benignSamples) {
+  check(`benign sample is not blocked: ${sample.slice(0, 48)}`, sqliMatches(sample), false);
+}
+
+// The field list is part of the false-positive story: the body is where the
+// legitimate payload lives, and the observed injections are all in the query
+// string.
+check("sqli inspects the query string", sqli.ruleJson.includes("QueryString"), true);
+check("sqli does not inspect the body", sqli.ruleJson.includes('"Body"'), false);
 
 // --- scope-down: the gate every rule passes through ---
 //
@@ -213,6 +263,61 @@ try {
 check("UA 통계가 비면 수집 문제라고 말한다", emptyThrew?.includes("WAF_LOG_GROUP"), true);
 check("정상뿐인 경우와 다른 메시지", emptyThrew !== uaThrew, true);
 
+// --- the false-positive gate ---
+//
+// The incident this encodes: this scenario's load generator rotates generic
+// client User-Agents (curl, wget, python-requests, okhttp, axios, Postman,
+// Apache-HttpClient), each carrying thousands of allowed /v1/* requests. Every
+// one of them classifies as AUTOMATION and would become a Block pattern on name
+// alone. The measured verdict split is what tells them apart from a scanner, so
+// a UA with live allowed traffic must never reach the pattern set.
+const gated = assembleRule(
+  "ua",
+  summary(
+    [],
+    [
+      { key: "curl/8.7.1", count: 6141 },
+      { key: "python-requests/2.32.3", count: 5943 },
+      { key: "sqlmap/1.8.5#stable (https://sqlmap.org)", count: 123 },
+    ],
+    [
+      { key: "curl/8.7.1", allowed: 6141, blocked: 309 },
+      { key: "python-requests/2.32.3", allowed: 5943, blocked: 346 },
+      { key: "sqlmap/1.8.5#stable (https://sqlmap.org)", allowed: 2, blocked: 640 },
+    ],
+  ),
+);
+const gatedMatches = (ua) => gated.patterns.some((s) => new RegExp(s).test(ua.toLowerCase()));
+check("정상 통과 중인 curl 은 패턴이 되지 않는다", gatedMatches("curl/8.7.1"), false);
+check("정상 통과 중인 python-requests 도 제외된다", gatedMatches("python-requests/2.32.3"), false);
+check("실제 공격 도구는 그대로 잡는다", gatedMatches("sqlmap/1.8.5#stable"), true);
+check(
+  "제외 사유가 근거에 남는다",
+  gated.notes.some((n) => n.includes("오탐 가드로 제외된 후보")),
+  true,
+);
+// With no verdict data (sampled-requests mode) the gate cannot run, and the old
+// behaviour stands — the note on screen is what says the check was unavailable.
+const ungated = assembleRule("ua", summary([], [{ key: "curl/8.7.1", count: 6141 }]));
+check("검증 데이터가 없으면 종전대로 패턴화된다", ungated.patterns.length > 0, true);
+
+// Everything allowed → refusing to build is the correct answer, and it must say
+// why rather than emitting an empty rule.
+let allAllowedThrew = null;
+try {
+  assembleRule(
+    "ua",
+    summary(
+      [],
+      [{ key: "curl/8.7.1", count: 6141 }],
+      [{ key: "curl/8.7.1", allowed: 6141, blocked: 0 }],
+    ),
+  );
+} catch (e) {
+  allAllowedThrew = e.message;
+}
+check("전부 정상 통과면 규칙을 만들지 않고 이유를 말한다", allAllowedThrew?.includes("정상 통과"), true);
+
 // A SPOOFED classification's label ("injection-in-ua", "base64-ua") is a
 // category name, not text found in the UA. Turning it into a literal builds a
 // rule that matches nothing, so those must come out as real regexes.
@@ -242,18 +347,15 @@ const detectionOf = (rule) => {
   return and[1];
 };
 
-// Query-string-only SQLi misses the POST body, which is where an injection
-// usually sits once a form is involved.
+// Query string only. Adding the body back would put every legitimate PUT
+// payload in front of these signatures again — the shape of the outage this
+// rule caused — while the injections observed here all ride in the query
+// string, which the managed SQLi group flags as SQLi_QUERYARGUMENTS too.
 const sqliStmt = detectionOf(sqli);
 check(
-  "sqli inspects both the query string and the body",
-  sqliStmt.OrStatement.Statements.map((s) => Object.keys(s.RegexPatternSetReferenceStatement.FieldToMatch)[0]),
-  ["QueryString", "Body"],
-);
-check(
-  "both fields share one pattern set",
-  new Set(sqliStmt.OrStatement.Statements.map((s) => s.RegexPatternSetReferenceStatement.ARN)).size,
-  1,
+  "sqli inspects the query string alone",
+  Object.keys(sqliStmt.RegexPatternSetReferenceStatement.FieldToMatch),
+  ["QueryString"],
 );
 
 // --- the rule JSON the sandbox has to be able to read back ---
@@ -261,9 +363,7 @@ check("세트는 규칙과 별개 산출물로 나옴", sqli.sets.length, 1);
 check("세트 생성 CLI 에 스코프가 들어감", sqli.sets[0].createCli.includes("--scope"), true);
 check(
   "transform priorities are 0..n in order",
-  sqliStmt.OrStatement.Statements[0].RegexPatternSetReferenceStatement.TextTransformations.map(
-    (t) => t.Priority,
-  ),
+  sqliStmt.RegexPatternSetReferenceStatement.TextTransformations.map((t) => t.Priority),
   [0, 1, 2, 3],
 );
 // A single-field kind stays a bare statement rather than a one-armed Or.

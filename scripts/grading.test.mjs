@@ -25,8 +25,17 @@ const row = (path, o = {}) => ({
   slowOk: o.slowOk ?? 0,
   handledOk: o.handledOk ?? 0,
 });
-const panel = (rows, wafBlocked = 0) =>
-  buildGradingPanel({ rows, wafBlocked, window: win, source: "test", scannedBytes: 0, notes: [] });
+const panel = (rows, wafBlocked = 0, surface = null, elb4xx = null) =>
+  buildGradingPanel({
+    rows,
+    wafBlocked,
+    surface,
+    elb4xx,
+    window: win,
+    source: "test",
+    scannedBytes: 0,
+    notes: [],
+  });
 const line = (p, label) => p.lines.find((l) => l.label === label);
 
 // --- path classification ---
@@ -42,7 +51,15 @@ check("이미지 경로 판별", [isImagePath("/images/a.png"), isImagePath("/v1
 const shape = panel([row("/v1/user", { total: 10, availOk: 9, fastOk: 8, slowOk: 9 })]);
 check("점수 필드가 없음", "points" in shape, false);
 check("만점 필드가 없음", "maxPoints" in shape, false);
-check("줄에도 점수가 없음", Object.keys(shape.lines[0]).sort(), ["label", "okCount", "pct", "total"]);
+// `source` is a label, not a score: it says which log or metric the ratio was
+// counted from, which the three keys no longer share.
+check("줄에도 점수가 없음", Object.keys(shape.lines[0]).sort(), [
+  "label",
+  "okCount",
+  "pct",
+  "source",
+  "total",
+]);
 check("점수는 채점기가 정한다고 적힘", shape.notes.some((n) => n.includes("results_")), true);
 
 // Keys appear in the grader's own order so the two lists read side by side.
@@ -83,6 +100,43 @@ const p4 = panel([
 check("예외 처리 비율은 미지정 경로만", line(p4, "Exception Handling").pct, 85);
 check("서비스 경로는 예외 분모에 없음", line(p4, "Exception Handling").total, 100);
 check("헬스체크도 예외 분모에 없음", line(p4, "Exception Handling").total, 100);
+
+// --- the two keys the app log cannot see ---
+//
+// In this environment /images/* is served by CloudFront from an S3 origin and
+// undefined paths are answered by the ALB's fixed-response 404, so neither ever
+// reaches a pod: counted from the app log both keys are 0/0 ("요청 없음") while
+// thousands an hour arrive. The WAF log supplies the arrivals and the ALB
+// metric supplies the 404s.
+const surface = {
+  imageArrived: 7732,
+  imageBlocked: 0,
+  undefinedArrived: 13466,
+  undefinedBlocked: 74,
+};
+const p5 = panel([row("/v1/user", { total: 500, availOk: 500 })], 0, surface, 13392);
+check("이미지 도착 수는 WAF 로그에서 온다", line(p5, "image download").total, 7732);
+check("차단되지 않고 도착한 건수", line(p5, "image download").okCount, 7732);
+check("이미지 비율은 근사임을 표시", line(p5, "image download").approximate, true);
+check("이미지 출처가 적힌다", line(p5, "image download").source.includes("WAF"), true);
+check("예외 분모는 WAF 도착 수", line(p5, "Exception Handling").total, 13466);
+check("예외 처리분은 WAF 403 + ALB 404", line(p5, "Exception Handling").okCount, 13466);
+check("예외 출처에 ALB 지표가 적힌다", line(p5, "Exception Handling").source.includes("ALB"), true);
+
+// The ALB metric can cover slightly more than the WAF's path fold; the ratio
+// must not run past 100%.
+const p6 = panel([], 0, surface, 99999);
+check("처리분이 분모를 넘지 않는다", line(p6, "Exception Handling").okCount, 13466);
+check("따라서 100% 를 넘지 않는다", line(p6, "Exception Handling").pct <= 100, true);
+
+// Metric unavailable → the app log's own 404 count is used and the source says so.
+const p7 = panel([row("/wp-login.php", { total: 100, handledOk: 85 })], 0, surface, null);
+check("ALB 지표가 없으면 앱 로그로 적힌다", line(p7, "Exception Handling").source.includes("앱 로그"), true);
+
+// Sampled mode (no WAF log group): unchanged behaviour, app log only.
+const p8 = panel([row("/wp-login.php", { total: 100, handledOk: 85 })]);
+check("표본 모드에서는 종전대로 앱 로그", line(p8, "Exception Handling").pct, 85);
+check("표본 모드 이미지 키는 요청 없음", line(p8, "image download").total, 0);
 
 // --- what the panel refuses to claim ---
 check("비용은 관측 대상이 아니라 줄에 없음", p1.lines.some((l) => l.label.includes("cost")), false);

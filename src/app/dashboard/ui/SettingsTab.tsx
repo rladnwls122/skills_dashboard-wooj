@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { discoverAction, getSettingsAction, saveSettingsAction } from "@/app/actions/dashboard";
 import type { DiscoverKind, DiscoveryResult, SettingRow, SettingsView } from "@/lib/types";
+import { CredentialsCard } from "./CredentialsCard";
 import { Card, CopyValue, ErrorNote, SectionLoading } from "./shared";
 
 // 설정.
@@ -86,6 +87,10 @@ export function SettingsTab() {
 
   return (
     <div className="space-y-3">
+      {/* Credentials first: a wrong resource name empties one panel, a wrong
+          key empties all of them, so it is the first thing to check. */}
+      <CredentialsCard />
+
       <div className="rounded border border-neutral-800 bg-neutral-900/70 px-3 py-2 text-[11px] leading-5 text-neutral-400">
         이 화면에서 바꾼 값은 <span className="text-neutral-200">.env 보다 우선</span>하며 SQLite 에
         저장되어 <span className="text-neutral-200">재시작 없이</span> 적용됩니다. 이름을 직접

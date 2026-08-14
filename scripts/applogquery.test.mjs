@@ -73,12 +73,46 @@ const qPath = buildRequestLogQuery({ statusClass: "ALL", pathContains: "/v1/user
 contains("path filter is added", qPath, 'filter path like "/v1/user"');
 contains("empty path adds no path filter", qAll, "filter path like", false);
 
+// Excluded paths — the health check drowns out application traffic, so it is
+// dropped in the query. Searching for it explicitly has to override that.
+const qEx = buildRequestLogQuery({
+  statusClass: "ALL",
+  pathContains: "",
+  excludePaths: ["/healthcheck"],
+});
+contains("excluded path is filtered out", qEx, 'filter path not like "/healthcheck"');
+contains("no exclusion when none is given", qAll, "filter path not like", false);
+const qExSearch = buildRequestLogQuery({
+  statusClass: "ALL",
+  pathContains: "/healthcheck",
+  excludePaths: ["/healthcheck"],
+});
+contains("searching the excluded path wins", qExSearch, "filter path not like", false);
+contains("searching the excluded path still filters", qExSearch, 'filter path like "/healthcheck"');
+const qExOther = buildRequestLogQuery({
+  statusClass: "ALL",
+  pathContains: "/v1/user",
+  excludePaths: ["/healthcheck"],
+});
+contains("an unrelated search keeps the exclusion", qExOther, 'filter path not like "/healthcheck"');
+
 // Structure
 contains("query parses the JSON fields", qAll, 'parse log /"status":(?<status>[0-9]+)/');
-contains("query selects the row fields", qAll, "display @timestamp, method, path, status, latency_ms");
+// requestid rides along as the join key to the WAF log, which is where the
+// User-Agent comes from for rows the app logged without one.
+contains(
+  "query selects the row fields",
+  qAll,
+  "display @timestamp, method, path, status, latency_ms, user_agent, requestid, log",
+);
+// The User-Agent parse is spelled with character classes rather than an inline
+// (?i) flag: an unsupported flag would fail the whole query, not one column.
+contains("query parses the user agent", qAll, "(?<user_agent>");
+contains("user agent parse takes either casing", qAll, "[uU][sS][eE][rR][-_]?[aA][gG][eE][nN][tT]");
+contains("user agent parse uses no inline flag", qAll, "(?i)", false);
 contains("query sorts newest first", qAll, "sort @timestamp desc");
 contains("query caps rows", qAll, `limit ${ROW_LIMIT}`);
-check("row cap is 200", ROW_LIMIT, 200);
+check("row cap is 1000", ROW_LIMIT, 1000);
 
 // Rejected input — these would otherwise break out of the quoted string
 const rejects = ['/v1/"', "/v1/\\", "/v1/user or 1=1", "/v1/*", "/v1/(a|b)", "/v1 user", "/v1/user;"];
@@ -113,14 +147,34 @@ check(
     path: "/v1/product",
     status: "500",
     latency_ms: "85.5",
+    user_agent: "sqlmap/1.7",
+    requestid: "325230325475",
+    log: '{"path":"/v1/product","user_agent":"sqlmap/1.7"}',
   }),
-  { ts: "2026-08-10T03:07:12.727Z", method: "GET", path: "/v1/product", status: 500, latencyMs: 85.5 },
+  {
+    ts: "2026-08-10T03:07:12.727Z",
+    method: "GET",
+    path: "/v1/product",
+    status: 500,
+    latencyMs: 85.5,
+    requestId: "325230325475",
+    userAgent: "sqlmap/1.7",
+    // Logged by the app itself, so no join was involved.
+    uaSource: "app",
+    raw: '{"path":"/v1/product","user_agent":"sqlmap/1.7"}',
+  },
 );
-check(
-  "toRequestLogRow tolerates missing fields",
-  toRequestLogRow({}),
-  { ts: "Z", method: "", path: "", status: 0, latencyMs: 0 },
-);
+check("toRequestLogRow tolerates missing fields", toRequestLogRow({}), {
+  ts: "Z",
+  method: "",
+  path: "",
+  status: 0,
+  latencyMs: 0,
+  requestId: "",
+  userAgent: "",
+  uaSource: "",
+  raw: "",
+});
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

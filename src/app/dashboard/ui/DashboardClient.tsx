@@ -22,7 +22,7 @@ import { SettingsTab } from "./SettingsTab";
 const TABS = [
   { id: "Performance", ko: "성능" },
   { id: "Traffic", ko: "트래픽" },
-  { id: "AI", ko: "규칙 생성" },
+  { id: "Generate", ko: "규칙 생성" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -71,7 +71,7 @@ export function DashboardClient() {
   const waf: PollState<WafPanel> = usePoll(
     () => getWafPanelAction(win),
     Math.max(refreshSec, 30) * 1000,
-    tab === "Traffic" || tab === "AI",
+    tab === "Traffic" || tab === "Generate",
     [win.windowMin, win.intervalMin],
   );
 
@@ -88,7 +88,7 @@ export function DashboardClient() {
     setTab("Traffic");
   };
 
-  const navButton = (t: (typeof TABS)[number], compact: boolean): React.ReactNode => {
+  const navButton = (t: (typeof TABS)[number]): React.ReactNode => {
     const active = tab === t.id;
     return (
       <button
@@ -96,116 +96,102 @@ export function DashboardClient() {
         type="button"
         onClick={() => setTab(t.id)}
         aria-current={active ? "page" : undefined}
-        className={
-          compact
-            ? `flex shrink-0 items-center gap-1.5 rounded-[4px] px-2.5 py-1.5 font-mono text-[11px] font-semibold tracking-wide transition-colors ${
-                active
-                  ? "bg-neutral-800 text-neutral-100"
-                  : "text-neutral-500 hover:bg-neutral-900 hover:text-neutral-300"
-              }`
-            : `flex w-full items-center justify-between border-l-2 px-4 py-2.5 text-left transition-colors ${
-                active
-                  ? "border-sky-400 bg-neutral-900 text-neutral-100"
-                  : "border-transparent text-neutral-500 hover:bg-neutral-900/60 hover:text-neutral-300"
-              }`
-        }
+        className={`flex shrink-0 items-baseline gap-1.5 rounded-[4px] px-2.5 py-1.5 transition-colors ${
+          active
+            ? "bg-neutral-800 text-neutral-100"
+            : "text-neutral-500 hover:bg-neutral-900 hover:text-neutral-300"
+        }`}
       >
-        <span className={compact ? "" : "flex items-baseline gap-2"}>
-          <span className="font-mono text-[11px] font-bold tracking-[0.1em] uppercase">{t.id}</span>
-          {!compact && <span className="text-[10px] text-neutral-600">{t.ko}</span>}
-        </span>
+        <span className="font-mono text-[11px] font-bold tracking-[0.1em] uppercase">{t.id}</span>
+        {/* The Korean name is what the runbook calls the tab, so it stays
+            visible where there is room rather than only in a tooltip. */}
+        <span className="hidden text-[10px] text-neutral-600 sm:inline">{t.ko}</span>
       </button>
     );
   };
 
   return (
-    <div className="flex min-h-screen">
-      <aside className="sticky top-0 hidden h-screen w-44 shrink-0 flex-col border-r border-neutral-800 bg-neutral-950 lg:flex">
-        <div className="border-b border-neutral-800 px-4 py-4">
-          <div className="font-mono text-[9px] font-bold tracking-[0.3em] text-sky-400">
-            SKILLS // OPS
+    <div className="min-h-screen">
+      {/* Everything that steers the page lives in this bar: which tab, which
+          window, how fresh. The sidebar it replaces cost 176px of width on
+          every screen to hold three buttons. */}
+      <header className="sticky top-0 z-10 border-b border-neutral-800 bg-neutral-950/90 backdrop-blur">
+        <div className="flex items-center gap-3 px-4 py-2">
+          <div className="min-w-0 shrink-0">
+            <div className="font-mono text-[9px] font-bold tracking-[0.3em] text-sky-400">
+              SKILLS // OPS
+            </div>
+            <h1 className="truncate font-mono text-[9px] text-neutral-600">
+              skills-eks · ap-northeast-2
+            </h1>
           </div>
-          <h1 className="mt-1 text-sm font-bold text-neutral-100">트러블슈팅 콘솔</h1>
-          <div className="mt-0.5 font-mono text-[9px] text-neutral-600">
-            skills-eks · ap-northeast-2
+
+          <nav
+            aria-label="주요 메뉴"
+            className="flex min-w-0 flex-1 gap-1 overflow-x-auto border-l border-neutral-800 pl-3"
+          >
+            {TABS.map((t) => navButton(t))}
+          </nav>
+
+          <div className="hidden shrink-0 font-mono text-[9px] leading-4 text-neutral-600 xl:block">
+            <div>
+              K8S {kube.lastUpdated === null ? "--" : fmtClock(kube.lastUpdated)} · CW{" "}
+              {metrics.lastUpdated === null ? "--" : fmtClock(metrics.lastUpdated)}
+            </div>
+            <div>WAF {waf.lastUpdated === null ? "--" : fmtClock(waf.lastUpdated)}</div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Clock />
+            <button
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="설정"
+              title="설정"
+              className="rounded-[4px] px-2 py-1 font-mono text-sm text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
+            >
+              ⚙
+            </button>
           </div>
         </div>
-        <nav aria-label="주요 메뉴" className="flex-1 py-2">
-          {TABS.map((t) => navButton(t, false))}
-        </nav>
-        <div className="border-t border-neutral-800 px-4 py-3 font-mono text-[9px] leading-4 text-neutral-600">
-          <div>K8S {kube.lastUpdated === null ? "--" : fmtClock(kube.lastUpdated)}</div>
-          <div>CW&nbsp; {metrics.lastUpdated === null ? "--" : fmtClock(metrics.lastUpdated)}</div>
-          <div>WAF {waf.lastUpdated === null ? "--" : fmtClock(waf.lastUpdated)}</div>
+        {/* The window is a caption for every number below it, so it sits on
+            its own row at full width rather than being squeezed into the
+            status row and truncated. */}
+        <div className="border-t border-neutral-800/60 px-4 py-1.5">
+          <WindowBar
+            window={win}
+            onChange={setWin}
+            resolved={metrics.data?.window ?? null}
+            refreshSec={refreshSec}
+            onRefreshSec={setRefreshSec}
+            onRefresh={refreshAll}
+            lastUpdated={metrics.lastUpdated}
+            busy={metrics.loading}
+          />
         </div>
-      </aside>
+      </header>
 
-      <div className="min-w-0 flex-1">
-        <header className="sticky top-0 z-10 border-b border-neutral-800 bg-neutral-950/90 backdrop-blur">
-          <div className="flex items-center justify-between gap-3 px-4 py-2">
-            <div className="min-w-0 lg:hidden">
-              <div className="font-mono text-[9px] font-bold tracking-[0.3em] text-sky-400">
-                SKILLS // OPS
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Clock />
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(true)}
-                aria-label="설정"
-                title="설정"
-                className="rounded-[4px] px-2 py-1 font-mono text-sm text-neutral-500 hover:bg-neutral-900 hover:text-neutral-200"
-              >
-                ⚙
-              </button>
-            </div>
-          </div>
-          {/* The window is a caption for every number below it, so it sits on
-              its own row at full width rather than being squeezed into the
-              status row and truncated. */}
-          <div className="border-t border-neutral-800/60 px-4 py-1.5">
-            <WindowBar
-              window={win}
-              onChange={setWin}
-              resolved={metrics.data?.window ?? null}
-              refreshSec={refreshSec}
-              onRefreshSec={setRefreshSec}
-              onRefresh={refreshAll}
-              lastUpdated={metrics.lastUpdated}
-              busy={metrics.loading}
-            />
-          </div>
-          <div className="px-4 pb-2 lg:hidden">
-            <nav aria-label="주요 메뉴" className="flex gap-1 overflow-x-auto">
-              {TABS.map((t) => navButton(t, true))}
-            </nav>
-          </div>
-        </header>
+      <main className="mx-auto max-w-[1500px] p-4">
+        {tab === "Performance" && (
+          <PerformanceTab kube={kube} metrics={metrics} onJumpToLogs={jumpToLogs} window={win} />
+        )}
+        {tab === "Traffic" && (
+          <TrafficTab
+            kube={kube}
+            metrics={metrics}
+            selection={podSelection}
+            onSelect={setPodSelection}
+            onMakeUaRule={() => setTab("Generate")}
+            window={win}
+          />
+        )}
+        {tab === "Generate" && <AiTab waf={waf} window={win} />}
+      </main>
 
-        <main className="mx-auto max-w-[1500px] p-4">
-          {tab === "Performance" && (
-            <PerformanceTab kube={kube} metrics={metrics} onJumpToLogs={jumpToLogs} window={win} />
-          )}
-          {tab === "Traffic" && (
-            <TrafficTab
-              kube={kube}
-              metrics={metrics}
-              selection={podSelection}
-              onSelect={setPodSelection}
-              onMakeUaRule={() => setTab("AI")}
-              window={win}
-            />
-          )}
-          {tab === "AI" && <AiTab waf={waf} window={win} />}
-        </main>
-
-        <ZoomDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} label="설정">
-          <div className="p-4">
-            <SettingsTab />
-          </div>
-        </ZoomDialog>
-      </div>
+      <ZoomDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} label="설정">
+        <div className="p-4">
+          <SettingsTab />
+        </div>
+      </ZoomDialog>
     </div>
   );
 }

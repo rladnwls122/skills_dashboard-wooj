@@ -101,6 +101,44 @@ export interface CoreMetricsResult {
   errors: string[];
 }
 
+// Responses the load balancer produced itself, over the whole window.
+//
+// This is the undefined-path counter. The listener's default action is a
+// fixed-response 404, so a request to /admin or /backup.sql is answered by the
+// ALB and never reaches a pod — it is absent from the application log, and
+// `HTTPCode_Target_4XX_Count` (which the tiles read) does not count it either,
+// because no target was involved. Only `HTTPCode_ELB_4XX_Count` sees it, which
+// is why the grader's Exception Handling key looked like "요청 없음" while
+// 14,000 such requests an hour were being answered correctly.
+export async function fetchElbFixedResponse4xx(win: ResolvedWindow): Promise<number | null> {
+  try {
+    const alb = await discoverAlb();
+    const res = await cloudWatch().send(
+      new GetMetricDataCommand({
+        StartTime: new Date(win.startMs),
+        EndTime: new Date(win.endMs),
+        MetricDataQueries: [
+          q(
+            "elb4xx",
+            "AWS/ApplicationELB",
+            "HTTPCode_ELB_4XX_Count",
+            [{ Name: "LoadBalancer", Value: alb.loadBalancer }],
+            "Sum",
+            // One bucket for the whole window: this is a total, not a trend.
+            Math.max(60, Math.round((win.endMs - win.startMs) / 1000)),
+          ),
+        ],
+      }),
+    );
+    const values = res.MetricDataResults?.[0]?.Values ?? [];
+    if (values.length === 0) return null;
+    return values.reduce((a, v) => a + v, 0);
+  } catch {
+    // The caller falls back to the app log's own count and says so.
+    return null;
+  }
+}
+
 export async function fetchCoreMetrics(win: ResolvedWindow): Promise<CoreMetricsResult> {
   const end = new Date(win.endMs);
   const start = new Date(win.startMs);
@@ -284,7 +322,13 @@ const HINTS: { match: RegExp; hint: string }[] = [
     // env files are read at boot only, so editing one changes nothing until a
     // restart.
     match: /could not load credentials from any providers/i,
-    hint: "AWS 자격증명을 찾지 못했습니다 — .env 를 채운 뒤 서버를 재시작했는지 확인하세요(.env 는 기동 시점에만 읽힙니다). 또는 `aws configure` 로 ~/.aws/credentials 를 만드세요.",
+    hint: "AWS 자격증명을 찾지 못했습니다 — 설정 탭의 'AWS 자격증명' 에서 `aws CLI 세션 불러오기` 를 누르거나 키를 붙여넣으세요(재시작 없이 적용됩니다). .env 는 기동 시점에만 읽히므로 파일만 채워서는 반영되지 않습니다.",
+  },
+  {
+    // A temporary key that ran out mid-exercise fails every panel at once, and
+    // the SDK's wording ("security token") names neither the key nor the fix.
+    match: /ExpiredToken|token included in the request is expired|InvalidClientTokenId/i,
+    hint: "임시 자격증명이 만료되었거나 유효하지 않습니다 — 설정 탭에서 `aws CLI 세션 불러오기` 로 세션을 다시 읽으세요(로컬 세션 자체가 만료됐다면 `aws sso login` 먼저).",
   },
   {
     // A name that is merely wrong looks identical to logging being off.

@@ -14,6 +14,25 @@ import { CloudTrailClient } from "@aws-sdk/client-cloudtrail";
 import { EC2Client } from "@aws-sdk/client-ec2";
 import { cached } from "./cache";
 import { ENV, wafRegion } from "./config";
+import { awsCredentialProvider, type ResolvedCredentials } from "./credentials";
+
+interface ClientConfig {
+  region: string;
+  credentials?: () => Promise<ResolvedCredentials>;
+}
+
+// Region and credentials, the two things every client below needs and the two
+// that are settable at runtime. `credentials: undefined` is what the SDK sees
+// when nothing is injected, and that is exactly the default chain (.env,
+// ~/.aws, IRSA, instance role) — so an environment that already worked keeps
+// working without going through the 설정 screen at all.
+//
+// A provider function rather than a credentials object: a temporary key
+// expires, and the SDK re-invokes the provider once it does. That is what lets
+// an `aws sso login` session survive a dashboard that has been up for hours.
+function clientConfig(region: string): ClientConfig {
+  return { region, credentials: awsCredentialProvider() };
+}
 
 let cw: CloudWatchClient | null = null;
 let cwWaf: CloudWatchClient | null = null;
@@ -44,35 +63,42 @@ export function resetAwsClients(): void {
 }
 
 export function cloudWatch(): CloudWatchClient {
-  if (!cw) cw = new CloudWatchClient({ region: ENV.region });
+  if (!cw) cw = new CloudWatchClient(clientConfig(ENV.region));
   return cw;
 }
 
 // WAF metrics for CLOUDFRONT-scope ACLs are only published in us-east-1.
 export function cloudWatchForWaf(): CloudWatchClient {
-  if (!cwWaf) cwWaf = new CloudWatchClient({ region: wafRegion() });
+  if (!cwWaf) cwWaf = new CloudWatchClient(clientConfig(wafRegion()));
   return cwWaf;
 }
 
 export function wafClient(): WAFV2Client {
-  if (!waf) waf = new WAFV2Client({ region: wafRegion() });
+  if (!waf) waf = new WAFV2Client(clientConfig(wafRegion()));
   return waf;
 }
 
+// A WAF client for a named region, for the one caller that has to ask both
+// scopes at once (discovery lists CLOUDFRONT and REGIONAL side by side). Not
+// memoised — it is built behind a button, twice.
+export function wafClientFor(region: string): WAFV2Client {
+  return new WAFV2Client(clientConfig(region));
+}
+
 export function elbClient(): ElasticLoadBalancingV2Client {
-  if (!elb) elb = new ElasticLoadBalancingV2Client({ region: ENV.region });
+  if (!elb) elb = new ElasticLoadBalancingV2Client(clientConfig(ENV.region));
   return elb;
 }
 
 export function logsClient(): CloudWatchLogsClient {
-  if (!cwl) cwl = new CloudWatchLogsClient({ region: wafRegion() });
+  if (!cwl) cwl = new CloudWatchLogsClient(clientConfig(wafRegion()));
   return cwl;
 }
 
 // Container Insights application logs live in the cluster region, unlike the
 // CLOUDFRONT-scope WAF logs which are us-east-1 only.
 export function logsClientRegional(): CloudWatchLogsClient {
-  if (!cwlRegional) cwlRegional = new CloudWatchLogsClient({ region: ENV.region });
+  if (!cwlRegional) cwlRegional = new CloudWatchLogsClient(clientConfig(ENV.region));
   return cwlRegional;
 }
 
@@ -82,19 +108,19 @@ export function logsClientRegional(): CloudWatchLogsClient {
 export function logsClientFor(region: string): CloudWatchLogsClient {
   let c = cwlByRegion.get(region);
   if (!c) {
-    c = new CloudWatchLogsClient({ region });
+    c = new CloudWatchLogsClient(clientConfig(region));
     cwlByRegion.set(region, c);
   }
   return c;
 }
 
 export function eksClient(): EKSClient {
-  if (!eks) eks = new EKSClient({ region: ENV.region });
+  if (!eks) eks = new EKSClient(clientConfig(ENV.region));
   return eks;
 }
 
 export function ec2Client(): EC2Client {
-  if (!ec2) ec2 = new EC2Client({ region: ENV.region });
+  if (!ec2) ec2 = new EC2Client(clientConfig(ENV.region));
   return ec2;
 }
 
@@ -102,7 +128,7 @@ export function ec2Client(): EC2Client {
 // regional events, and the scored instances only ever run in the region the
 // task assigns.
 export function cloudTrailClient(): CloudTrailClient {
-  if (!trail) trail = new CloudTrailClient({ region: ENV.region });
+  if (!trail) trail = new CloudTrailClient(clientConfig(ENV.region));
   return trail;
 }
 

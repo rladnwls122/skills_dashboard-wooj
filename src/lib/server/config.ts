@@ -57,16 +57,18 @@ export function wafRegion(): string {
   return ENV.wafScope === "CLOUDFRONT" ? "us-east-1" : ENV.region;
 }
 
-// Paths excluded (or down-weighted) from anomaly scoring. `/healthcheck` is the
-// task-3 app's ALB health check path.
-export const LOW_PRIORITY_PATHS = [
-  "/health",
-  "/healthz",
-  "/ready",
-  "/readyz",
-  "/liveness",
-  "/healthcheck",
-];
+// Paths excluded (or down-weighted) from anomaly scoring.
+//
+// `/healthcheck` — exactly that, and nothing else. The list used to carry the
+// usual guesses (`/health`, `/healthz`, `/ready`…) and every one of them was
+// wrong for this environment: the app does not serve them, so a request to
+// `/health` is an undefined path that must end in 404, and calling it benign
+// here would hide it from the suspicious-path detector — a probe walking the
+// standard health endpoints is exactly the traffic worth seeing.
+export const LOW_PRIORITY_PATHS = (process.env.HEALTH_PATHS ?? "/healthcheck")
+  .split(",")
+  .map((p) => p.trim())
+  .filter((p) => p.length > 0);
 
 // Resolves "." and ".." segments and collapses repeated slashes, the way WAF's
 // NORMALIZE_PATH transform does. Without this, "/v1/image/../../etc/passwd"
@@ -99,12 +101,30 @@ export function isLowPriorityPath(path: string): boolean {
 // these paths from a single IP, so request volume against them is never
 // treated as an attack — no volumetric detection, no rate-based rule, no
 // mention in the Amazon Q handoff. Traffic aimed anywhere else stays in scope.
+//
+// `/images` is in this list because it is where image delivery is actually
+// observed (`/images/seed200p00000022.png`), and this list is not only an
+// allow list — it is the base of every rule's path scope-down
+// (RULE_SCOPE_PATHS below). A served path missing from here means a UA rule
+// silently stops covering the traffic arriving at it. `/v1/image` stays
+// alongside it: the API shape costs one unused OR branch if it is not served,
+// while dropping a shape that IS served costs coverage.
 export const APP_TRAFFIC_PATHS = (
-  process.env.APP_TRAFFIC_PATHS ?? "/v1/user,/v1/product,/v1/stress,/v1/image"
+  process.env.APP_TRAFFIC_PATHS ?? "/v1/user,/v1/product,/v1/stress,/v1/image,/images"
 )
   .split(",")
   .map((p) => p.trim())
   .filter((p) => p.length > 0);
+
+// The URI prefixes a blocking rule is allowed to be narrowed to: everything
+// this environment actually answers, which is the API surface plus the health
+// check. Kept separate from APP_TRAFFIC_PATHS because that list is also the
+// grader's service-path list — putting `/healthcheck` in it would count health
+// probes as service traffic — while a rule scope-down only has to satisfy "the
+// URI is one we serve", and `/healthcheck` is served (it is the busiest path in
+// the app log). Paths outside this list must reach the app and answer 404, so
+// they must never be inside a rule's scope.
+export const RULE_SCOPE_PATHS = [...new Set([...APP_TRAFFIC_PATHS, ...LOW_PRIORITY_PATHS])];
 
 export function isAppTrafficPath(path: string): boolean {
   const p = normalizePath(path);
@@ -216,4 +236,18 @@ export const WAF_LIMITS = {
   // Default WCU quota per WebACL.
   maxWcu: 5_000,
   sampleWindowMinutes: 15,
+  // How many distinct User-Agents the summary carries.
+  //
+  // Not a display setting: this list IS the input the UA rule is assembled
+  // from (ruleassemble), so a top-10 cut silently caps the rule at ten
+  // patterns and every tool below the tenth walks through. Attack traffic
+  // spreads across far more than ten UA strings — scanners, recon tools and
+  // spoofed browser strings each get their own — so the cut is set well above
+  // what one pattern set holds and the assembler chunks the overflow into
+  // extra sets rather than dropping it.
+  uaTopN: 60,
+  // Rows the UA aggregation asks Logs Insights for before the cut above. Kept
+  // higher again so the tail is ranked on real counts, not on whichever rows
+  // the query happened to return first.
+  uaQueryLimit: 2000,
 } as const;

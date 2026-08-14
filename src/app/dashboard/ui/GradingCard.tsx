@@ -54,7 +54,11 @@ export function GradingCard({ window: win }: { window: WindowSelection }) {
           <table className="w-full text-left text-[11px]">
             <thead className="text-neutral-500">
               <tr>
-                {["채점 키", "비율", "충족/전체"].map((h) => (
+                {/* The source column earns its width here: three keys are
+                    counted from the app log, one from the WAF log and one from
+                    ALB metrics, and a ratio whose origin is invisible invites
+                    comparing numbers that were never comparable. */}
+                {["채점 키", "비율", "충족/전체", "출처"].map((h) => (
                   <th key={h} className="px-2 py-1 font-medium">
                     {h}
                   </th>
@@ -78,12 +82,22 @@ export function GradingCard({ window: win }: { window: WindowSelection }) {
                               : "text-red-400"
                       }`}
                     >
-                      {none ? "—" : `${l.pct}%`}
+                      {none ? "—" : `${l.approximate ? "≈" : ""}${l.pct}%`}
                     </td>
                     <td className="px-2 py-1 tabular-nums text-neutral-500">
                       {none
                         ? "요청 없음"
                         : `${l.okCount.toLocaleString()} / ${l.total.toLocaleString()}`}
+                    </td>
+                    <td
+                      className="px-2 py-1 font-mono text-[10px] text-neutral-600"
+                      title={
+                        l.approximate
+                          ? "차단되지 않고 도착한 건수 — 응답 코드는 관측 범위 밖"
+                          : undefined
+                      }
+                    >
+                      {l.source}
                     </td>
                   </tr>
                 );

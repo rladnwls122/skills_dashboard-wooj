@@ -13,12 +13,61 @@ export type ThreatCategory = "SCANNER" | "RECON" | "SPOOFED" | "AUTOMATION" | "U
 // below fires first.
 const GO_ALLOW_RE = /go-http-client\/|go-language/i;
 
-// Named offensive tools. A hit is an unambiguous attack signature.
+// Named offensive tools. A hit is an unambiguous attack signature — this is the
+// one category the runbook promotes straight to BLOCK without a COUNT pass, so
+// every token here has to be a string no legitimate client sends.
+//
+// Sourced from the public scanner/offensive-tool UA lists (digininja's
+// scanner_user_agents, mthcht's suspicious_http_user_agents_list) plus each
+// tool's own default UA, then filtered twice:
+//
+//   - Web-facing only. Those lists are largely Windows/AD/C2 tooling (rubeus,
+//     certipy, evilginx, empire…), which cannot arrive as a User-Agent at an
+//     HTTP API behind this WAF. Carrying them would only make the classifier
+//     longer to read without changing a single verdict.
+//   - No generic bad-bot lists. The 1,200-entry spam-crawler blocklists are a
+//     different problem (scraping, ad fraud) and they carry ambiguous strings
+//     that a real client can hold — a false block costs availability score,
+//     which is the one thing this environment cannot spend.
+//
+// The emitted rule is built from the UAs actually observed, not from this list
+// (see ruleassemble.uaPatternsFor), so length here costs no WCU — what it buys
+// is the difference between "SCANNER: nuclei", which the runbook promotes
+// straight to BLOCK, and "UNKNOWN: nuclei", which has to go through COUNT.
+//
+// Anything not listed still surfaces: unrecognised clients classify as UNKNOWN
+// by the allow-list check below. Naming a tool changes what the operator can do
+// about it, not whether they see it.
 const SCANNER_TOOLS = [
-  "sqlmap", "nikto", "acunetix", "dirbuster", "dirb", "w3af", "netsparker",
-  "zaproxy", "gobuster", "wpscan", "arachni", "nessus", "openvas", "commix",
+  // SQL / injection
+  "sqlmap", "ghauri", "sqlninja", "nosqlmap", "commix", "tplmap",
+  // XSS
+  "xsstrike", "dalfox", "xsser",
+  // Web vulnerability scanners
+  "nikto", "acunetix", "netsparker", "invicti", "arachni", "w3af", "wapiti",
+  "skipfish", "whatweb", "nuclei", "vega", "webinspect", "appscan", "qualys",
+  "nessus", "openvas", "greenbone", "detectify", "probely", "burpcollaborator",
+  // Content discovery / fuzzing. ffuf's default UA is the phrase, not "ffuf".
+  "dirbuster", "dirb", "dirsearch", "gobuster", "feroxbuster", "ffuf",
+  "fuzz faster u fool", "wfuzz", "crlfuzz",
+  // CMS-specific
+  "wpscan", "joomscan", "droopescan", "cmseek",
+  // Proxies / frameworks whose UA means someone is testing, not browsing
+  "zaproxy", "zap", "burpsuite", "burp", "metasploit", "havij",
+  // Credential brute-force
+  "hydra", "medusa", "patator",
 ];
-const RECON_TOOLS = ["nmap", "masscan", "zgrab", "censysinspect", "zmap"];
+
+// Internet-wide scanners and OSINT crawlers. Not an attack on their own —
+// somebody else's census hitting everything with a public IP — but on a
+// competition surface they are still traffic nobody asked for, and they arrive
+// before the targeted attempts do.
+const RECON_TOOLS = [
+  "nmap", "masscan", "zgrab", "zmap", "censysinspect", "shodan",
+  "internetmeasurement", "netsystemsresearch", "criminalip", "leakix",
+  "l9explore", "l9tcpid", "expanse", "researchscan",
+  "projectdiscovery", "interactsh", "katana", "gospider", "hakrawler",
+];
 
 // HTTP clients and headless browsers. None of these is an attack by itself —
 // they are how scripted traffic identifies itself, which is exactly why an
@@ -30,6 +79,10 @@ const AUTOMATION_TOOLS = [
   "postmanruntime", "insomnia", "scrapy", "phantomjs", "headlesschrome",
   "puppeteer", "playwright", "selenium", "httpclient", "restsharp", "guzzle",
   "winhttp", "powershell", "lwp-request", "aiohttp", "httpx", "reqwest",
+  // An intercepting proxy in the path means someone is inspecting or replaying
+  // traffic. Not an attack signature on its own, which is why it sits here and
+  // not in SCANNER_TOOLS.
+  "mitmproxy",
 ];
 
 const AUTOMATION_RE = new RegExp(`(^|[^a-z])(${AUTOMATION_TOOLS.join("|")})([^a-z]|$)`, "i");
