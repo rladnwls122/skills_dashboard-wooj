@@ -73,6 +73,7 @@ var Specs = []types.SettingSpec{
 	{Key: "APP_LOG_GROUP", Label: "앱 로그 그룹", Hint: "요청 로그·채점 지표 집계에 쓰는 CloudWatch Logs 그룹.", Discover: types.Ptr("loggroup")},
 	{Key: "TARGET_NAMESPACE", Label: "Kubernetes 네임스페이스", Hint: "Pod·Deployment·이벤트를 읽는 네임스페이스.", Discover: nil},
 	{Key: "MAX_REPLICAS", Label: "최대 replica", Hint: "Deployment 조정 화면이 허용하는 상한.", Discover: nil},
+	{Key: "MATCH_START", Label: "경기 시작 시각", Hint: "채점 창(경기 시작 +1h ~ +3h)의 기준. 로컬 시각으로 2026-08-14 09:00 또는 09:00 형태. 비워 두면 비용 패널이 평균을 만들지 않고 현재 대수만 보여줍니다.", Discover: nil},
 }
 
 // Settings reads through the override table on every access. The table has ten
@@ -121,6 +122,12 @@ func builtin(key string, value func(string) string) string {
 		return "default"
 	case "MAX_REPLICAS":
 		return "20"
+	case "MATCH_START":
+		// Deliberately empty. The scoring window is derived from this value,
+		// and a guessed start time produces a time-weighted average that is
+		// wrong in a way the screen cannot show — so the cost panel says "not
+		// set" instead of inventing a provisional number.
+		return ""
 	}
 	return ""
 }

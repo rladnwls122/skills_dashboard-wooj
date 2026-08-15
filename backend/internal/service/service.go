@@ -71,6 +71,31 @@ type RuleTestParams struct {
 	Requests []types.TestRequest `json:"requests"`
 }
 
+// WafLogParams is the WAF log table's filter: "ALL" | "BLOCK" | "ALLOW" |
+// "COUNT" and a path substring.
+type WafLogParams struct {
+	Action       string                 `json:"action"`
+	PathContains string                 `json:"pathContains"`
+	Window       *types.WindowSelection `json:"window"`
+}
+
+// CredentialsInput is typed in, or pasted as a blob — an `export` block, an
+// .env fragment, a `~/.aws/credentials` section, the JSON the CLI prints. The
+// three fields win over the blob when both are given.
+type CredentialsInput struct {
+	AccessKeyID     string `json:"accessKeyId"`
+	SecretAccessKey string `json:"secretAccessKey"`
+	SessionToken    string `json:"sessionToken"`
+	Blob            string `json:"blob"`
+	// false (the default) keeps the keys in this process's memory only.
+	Persist bool `json:"persist"`
+}
+
+type ImportCredentialsInput struct {
+	Profile string `json:"profile"`
+	Persist bool   `json:"persist"`
+}
+
 // --- cloud-backed panels -----------------------------------------------------
 
 func (s *Service) KubePanel(ctx context.Context) (types.KubePanel, error) {
@@ -115,6 +140,84 @@ func (s *Service) AssembleRule(ctx context.Context, kind string, sel *types.Wind
 
 func (s *Service) TestRule(ctx context.Context, p RuleTestParams) (types.RuleTestResult, error) {
 	return s.Provider.TestRule(ctx, p)
+}
+
+func (s *Service) UpdateWafRule(ctx context.Context, ruleJson string, action *string, sel *types.WindowSelection) (types.WafRuleUpdateResult, error) {
+	return s.Provider.UpdateWafRule(ctx, ruleJson, action, s.window(sel))
+}
+
+func (s *Service) CountEvidence(ctx context.Context, ruleName string, sel *types.WindowSelection) (types.CountEvidence, error) {
+	return s.Provider.CountEvidence(ctx, ruleName, s.window(sel))
+}
+
+func (s *Service) WafLogRows(ctx context.Context, p WafLogParams) (types.WafLogQueryResult, error) {
+	return s.Provider.WafLogRows(ctx, p, s.window(p.Window))
+}
+
+func (s *Service) NodeCost(ctx context.Context) (types.NodeCountProjection, error) {
+	return s.Provider.NodeCost(ctx)
+}
+
+// --- AWS credentials ---------------------------------------------------------
+//
+// The keys never travel back to the browser: every method here answers with the
+// masked view, and the input is one-way.
+
+func (s *Service) Credentials() (types.CredentialsView, error) {
+	return s.Provider.CredentialsView(s.nowMs())
+}
+
+// applied is what every credential change returns. Injecting changes which
+// account every panel is reading, so the SDK clients and every cached answer
+// taken with the previous identity have to go — the same reasoning as a
+// settings save, for the same reason.
+func (s *Service) applied(ctx context.Context) (types.CredentialsResult, error) {
+	s.Provider.Reset()
+	cache.Invalidate("")
+	view, err := s.Provider.CredentialsView(s.nowMs())
+	if err != nil {
+		return types.CredentialsResult{}, err
+	}
+	check, err := s.Provider.CheckCredentials(ctx)
+	if err != nil {
+		return types.CredentialsResult{}, err
+	}
+	return types.CredentialsResult{View: view, Check: check}, nil
+}
+
+func (s *Service) SaveCredentials(ctx context.Context, in CredentialsInput) (types.CredentialsResult, error) {
+	if err := s.Provider.SaveCredentials(ctx, in); err != nil {
+		return types.CredentialsResult{}, err
+	}
+	return s.applied(ctx)
+}
+
+func (s *Service) ImportCredentials(ctx context.Context, in ImportCredentialsInput) (types.CredentialsResult, error) {
+	if err := s.Provider.ImportCredentials(ctx, in); err != nil {
+		return types.CredentialsResult{}, err
+	}
+	return s.applied(ctx)
+}
+
+func (s *Service) ClearCredentials(ctx context.Context) (types.CredentialsResult, error) {
+	if err := s.Provider.ClearCredentials(ctx); err != nil {
+		return types.CredentialsResult{}, err
+	}
+	return s.applied(ctx)
+}
+
+// CheckCredentials makes the probe call without changing anything, so the
+// caches other panels are serving from are left alone.
+func (s *Service) CheckCredentials(ctx context.Context) (types.CredentialsResult, error) {
+	view, err := s.Provider.CredentialsView(s.nowMs())
+	if err != nil {
+		return types.CredentialsResult{}, err
+	}
+	check, err := s.Provider.CheckCredentials(ctx)
+	if err != nil {
+		return types.CredentialsResult{}, err
+	}
+	return types.CredentialsResult{View: view, Check: check}, nil
 }
 
 // --- local: history, settings, sandbox data, probe ---------------------------

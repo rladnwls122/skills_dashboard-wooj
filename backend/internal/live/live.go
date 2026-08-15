@@ -7,13 +7,16 @@ package live
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/analysis"
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/awsx"
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/cache"
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/config"
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/creds"
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/kube"
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/rules"
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/service"
@@ -26,15 +29,21 @@ type Provider struct {
 	Kube     *kube.Kube
 	Store    *store.Store
 	Settings *config.Settings
+	Creds    *creds.Manager
 	Now      func() time.Time
+
+	// Guards the one-shot CloudTrail backfill behind the node-count panel.
+	backfill backfillState
 }
 
 func New(settings *config.Settings, st *store.Store) *Provider {
+	cm := creds.New(st)
 	return &Provider{
-		AWS:      awsx.New(settings, st),
+		AWS:      awsx.New(settings, st, cm),
 		Kube:     kube.New(settings, st),
 		Store:    st,
 		Settings: settings,
+		Creds:    cm,
 		Now:      time.Now,
 	}
 }
@@ -332,3 +341,138 @@ func (p *Provider) AssembleRule(ctx context.Context, kind string, win types.Reso
 func (p *Provider) TestRule(ctx context.Context, params service.RuleTestParams) (types.RuleTestResult, error) {
 	return rules.TestRule(params.RuleJson, params.Requests)
 }
+
+// --- WAF rule apply ----------------------------------------------------------
+
+// UpdateWafRule is apply, promote, demote and remove — one call, because the
+// rule is keyed by its Name and "promote" is "put it back at the other action".
+// Every press is a person's press; nothing on this screen changes a WebACL on
+// its own.
+//
+// The grading keys as they stood at the moment of the change go into the
+// history row with it. That snapshot is what the false-block alarm compares
+// against five minutes later, and it has to be taken here, before the rule can
+// have moved anything.
+func (p *Provider) UpdateWafRule(ctx context.Context, ruleJson string, action *string, win types.ResolvedWindow) (types.WafRuleUpdateResult, error) {
+	want := ""
+	if action != nil {
+		want = *action
+	}
+	snapshot := p.gradingSnapshot(win)
+	update, err := p.AWS.SetRuleAction(ctx, ruleJson, want)
+	if err != nil {
+		// The attempt is recorded either way: an operator who pressed the
+		// button and saw an error still changed nothing, and the history is
+		// what the incident report reads.
+		_, _ = p.Store.InsertWafHistory(nameOrPasted(ruleJson), actionLabel(want), "FAILED", awsx.ErrMsg(err), "", p.Now().UnixMilli())
+		cache.Invalidate("panel:waf")
+		return types.WafRuleUpdateResult{}, err
+	}
+	historyID, err := p.Store.InsertWafHistory(
+		update.RuleName, actionLabel(want), "SUCCESS", snapshot, update.PriorRules, p.Now().UnixMilli())
+	if err != nil {
+		return types.WafRuleUpdateResult{}, err
+	}
+	// The rule list on screen is read from the WebACL, so it has to be re-read
+	// rather than patched locally.
+	cache.Invalidate("panel:waf")
+	return types.WafRuleUpdateResult{RuleName: update.RuleName, HistoryID: historyID}, nil
+}
+
+func actionLabel(action string) string {
+	if action == "" {
+		return "REMOVE"
+	}
+	return action
+}
+
+// nameOrPasted is the best name available for a failed apply: the rule's own
+// Name when the JSON parsed, and a placeholder when it did not.
+func nameOrPasted(ruleJson string) string {
+	var doc struct {
+		Name string `json:"Name"`
+	}
+	if err := json.Unmarshal([]byte(ruleJson), &doc); err == nil && doc.Name != "" {
+		return doc.Name
+	}
+	return "(이름 없음)"
+}
+
+// gradingSnapshot is whatever the 성능 tab last aggregated, over the same window
+// it is showing. Never re-queried here: a rule change is not a reason to spend
+// an Insights scan, and a five-minute-old baseline is still the baseline the
+// operator was looking at when they pressed the button.
+func (p *Provider) gradingSnapshot(win types.ResolvedWindow) string {
+	type key struct {
+		Label string  `json:"label"`
+		Pct   float64 `json:"pct"`
+		Total int     `json:"total"`
+	}
+	out := struct {
+		At   int64 `json:"at"`
+		Keys []key `json:"keys"`
+	}{At: p.Now().UnixMilli(), Keys: []key{}}
+	if grading, ok := cache.Peek[types.GradingPanel]("panel:grading:" + windowKey(win)); ok {
+		for _, l := range grading.Lines {
+			out.Keys = append(out.Keys, key{Label: l.Label, Pct: l.Pct, Total: l.Total})
+		}
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
+}
+
+// --- AWS credentials ---------------------------------------------------------
+//
+// The keys never travel back to the browser: every method here returns the
+// masked view, and the input is one-way.
+
+func (p *Provider) CredentialsView(nowMs int64) (types.CredentialsView, error) {
+	return p.Creds.View(nowMs), nil
+}
+
+func (p *Provider) SaveCredentials(ctx context.Context, in service.CredentialsInput) error {
+	// The blob is parsed on the server as well as in the browser so a paste
+	// that only the server sees (autofill, a form post) lands the same way.
+	pasted := creds.Parsed{}
+	if strings.TrimSpace(in.Blob) != "" {
+		pasted = creds.ParseBlob(in.Blob)
+	}
+	pick := func(typed, fromBlob string) string {
+		if strings.TrimSpace(typed) != "" {
+			return typed
+		}
+		return fromBlob
+	}
+	_, err := p.Creds.Set(creds.SetInput{
+		Parsed: creds.Parsed{
+			AccessKeyID:     pick(in.AccessKeyID, pasted.AccessKeyID),
+			SecretAccessKey: pick(in.SecretAccessKey, pasted.SecretAccessKey),
+			SessionToken:    pick(in.SessionToken, pasted.SessionToken),
+			Expiration:      pasted.Expiration,
+		},
+		Origin:  "paste",
+		Persist: in.Persist,
+	})
+	return err
+}
+
+// ImportCredentials resolves the session the local `aws` profile is holding —
+// SSO included — and injects it. This is the path that keeps working on its
+// own: the provider re-reads the profile as the session token expires.
+func (p *Provider) ImportCredentials(ctx context.Context, in service.ImportCredentialsInput) error {
+	_, err := p.Creds.ImportProfile(ctx, in.Profile, in.Persist)
+	return err
+}
+
+func (p *Provider) ClearCredentials(ctx context.Context) error {
+	p.Creds.Clear()
+	return nil
+}
+
+func (p *Provider) CheckCredentials(ctx context.Context) (types.CredentialCheck, error) {
+	return p.AWS.CheckCredentials(ctx), nil
+}
+

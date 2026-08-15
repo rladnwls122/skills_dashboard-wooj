@@ -1,38 +1,31 @@
 [tools]
 node = "24"
+go = "latest"
 
 [tasks.install]
-run = "corepack enable pnpm && pnpm install"
-description = "Install dependencies"
-
-[tasks.env]
-run = "node scripts/generate-env.mjs"
-description = "Generate .env pre-filled with task-3 runbook values"
-
-[tasks.attack-sim]
-run = "node scripts/attack-sim.mjs"
-description = "Rehearsal traffic generator (--target <url> required, --dry to preview)"
+run = "corepack enable pnpm && pnpm install && go mod download -C backend"
+description = "Install Node and Go dependencies"
 
 [tasks.dev]
 run = "pnpm dev"
-description = "Run dev server on 127.0.0.1:3100 (loopback only, no auth)"
+description = "Run both Go Fiber backend and Vite frontend dev servers"
 
 [tasks.clean]
 run = "pnpm clean"
-description = "Delete the .next build cache"
+description = "Delete build outputs (dist and api binary)"
 
 [tasks.build]
 run = "pnpm build"
-description = "Production build"
+description = "Build frontend (Vite) and backend (Go Fiber)"
 
 [tasks.build-clean]
 run = "pnpm build:clean"
-description = "Production build after clearing the .next cache"
+description = "Clean outputs and build frontend and backend"
 
 [tasks.start]
 run = "pnpm start"
-description = "Run production server on 127.0.0.1:3100 (loopback only, no auth)"
+description = "Run production backend (api.exe) and frontend preview (3100)"
 
 [tasks.typecheck]
 run = "pnpm typecheck"
-description = "TypeScript strict check"
+description = "TypeScript strict type check"

@@ -1,465 +1,296 @@
-# skills-dashboard
+# Skills Dashboard
 
-국가기능경기대회 클라우드컴퓨팅 트러블슈팅용 통합 대시보드.
-CloudWatch(ALB/RDS Proxy/WAF) 메트릭, WAFv2 규칙 조립·COUNT 적용·BLOCK 승격·내리기,
-Kubernetes Pod/Event/로그 추적, Deployment 리소스 조정, 사후 검증,
-채점기 입력값 집계를 하나의 화면에서 수행한다.
+국가기능경기대회 클라우드컴퓨팅 트러블슈팅을 위한 **로컬 운영 대시보드**입니다. 하나의 화면에서 Kubernetes/EKS 상태, CloudWatch 지표, 애플리케이션·WAF 로그, 채점 입력값, WAF 규칙 수명주기, Deployment 조정과 사후 검증을 연결해 확인할 수 있습니다.
 
-대상 환경 (task-3): `skills-eks`(ap-northeast-2) · `skills-alb`(LBC Ingress) ·
-`skills-db-proxy`(MySQL 8.0) · `skills-waf`(CLOUDFRONT scope, us-east-1) ·
-`skills-cdn` · namespace `default`의 `user`/`product`/`stress` Deployment.
+이 프로젝트는 운영자가 “지금 무엇이 이상한가”, “어떤 트래픽이 들어오는가”, “어떤 규칙을 적용할 것인가”를 순서대로 판단하도록 설계되었습니다. 대시보드는 점수를 임의로 계산하지 않고 관측된 근거와 채점기 입력값을 보여 줍니다.
 
-로컬 실행 전용 — 대시보드 자체에는 접속 인증이 없다. 클러스터/AWS 인증은
-로컬에 이미 있는 kubeconfig·AWS 자격증명을 그대로 사용한다.
+> **보안 주의:** 대시보드와 API에는 사용자 인증이 없습니다. AWS 자격증명과 Kubernetes 접근권한을 사용하는 로컬 운영 도구이므로 반드시 loopback 주소로 실행하고, 외부에 직접 노출하지 마십시오.
 
-그래서 서버는 **`127.0.0.1`에만 바인딩한다**(`-H 127.0.0.1`). 인증이 없는데
-`0.0.0.0`에 열면 같은 네트워크의 누구나 이 화면으로 Deployment를 패치하고 WAF
-규칙을 적용할 수 있다. 다른 기기에서 봐야 하면 SSH 포트 포워딩을 쓰고, 바인딩
-주소를 넓히지 않는다.
+## 주요 기능
 
-**대회 당일에 읽을 문서는 이게 아니라 [`docs/RUNBOOK.md`](docs/RUNBOOK.md)다** —
-무엇을 보고 무엇을 누르는지 한 장으로 적혀 있다. 이 README는 그 화면이 어떻게
-만들어졌는지를 적는다.
+| 영역 | 제공 기능 | 주요 데이터 소스 |
+|---|---|---|
+| **성능** | 채점기 입력값, TRT·4XX·5XX·RDS 연결 수, Pod/노드 상태와 사용률, Target Group 지표, 경고 이벤트, 이상 목록 | CloudWatch, EKS/Kubernetes API, CloudWatch Logs Insights |
+| **트래픽** | 경로별 요청·차단, User-Agent·QueryString 패턴, 애플리케이션 요청 로그, WAF 로그, Pod 로그, 반복 오류 지문 | ALB/애플리케이션 로그, WAF 로그, Kubernetes API |
+| **규칙 생성** | 의심 User-Agent 및 SQLi 규칙 조립, 정규식 패턴 세트 생성 안내, JSON 복사, 규칙 테스트, COUNT 실측, COUNT/BLOCK 전환, 정상 경로 프로브 | WAFv2, CloudWatch Logs Insights, 로컬 규칙 엔진 |
+| **운영 제어** | Deployment Replicas·CPU·Memory Limit 변경, 변경 이력, 약 2분 후 결과 검증, 노드 수 비용·평균 투영 | Kubernetes API, SQLite |
+| **설정** | 리소스 자동 탐색, 설정값 override, AWS CLI 세션 가져오기, 자격증명 확인, `.env` 내보내기 | AWS SDK/CLI, SQLite, kubeconfig |
 
----
+전체 화면은 하나의 시간 창을 공유합니다. `15m`, `30m`, `1h`, `2h`, `4h` 중 하나를 선택하면 성능·트래픽·WAF 분석이 같은 구간과 버킷 기준을 사용합니다.
+
+## 아키텍처
+
+```mermaid
+flowchart LR
+    UI[React + TypeScript\nVite :3100]
+    API[Go + Fiber API\n127.0.0.1:8787]
+    DB[(SQLite\nsettings / history)]
+    AWS[AWS SDK v2\nCloudWatch · WAFv2 · ALB]
+    K8S[Kubernetes clients\nEKS · metrics · Pod logs]
+
+    UI -->|POST /api/*| API
+    API --> DB
+    API --> AWS
+    API --> K8S
+```
+
+프런트엔드는 `src/`에 있으며 Vite 개발 서버가 `127.0.0.1:3100`에서 실행됩니다. 개발 중 `/api` 요청은 `vite.config.ts`의 프록시를 통해 `127.0.0.1:8787`의 Go API로 전달됩니다. 백엔드는 `backend/`에 있으며 Fiber가 모든 데이터 조회·변경 작업을 처리합니다.
+
+백엔드 API는 읽기 작업을 포함해 모든 호출을 JSON `POST`로 통일하고, 다음 응답 봉투를 사용합니다.
+
+```json
+{ "ok": true, "data": {} }
+```
+
+오류가 발생해도 패널 전체를 중단하지 않고 다음 형태로 화면에 전달합니다.
+
+```json
+{ "ok": false, "error": "설명 가능한 오류 메시지" }
+```
+
+실제 AWS 또는 Kubernetes 자격증명이 없는 경우에도 로컬 순수 로직과 SQLite 기반 기능은 실행할 수 있습니다. 자격증명이 필요한 패널은 해당 패널에 오류를 표시하고 나머지 화면은 계속 동작합니다.
+
+## 대상 환경
+
+기본 설정은 다음 경기 환경을 가정합니다. 설정 화면에서 리소스 이름을 자동 탐색하거나 개별 override할 수 있습니다.
+
+| 항목 | 기본값 |
+|---|---|
+| AWS workload region | `ap-northeast-2` |
+| EKS cluster | `skills-eks` |
+| ALB | `skills-alb` |
+| RDS Proxy | `skills-db-proxy` |
+| WAF Web ACL | `skills-waf` |
+| WAF scope | `CLOUDFRONT` |
+| WAF API region | `us-east-1` |
+| Kubernetes namespace | `default` |
+| 대상 Deployment | `user`, `product`, `stress` |
 
 ## 빠른 시작
 
-### 1. 사전 준비
+### 사전 요구사항
 
-- [mise](https://mise.jdx.dev) 설치 (Node 20 버전은 `mise.toml`이 자동으로 맞춰줌)
-- AWS 자격증명: `aws configure` / `aws sso login` 으로 로컬 세션만 있으면 된다. 화면(톱니 → `AWS 자격증명` → `aws CLI 세션 불러오기`)에서 그 세션을 그대로 주입하며, `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` 환경변수나 `.env` 도 그대로 쓰인다
-- Kubernetes 클러스터 접근 가능한 `~/.kube/config` (`aws eks update-kubeconfig --name skills-eks --region ap-northeast-2`)
-
-### 2. 설치 및 설정
+Node.js 24와 pnpm, Go, AWS CLI, Kubernetes CLI가 필요합니다. 저장소는 `mise.toml`에 Node 24와 최신 Go를 선언하므로 [mise](https://mise.jdx.dev/) 사용을 권장합니다. EKS 접근을 위해 AWS 자격증명과 kubeconfig가 사전에 준비되어 있어야 합니다.
 
 ```bash
-winget install jdx.mise --source winget
+aws sts get-caller-identity
+aws eks update-kubeconfig --name skills-eks --region ap-northeast-2
+kubectl config current-context
+```
+
+### 설치
+
+```bash
 git clone https://github.com/rladnwls122/skills_dashboard-wooj.git
 cd skills_dashboard-wooj
-mise run install          # pnpm install (better-sqlite3 네이티브 빌드 포함)
-mise run env               # task-3 런북 값(skills-eks/skills-alb/skills-db-proxy/
-                            # skills-waf 등)으로 .env 생성 + AWS/kubeconfig 상태 점검
+
+# mise 사용 시
+mise install
+mise run install
+
+# mise를 사용하지 않을 때
+corepack enable pnpm
+pnpm install
+go mod download -C backend
 ```
 
-`mise run env`는 `scripts/generate-env.sh`를 실행 — task-3 런북에 고정된 리소스
-이름을 자동으로 채우고, AWS 자격증명/kubeconfig 컨텍스트가 잡혀 있는지
-`aws sts get-caller-identity`/`kubectl config current-context`로 확인해서
-알려준다. **비밀키는 파일에 쓰지 않음** — 이미 설정된 AWS CLI 체인을 그대로 씀.
-직접 값을 바꾸고 싶으면 생성된 `.env`를 열어 수정하면 된다 (재실행 시 기존
-파일은 타임스탬프 백업 후 덮어씀).
-
-### 3. 실행
+필요하면 `.env.example`을 복사해 리소스 이름과 실행 환경을 확인합니다.
 
 ```bash
-mise run dev               # http://localhost:3100/dashboard (개발 모드)
+cp .env.example .env
+```
+
+`.env`는 Vite가 읽는 프런트엔드 설정에 사용할 수 있지만, Go 백엔드는 `.env` 파일 자체를 파싱하지 않습니다. `API_ADDR`, `DB_PATH`, `CORS_ALLOW_ORIGINS` 및 리소스 관련 환경 변수는 실행 프로세스에 export하거나 `mise`, `direnv`, `dotenv-cli`와 같은 로더를 통해 주입해야 합니다.
+
+### 개발 실행
+
+프런트엔드와 Go 백엔드를 함께 실행합니다.
+
+```bash
+pnpm dev
 # 또는
-mise run build-clean && mise run start   # 캐시 삭제 후 production 빌드로 실행
+mise run dev
 ```
 
-브라우저에서 `http://localhost:3100/dashboard` 접속. 별도 로그인 없음.
+브라우저에서 [`http://127.0.0.1:3100/dashboard`](http://127.0.0.1:3100/dashboard)를 엽니다. 별도 로그인 화면은 없습니다.
 
-**빌드 전에는 캐시를 지운다.** `mise run build-clean`(= `pnpm build:clean`)은
-`.next`를 지우고 빌드한다. 캐시를 남긴 채 빌드하면 소스가 정상인데도
-`Cannot find module for page: /` 처럼 컴파일은 성공하고 페이지 수집만 실패하는
-일이 있다 — 탭을 추가·삭제하거나 파일을 옮긴 뒤에 특히 그렇다. 캐시만 지우려면
-`mise run clean`.
-
-### 3-1. 백엔드(Go) 실행
-
-데이터 API는 `backend/`의 Go(Fiber) 서비스로 분리돼 있다. UI는
-`src/lib/api/dashboard.ts`를 통해 이 서비스를 호출한다 — 화면 코드의 함수
-이름과 반환 계약(`ActionResult`)은 서버 액션 시절과 동일하다.
+개별 프로세스를 실행해야 하는 경우에는 두 터미널에서 다음 명령을 사용합니다.
 
 ```bash
-cd backend
-go test ./...                              # 단위 테스트
-API_ADDR=127.0.0.1:8787 go run .           # 개발 실행
+# 터미널 1
+pnpm dev:backend
+
+# 터미널 2
+pnpm dev:frontend
+```
+
+백엔드 상태는 다음과 같이 확인할 수 있습니다.
+
+```bash
+curl http://127.0.0.1:8787/healthz
+# {"status":"ok"}
+```
+
+### 프로덕션 빌드 및 실행
+
+```bash
+pnpm build:clean
+pnpm start
 # 또는
-go build -o bin/backend . && ./bin/backend
+mise run build-clean
+mise run start
 ```
 
-프런트와 마찬가지로 **`127.0.0.1`에만 바인딩한다** (기본값 `API_ADDR`).
-인증이 없는 API이므로 `0.0.0.0`으로 열지 않는다. 브라우저에서 오는 호출은
-`CORS_ALLOW_ORIGINS`에 나열된 origin만 허용한다.
-
-확인:
-
-```bash
-curl -s http://127.0.0.1:8787/healthz                      # {"status":"ok"}
-curl -s -XPOST http://127.0.0.1:8787/api/settings | head -c 200
-```
-
-백엔드는 `.env` 파일을 읽지 않는다. 프로세스 환경변수(`API_ADDR`,
-`CORS_ALLOW_ORIGINS`, `DB_PATH`, 리소스 이름들)와 SQLite `settings` 테이블
-(설정 화면에서 저장한 값)만 본다. `.env`를 쓰고 싶으면 실행 시 로더를 거친다
-(`mise`, `direnv`, `dotenv-cli` 등).
-
-서버 액션의 동작은 전부 Go 백엔드로 이식됐다. 실제 AWS·Kubernetes 를 읽는
-경로까지 포함한다:
-
-| 동작 | 처리 |
-|---|---|
-| `/healthz`, 설정 조회·저장, 배포 이력, WAF 적용 이력, 리소스 사용률 히스토리 | 로컬(SQLite·설정) |
-| 샌드박스 기본/공격 예시 요청, 규칙 조립·시뮬레이션, 트래픽 점검(probe), Deployment 패치 사전 검증 | 로컬(순수 로직) |
-| CloudWatch 지표·Target Group 지표, WAFv2 조회·샘플, Logs Insights(앱 로그·WAF 로그·채점), 리소스 자동 탐색 | AWS SDK |
-| Pod·이벤트·Deployment 조회, metrics.k8s.io 사용률, Pod 로그, Deployment 패치, HPA/노드그룹 스케일링 | Kubernetes / EKS |
-| 이상 탐지·상관관계·타임라인·인시던트 컨텍스트(Amazon Q 프롬프트 포함) | 위 소스를 조합한 순수 분석 |
-
-`Provider` 인터페이스(`backend/internal/service/provider.go`)의 실제 구현은
-`backend/internal/live` 다. AWS 는 `backend/internal/awsx`(aws-sdk-go-v2),
-Kubernetes 는 `backend/internal/kube`(client-go + metrics), 규칙 엔진은
-`backend/internal/rules`, 분석은 `backend/internal/analysis` 에 있다. 자격증명은
-표준 AWS 체인(`~/.aws`, 환경변수, IAM 역할)과 kubeconfig(`~/.kube/config`,
-클러스터 내부에서는 서비스어카운트)로 로드한다 — 어느 쪽이든 없으면 그 패널만
-`{ok:false, error}` 로 응답하고 나머지는 정상 동작한다.
-
-`Unavailable`(같은 파일)은 네트워크 호출을 전혀 하지 않는 기본 구현으로,
-테스트와 자격증명 없는 실행에 쓴다. TypeScript 원본(`src/lib/server/`,
-`src/app/actions/dashboard.ts`)은 이식 대조용으로 남겨 뒀고 현재 UI 는 호출하지
-않는다.
-
-### 4. 종료
-
-터미널에서 `Ctrl+C`. (백그라운드 실행 시 `mise run start` PID를 kill)
-백엔드도 `Ctrl+C`로 내려간다 — SIGINT/SIGTERM에서 5초 안에 정리하고 포트를 놓는다.
-
----
-
-## 화면 사용법
-
-탭은 **`성능` / `트래픽` / `규칙 생성`** 3장이고 **상단바**에서 전환한다. 좌측
-레일을 없앤 이유는 폭이다 — 버튼 세 개를 담자고 모든 화면에서 176px을 가져갔고,
-그 폭은 Target Group 표와 로그 테이블이 훨씬 잘 쓴다. 소스별 갱신 시각(K8S·CW·WAF)도
-같은 줄 오른쪽으로 옮겼다. 상단 상태등 6칸은 없앴다 — 바로 아래 타일과 같은 값을 두 번
-읽게 했다. 이상 유무는 `성능` 탭의 채점 키 8줄과 이상 목록이 직접 답한다.
-
-**설정은 탭이 아니라 헤더 우측 톱니(⚙)**다. 리소스 이름·로그 그룹은 자동 탐색이
-기본이고 설정 화면은 그 값이 틀렸을 때 사람이 덮어쓰는 안전장치라, 평소 감시
-화면에 자리를 차지할 이유가 없다. ESC나 배경 클릭으로 닫는다.
-
-그 모달 맨 위가 **AWS 자격증명**이다. 리소스 이름이 틀리면 패널 하나가 비지만
-키가 틀리거나 만료되면 전부 한꺼번에 비므로, 가장 먼저 확인할 것을 가장 위에 뒀다.
-`aws CLI 세션 불러오기`는 로컬에 로그인된 세션(`aws sso login` 포함)의 임시 키와
-session token 을 읽어 주입하고, **만료가 가까워지면 스스로 다시 읽는다** — 대회 중에
-세션이 끊겨 모든 패널이 죽는 상황을 없애기 위한 것이다. CLI 가 없으면 `키 직접 입력`
-에 통째로 붙여넣으면 된다(`export …` 블록, `.env`, `[profile]` 섹션, CLI JSON 모두
-인식). 주입한 키는 기본적으로 **프로세스 메모리에만** 남고, 체크박스를 켤 때만
-SQLite 에 저장된다(평문). 화면에는 언제나 마스킹된 값만 돌아온다.
-
-**구간 막대**(헤더 아래 줄)는 화면 전체가 공유하는 하나의 시간 창이다.
-`15m / 30m / 1h / 2h / 4h` 버튼은 열지 않아도 현재 값이 보이고, 옆에 `갱신
-23:09:44 · 7초 전`과 **절대 시각**(`08.12. 22:00:00 ~ 08.12. 23:00:00 · 60초 버킷
-· 60개`)이 같이 찍힌다. "1h"는 창이 얼마나 넓은지만 말하지 어디에 있는지는
-말하지 않기 때문이다. 4시간이 상한인 이유는 Logs Insights가 스캔 바이트로
-과금하기 때문이고, 그래서 한도를 서버 에러가 아니라 컨트롤에 적어 뒀다.
-
-**숫자마다 근거가 붙는다.** 각 타일 아래 작은 글씨는 그 값이 무엇을 집계한
-것인지 — CloudWatch 지표 이름·집계함수·기간까지 — 적는다
-(`AWS/WAFV2 BlockedRequests (WebACL=skills-waf, Rule=ALL) Sum · 최근 3버킷(3분)
-합계를 분당으로 환산`). 화면에 뜨는 이름(`WAF BlockedRequests`)은 우리가 붙인
-말이고, 콘솔에서 찾아 확인하려면 지표의 실제 이름이 필요하다. 값을 클릭하면
-클립보드로 복사된다. 목록은 **전체 / 조회 / 표시** 세 숫자를 따로 적는다 —
-한도에 걸려 잘린 배열 길이를 전체 건수로 읽는 일을 막기 위해서다.
-
-1. **성능 (Performance)** — 대회 2시간 동안 띄워 두는 화면. 스크롤 없이 보이는
-   범위가 "지금 이상이 있는가"에 답한다.
-   - 맨 위 **채점기 입력값** — 채점기(skills-grader)가 쓰는 키에 관측 트래픽을 맞춘
-     8줄. `(user|product|stress) availability` / `performance`, `image download`,
-     `Exception Handling`. **점수는 매기지 않는다** — 점수는 채점기 실행 결과가
-     정하고, 이 표는 그 값이 왜 그렇게 나오는지 보라고 있다. 앱 로그 Logs Insights
-     집계라 **5분마다 자동**이고, 지금 보려면 `⟳`. (규칙을 올린 직후가 그 경우다.)
-   - 그 옆이 **노드 대수** 패널, 아래가 **TRT / 4XX / 5XX / RDS Conn** 4타일.
-     제목 옆 회색 숫자가 판단선이다 (`5XX 20/min` = 넘으면 앱 장애를 의심).
-   - **이상 목록** — 상태등을 없앴으므로 이 카드가 유일한 경보다. 각 줄을 펼치면
-     근거가 나온다.
-   - 아래로 Pod Health(상태 분포 포함), Pod/Node 리소스 사용률, Target Group별
-     지표, Warning Event Board, 맨 아래 **Deployment 조정**(Replicas/CPU/Memory
-     Limit 변경 → 승인 → 약 2분 뒤 IMPROVED/NO_CHANGE/DEGRADED/INCONCLUSIVE).
-2. **트래픽 (Traffic)** — 지금 무엇이 들어오고 있나. 경로별 요청·차단, User-Agent,
-   QueryString 패턴, 앱 요청 로그(상태코드 필터·경로 검색), WAF Blocked/Allowed
-   추이, Pod 로그 터미널과 반복 오류 지문.
-
-   앱 요청 로그에는 **User-Agent 열**이 있고, 행을 클릭하면 **로그 원문**이 열린다.
-   파싱한 열은 어떤 필드가 중요한지에 대한 우리 쪽 추측이라, 앱이 예상 밖의 이름으로
-   남긴 헤더는 원문에서만 보인다. 앱이 UA 를 아예 안 남기면 열은 `—` 로 비며 그것도
-   정상적인 답이다. 원문은 다른 로그와 같은 마스킹(`server/mask.ts`)을 거친다.
-
-   **경로 목록에는 규칙 만들기 버튼이 없다.** 미지정 경로는 ALB가 이미 404를 내므로
-   WAF가 손댈 이유가 없다 — `의심` 배지는 "규칙을 만들라"가 아니라 "그 경로가 진짜
-   404로 끝났는지 `Exception Handling`과 대조하라"는 신호다. 규칙으로 가는 통로는
-   **User-Agent 목록**뿐이다.
-3. **규칙 생성 (AI)** — 한 규칙의 일생이 이 한 화면에서 끝난다.
-   - **① 패턴 세트** — 세트에 넣을 정규식과 `aws wafv2 create-regex-pattern-set`
-     명령. 세트를 먼저 만들어 ARN을 받는다.
-   - **② 규칙 JSON** — ①의 세트를 **ARN으로 참조**한다. 자리표시자가 남아 있으면
-     전이 버튼이 비활성이다 (세트 이름을 ARN 자리에 넣으면 AWS가 거부한다).
-   - **③ 전이 버튼** — 상태는 `GetWebACL`에서 매번 파생한다. 로컬 상태 테이블이
-     없으므로 누가 콘솔에서 직접 바꿔도 화면이 거짓말하지 않는다.
-     **UA 규칙은 `추천됨 → BLOCK`**(버튼 2개), **SQLi 규칙은 `추천됨 → COUNT →
-     BLOCK`**(버튼 3개). UA는 관측된 문자열에서 조립되어 무엇을 막는지 이미 눈으로
-     확인한 상태라 COUNT를 거치지 않고, SQLi는 고정 시그니처라 우리 정상 쿼리가
-     걸리는지 실측해야 한다. `내리기`는 어느 상태에서든 같은 버튼이다.
-   - **COUNT 실측** — SQLi 규칙이 COUNT일 때만 열린다. `매칭 34건 (정상 0 ·
-     비정상 21 · 조인 불가 13)` 형태로 셋을 나란히 적는다. **조인 불가를 비정상에
-     합치지 않는다** — POST/PUT은 양쪽 로그에 `requestid`가 없어 조인이 불가능하고,
-     그걸 비정상으로 세면 없는 근거를 지어내는 것이 된다.
-   - **정상 경로 프로브** — 규칙을 올린 직후 정상 경로가 아직 200인지 확인한다.
-     UA 규칙은 COUNT를 안 거치므로 **이 확인이 절차다.**
-   - 같은 탭에서 WebACL 규칙 목록과 WCU를 본다.
-
-**경로 스코프다운은 강제다.** 조립되는 UA·SQLi 규칙은 `AND(제공 API 경로, 탐지 조건)`
-형태로만 나오고, 손으로 붙여넣은 JSON도 같은 검사를 통과해야 올라간다. WAF는 ALB
-**앞**에 있어서, 스코프다운이 없으면 미지정 경로로 들어온 악성 요청이 ALB의 404에
-닿기 전에 403으로 잘린다 — 요구사항은 404다.
-
-**오탐 경보** — 규칙을 올리는 순간 채점 키 8줄을 스냅샷으로 남기고, 5분 안에 어느
-키든 1%p 이상 떨어지면 `성능` 탭 이상 목록에 CRITICAL로 뜬다.
-
-**규칙 조립이 지키는 표준** — 패턴은 한 줄에 하나(패턴 세트는 줄 단위로 독립
-평가), 전부 소문자(LOWERCASE 변환이 먼저 적용되므로 대문자는 영영 매칭되지
-않음), 리터럴의 메타문자는 이스케이프, POSIX 클래스 없이 RE2 문법만. 인코딩
-우회는 URL_DECODE·HTML_ENTITY_DECODE·NORMALIZE_PATH·COMPRESS_WHITE_SPACE로
-먼저 정규화한 뒤 매칭한다. AWS 고정 한도(세트당 정규식 10개, 패턴 200자)도
-지키며, 패턴이 10개를 넘으면 **버리지 않고 세트를 나눠** OrStatement로 묶고
-콘솔에서 몇 개를 만들어야 하는지 알려준다. 이 규약들은 테스트가 산출되는 모든
-패턴에 대해 검사한다.
-
-**드릴다운은 탭 이동 하나로 통일했다.** 카드 확대(`⤢`)는 없앴다 — 같은 카드를 크게
-보여줄 뿐 다음 행동을 주지 않았다. 시간창은 전역이라 탭을 옮겨도 그대로 따라간다.
-
-**원칙**: 자동 차단·자동 정책 변경 없음. WAF/Deployment 변경은 항상 사람의
-명시적 승인을 거친다.
-
-### 대회 전 리허설 (선택)
-
-실제 공격 없이 탐지→추천→COUNT→승격 흐름을 검증하려면 리허설 트래픽 생성기를
-쓴다. **본인 소유 대상에만** 사용:
-
-```bash
-mise run attack-sim -- --target https://<대시보드가 보는 ALB/CloudFront 호스트> --dry
-# 실제 전송:
-mise run attack-sim -- --target https://<host> --scenario mixed --duration 60 --rps 20
-```
-
-시나리오: `normal` / `ip-flood` / `path-flood` / `bad-ua` / `sqli` / `mixed`.
-지정한 대상에 HTTP 요청만 보내며 AWS/K8s는 건드리지 않는다. 실행 후 WAF 탭의
-샘플 요청·추천 규칙에서 결과 확인 (WAF 샘플 반영까지 수 분 소요될 수 있음).
-
----
-
-## 조회 구간
-
-상단의 **구간**과 **간격**이 화면 전체의 시간창을 정한다. 지표, Target Group,
-WAF 통계, Pod 로그, 앱 요청 로그가 **모두 같은 창**을 읽는다. 두 패널의 숫자를
-나란히 놓고 비교할 수 있다는 뜻이다 — 이전에는 지표가 14분, WAF 샘플이 15분,
-로그가 Insights 기본값을 각자 보고 있어서 같은 화면의 두 숫자가 서로 다른
-시간을 세고 있었다.
-
-- 구간은 15분 / 30분 / 1시간 / 2시간 / 4시간. **4시간이 상한**이다 — Insights는
-  스캔 바이트당 과금이라 상한이 곧 비용의 상한이다.
-- 간격은 버킷 수가 4~250개가 되는 조합만 열린다. 서버가 검증하고, 잘못된 조합이
-  들어오면 거부 대신 유효한 값으로 고쳐서 쓴다(고친 결과가 화면에 그대로 표시됨).
-- 창의 끝은 간격 경계로 내림한다. **모든 버킷이 완전한 버킷**이라 진행 중인
-  미완성 버킷이 급락처럼 보이는 일이 없다.
-
-각 패널은 자기가 무엇을 센 것인지 제목 아래에 적는다. 지표 카드의 대표값은
-"최근 3버킷 합계/평균"이며 3버킷이 몇 분인지는 선택한 간격에 따라 달라지므로
-그 값도 함께 적힌다 — `req/min` 같은 단위만으로는 3버킷 합계를 분당 값으로
-잘못 읽게 된다.
-
-### 채점 지표는 어디까지 맞고 어디부터 다른가
-
-가용성은 `2xx && 5초 이내`, 성능은 그중 `SLO 이내`(user·product 200ms, stress 1s)로
-센다. 채점기는 요청마다 **자기가 기대한 코드**(생성 201, 조회 200)를 알고 비교하지만
-로그 한 줄에는 그 의도가 없어 2xx로 근사한다 — 그래서 채점기 값과 다를 수 있고,
-화면이 그 사실을 함께 띄운다.
-
-`Exception Handling`은 앱 로그에 남은 **미지정 경로** 요청 중 404/403으로 끝난 비율이다.
-WAF가 차단한 요청은 앱에 도달하지 않아 이 분모에 없으므로, 같은 구간의 WAF 차단
-건수를 옆에 따로 적는다. 두 수는 출처가 다르니 더하지 않는다.
-
-`cost ratio`는 이 표에 없다. 다만 **관측할 수 없어서가 아니다** — 채점기가 쓰는
-입력은 채점 창 동안의 인스턴스 대수이고, 그 대수는 CloudTrail의
-`RunInstances`/`TerminateInstances`(사전 설정 불필요·90일 보존)로 대시보드가 꺼져
-있던 구간까지 사후 재구성된다. 대수에서 점수로 가는 계산식이 비공개 절대식이라
-**점수를 만들지 않을 뿐**이다.
-
-대수는 `성능` 탭 최상단 `채점 창 노드 대수` 패널이 센다. 실시간 값은
-`describe-instances` 30초 폴링이고, 대시보드가 꺼져 있던 구간은 기동 시 CloudTrail로
-한 번 메운다. 패널이 내놓는 숫자는 **최종 평균**(지금 대수를 창 끝까지 유지했을 때)과
-**1대 증감**(지금 한 대가 최종 평균을 움직이는 폭) 둘이고, 규격 외 인스턴스는 0이 아닐
-때만 나타난다. 색으로 된 판정도 목표선도 없다 — 채점식이 비공개인 이상 초록색은
-화면이 근거 없이 만들어낸 판단이 된다.
-
-경기 시작 시각은 톱니 모달에서 입력한다. **비어 있으면 평균을 만들지 않는다** — 창
-시작이 틀리면 시간가중 평균이 통째로 틀리고, 화면은 그게 틀렸다는 걸 보여줄 방법이
-없기 때문이다.
-
-노드 대수를 셀 때 **ASG 그룹 메트릭은 쓰지 않는다** — Karpenter가 띄운 노드는
-어떤 ASG에도 속하지 않아 채점 대상 노드를 통째로 놓친다.
-
-### WAF 통계는 로그가 있으면 전수 집계
-
-`WAF_LOG_GROUP`이 설정돼 있으면 경로·IP·UA·메소드·쿼리 통계를 **WAF 로그의
-Logs Insights 집계**로 읽는다. 선택한 구간을 그대로 따르고, 표본이 아니라 전수이며,
-스캔한 바이트를 패널에 표시한다.
-
-설정돼 있지 않으면 `GetSampledRequests`로 폴백한다. 이 API는 **규칙당 500건**
-표본을 WAF 자신의 3시간 상한 안에서 돌려주므로 선택한 구간을 따르지 못한다.
-그래서 폴백일 때는 패널이 그 사실과 함께 "`WAF_LOG_GROUP`을 설정하면 전수
-집계로 바뀐다"를 함께 표시한다. Insights 집계가 실패해서 폴백한 경우에는 그
-이유도 같이 적는다.
-
-집계는 `(키, action)`으로 묶여서 오고 화면이 그것을 키 하나로 접는다. 차단된
-것만 걸러 오면 빈 목록이 "아무것도 차단되지 않았다"인지 "아무것도 들어오지
-않았다"인지 구분되지 않기 때문이다. 묶어서 받아도 스캔량은 늘지 않는다.
-
----
-
-## 수집 항목
-
-- Pod 로그 기반 latency / 200·201 이외 응답 / Error·Warn 로그
-- WAF 로그 통계: 헤더/경로/쿼리스트링/메소드별, 차단 요청
-- Target Group별 TargetResponseTime · 4XX · 5XX (리스너 규칙으로 경로 라벨링)
-- Pod/Node 리소스 사용률 CPU·Memory (metrics-server 필요)
-- Pod 개수(HPA min/current/max) · Node 개수(EKS Managed Nodegroup min/current/max)
-- Pod 상태 분포 (Running/Pending/CrashLoopBackOff/OOMKilled/Failed/기타)
-- RDS Proxy ClientConnections/DatabaseConnections
-- WAF BlockedRequests/AllowedRequests
-
----
+프런트엔드는 `dist/`에 빌드되고, 백엔드는 Windows에서 `api.exe`, 그 외 환경에서 `api` 실행 파일로 빌드됩니다. 빌드 캐시 문제를 피하려면 페이지 구조나 탭을 변경한 뒤 `pnpm build:clean`을 사용하십시오.
 
 ## 환경 변수
 
-`.env.example` 참고. 주요 항목:
+다음 변수는 `.env.example`에 전체 예시가 있습니다. 비밀값을 저장소에 커밋하지 마십시오.
 
-| 변수 | 기본값 | 설명 |
+| 변수 | 기본값 또는 예시 | 설명 |
 |---|---|---|
-| `AWS_REGION` | `ap-northeast-2` | 워크로드 리전 |
-| `WAF_SCOPE` | `CLOUDFRONT` | `CLOUDFRONT`면 WAF API/메트릭은 자동으로 us-east-1 사용 |
-| `WAF_WEB_ACL_NAME` | `skills-waf` | |
-| `ALB_NAME` | `skills-alb` | 비우면 첫 ALB 자동 탐색 |
-| `RDS_PROXY_NAME` | `skills-db-proxy` | |
-| `EKS_CLUSTER_NAME` | `skills-eks` | Nodegroup min/max 조회용 |
-| `TARGET_NAMESPACE` | `default` | |
-| `MAX_REPLICAS` | `20` | Deployment 패치 시 허용 상한 |
-| `DB_PATH` | `./data/dashboard.db` | 이력 SQLite 경로 (Go 백엔드와 공용, 스키마 동일) |
-| `API_ADDR` | `127.0.0.1:8787` | Go 백엔드 바인딩 주소 |
-| `CORS_ALLOW_ORIGINS` | `http://localhost:3100,http://127.0.0.1:3100` | API 호출을 허용할 브라우저 origin |
-| `NEXT_PUBLIC_API_BASE_URL` | `http://127.0.0.1:8787` | UI가 호출할 백엔드 주소 (빌드 시 인라인) |
+| `AWS_ACCESS_KEY_ID` | 비움 | 선택적 AWS 액세스 키 |
+| `AWS_SECRET_ACCESS_KEY` | 비움 | 선택적 AWS 시크릿 키 |
+| `AWS_SESSION_TOKEN` | 비움 | 임시 자격증명 사용 시 필요 |
+| `AWS_REGION` | `ap-northeast-2` | 기본 AWS 리전 |
+| `WAF_SCOPE` | `CLOUDFRONT` | WAF Web ACL scope |
+| `WAF_WEB_ACL_NAME` | `skills-waf` | 조회·변경할 Web ACL |
+| `ALB_NAME` | `skills-alb` | ALB 이름, 비우면 자동 탐색 |
+| `RDS_PROXY_NAME` | `skills-db-proxy` | RDS Proxy 이름 |
+| `EKS_CLUSTER_NAME` | `skills-eks` | EKS 클러스터 이름 |
+| `WAF_LOG_GROUP` | 비움 | WAF 상세 로그 그룹. 설정하면 Logs Insights 사용 |
+| `TARGET_NAMESPACE` | `default` | Kubernetes namespace |
+| `MAX_REPLICAS` | `20` | Deployment 조정 상한 |
+| `DB_PATH` | `./data/dashboard.db` | 설정·이력 SQLite 파일 |
+| `API_ADDR` | `127.0.0.1:8787` | Go API listen 주소 |
+| `CORS_ALLOW_ORIGINS` | `http://localhost:3100,http://127.0.0.1:3100` | API 호출을 허용할 정확한 origin 목록 |
+| `VITE_API_BASE_URL` | 비움 | 비우면 개발 프록시, 지정하면 API 절대 주소 사용 |
 
-리소스 이름을 비우면 자동 탐색 (ALB는 LBC가 TargetGroup 이름을 자동 생성하므로
-자동 탐색이 기본 경로).
+설정값은 **화면 override > 프로세스 환경 변수 > 내장 기본값** 순으로 결정됩니다. 설정 화면에서 저장한 값과 WAF/Deployment 변경 이력은 SQLite에 기록됩니다.
 
-## 필요 권한
+AWS 자격증명은 설정 화면에서 로컬 AWS CLI 세션을 가져오거나 직접 붙여 넣을 수 있습니다. 화면에는 마스킹된 값만 표시되며, 명시적으로 저장하도록 선택한 경우에만 SQLite에 평문으로 저장됩니다. 따라서 기본 운영 방식은 저장하지 않고 프로세스 메모리에서 사용하는 것입니다.
 
-- AWS IAM: `cloudwatch:GetMetricData`, `elasticloadbalancing:Describe*`,
-  `wafv2:Get*`/`List*`/`UpdateWebACL`/`CheckCapacity`, `rds:Describe*`(선택),
-  `eks:ListNodegroups`/`DescribeNodegroup`, (선택) `logs:StartQuery`/`GetQueryResults`.
-- Kubernetes: 로컬 kubeconfig 사용자에 `pods`/`pods/log`/`events`/`deployments`/
-  `deployments/scale`/`nodes`/`horizontalpodautoscalers` read, `deployments` patch 권한.
-  Pod/Node 리소스 사용률은 클러스터에 **metrics-server**가 설치돼 있어야 값이 채워짐
-  (task-3는 eksctl addon으로 포함).
+## 화면 사용 흐름
 
-`k8s-dashboard-rbac.yaml` 은 스펙 산출물 요구사항 충족용 참고 매니페스트로만
-보관 — 실제 적용 대상 아님 (로컬 kubeconfig 권한을 그대로 사용하므로 불필요).
+### 성능
 
----
+성능 탭은 대회 중 계속 띄워 두는 감시 화면입니다. 상단에는 채점기 입력값과 노드 수 비용 투영이 배치되고, 이어서 TRT·4XX·5XX·RDS 연결 수, 이상 목록, Pod Health, Pod/Node 사용률, Target Group 지표, Warning Event Board, Deployment 조정 화면이 이어집니다.
 
-## 문제 해결
+채점기 입력값은 점수를 계산하는 카드가 아니라 Logs Insights에서 집계한 관측값입니다. 각 항목은 비율·정상 건수·전체 건수·데이터 출처를 함께 보여 주며, 기본적으로 5분 주기로 갱신됩니다. Deployment 변경은 현재 상태를 먼저 미리 보고 승인한 뒤 적용하며, 이후 이력 ID를 기준으로 결과를 검증합니다.
 
-- **"ALB not found"** — `.env`의 `ALB_NAME` 확인, 또는 해당 리전에 ALB가 실제
-  존재하는지 확인.
-- **"WebACL not found"** — `WAF_SCOPE`/`WAF_WEB_ACL_NAME` 확인. CLOUDFRONT
-  scope인데 리전을 us-east-1로 착각하고 다른 값 넣지 않았는지 체크(자동 처리됨,
-  수동 설정 불필요).
-- **모든 패널이 한꺼번에 빈다 / `could not load credentials` / `ExpiredToken`** —
-  자격증명 문제다. 톱니 → `AWS 자격증명` → `aws CLI 세션 불러오기`, 그 다음 `연결 확인`.
-  `유효 (권한 제한)` 은 통과다 — 키는 맞고 확인용 `ec2:DescribeVpcs` 만 막힌 상태다.
-  `.env` 만 고치고 재시작하지 않았다면 값이 반영되지 않는다(`.env` 는 기동 시점에만 읽힌다).
-- **Kubernetes 조회 실패 (HTTP protocol is not allowed 등)** — `~/.kube/config`
-  컨텍스트가 올바른 클러스터를 가리키는지 `kubectl config current-context`로 확인.
-- **Pod/Node 리소스 사용률이 항상 비어있음** — 클러스터에 metrics-server가
-  설치되어 있는지 `kubectl top nodes`로 확인.
-- **`kubeconfig 의 인증 명령 "aws" 을(를) 찾지 못했습니다`** — AWS CLI 자체가 없다.
-  설치하거나(`C:\Program Files\Amazon\AWSCLIV2` 는 PATH 에 없어도 자동 탐색된다)
-  `~/.kube/config` 의 `users[].user.exec.command` 를 전체 경로로 바꾼다.
-- **빌드가 `Cannot find module for page: /` 로 실패** (`✓ Compiled successfully`
-  가 먼저 찍히는데도) — `.next` 캐시가 낡은 것. `mise run clean` 후 다시 빌드하거나
-  처음부터 `mise run build-clean`을 쓴다. 소스 문제가 아니다.
+### 트래픽
 
----
+트래픽 탭에서는 현재 요청이 어느 경로로 들어오고 어떤 User-Agent·QueryString 패턴이 관측되는지 확인합니다. 애플리케이션 요청 로그는 상태 코드 필터와 경로 검색을 지원하고, 행을 선택하면 마스킹된 원문을 볼 수 있습니다. WAF 로그는 BLOCK/COUNT/ALLOW 기준으로 필터링할 수 있으며, Pod 로그 터미널은 컨테이너 선택, 이전 컨테이너 로그, 최근 줄 수, 문제 로그 필터, 문자열 검색과 자동 갱신을 지원합니다.
+
+규칙 생성으로 이동하는 진입점은 User-Agent 목록입니다. 미지정 경로는 ALB가 이미 404로 처리해야 하므로 경로 목록에서 WAF 규칙을 직접 만들지 않습니다. 모든 규칙은 제공 API 경로와 탐지 조건을 함께 평가하도록 scope-down됩니다.
+
+### 규칙 생성
+
+규칙 생성 탭은 WAF 규칙의 조립부터 적용 후 검증까지를 한 곳에서 다룹니다.
+
+1. 관측된 User-Agent 또는 고정 SQLi 시그니처로 패턴 세트와 규칙 JSON을 조립합니다.
+2. 정규식 패턴 세트를 먼저 AWS에 생성하고, 반환된 ARN을 규칙 JSON의 placeholder와 교체합니다.
+3. 규칙 JSON을 로컬 테스트 요청으로 시뮬레이션합니다.
+4. UA 규칙은 `추천됨 → BLOCK`으로 전환할 수 있고, SQLi 규칙은 `추천됨 → COUNT → BLOCK` 순서로 실측한 뒤 승격합니다.
+5. COUNT 상태에서는 정상·비정상·조인 불가 건수를 분리해 오탐 근거를 확인합니다.
+6. 적용 직후 정상 경로 프로브와 채점 입력값을 다시 확인합니다.
+
+규칙을 내리는 작업은 현재 WebACL의 실제 상태를 기준으로 수행됩니다. 로컬 상태 플래그를 신뢰하지 않으므로 콘솔에서 직접 변경한 상태도 다음 조회에 반영됩니다.
+
+## 안전장치와 운영 원칙
+
+| 원칙 | 구현 |
+|---|---|
+| 로컬 전용 노출 | 프런트엔드 기본 주소는 `127.0.0.1:3100`, API 기본 주소는 `127.0.0.1:8787` |
+| 변경 전 확인 | Deployment는 preview 후 승인하고, WAF는 화면의 명시적 전환 버튼으로 적용 |
+| WAF 오탐 방지 | SQLi는 COUNT 실측 후 BLOCK 승격, 정상 경로 프로브 제공 |
+| 경로 보존 | 조립·붙여넣기 규칙 모두 API 경로 scope-down 검사 통과 필요 |
+| 데이터 근거 표시 | 지표명·집계 함수·시간 창·조회 건수·표시 건수를 함께 표시 |
+| 부분 장애 허용 | AWS/Kubernetes 패널별 오류를 `ok:false`로 표시하고 다른 패널은 유지 |
+| 비용 통제 | 시간 창은 최대 4시간으로 제한하고 Logs Insights 스캔 바이트를 표시 |
+
+대시보드에는 인증 계층이 없으므로 `0.0.0.0` 바인딩, 공개 터널, 무심코 커밋한 자격증명은 금지해야 합니다. 다른 장치에서 접근해야 한다면 API와 프런트엔드를 공개 주소로 바꾸기보다 SSH 포트 포워딩을 사용하십시오.
+
+## 테스트와 개발 명령
+
+```bash
+# TypeScript strict 검사
+pnpm typecheck
+
+# 프런트엔드와 백엔드 빌드
+pnpm build
+
+# Go 단위 테스트
+cd backend
+go test ./...
+cd ..
+
+# 출력물 정리
+pnpm clean
+```
+
+
+백엔드 규칙 엔진, 분석 모듈, 자격증명 파서, SQLite 저장소와 API에는 Go 테스트가 포함되어 있습니다. 프런트엔드는 별도의 브라우저 E2E 스크립트보다 TypeScript strict 검사와 Vite build를 기본 검증으로 사용합니다.
 
 ## 프로젝트 구조
 
-```
-backend/main.go                # Go(Fiber) 데이터 API 진입점
-backend/internal/api/          # 라우트 + ActionResult 봉투 (POST /api/*, GET /healthz)
-backend/internal/service/      # 동작 본체: 조회 구간·probe·샌드박스 데이터·검증·리소스 히스토리
-  provider.go   # AWS/K8s/규칙엔진 경계 인터페이스 + 무연결 기본 구현(Unavailable)
-backend/internal/live/         # Provider 실제 구현 — 패널별 TTL 캐시·교차 참조·인시던트 조립
-backend/internal/awsx/         # CloudWatch·WAFv2·Logs Insights·ELB·EKS (aws-sdk-go-v2)
-backend/internal/kube/         # Pod·Deployment·이벤트·metrics.k8s.io·패치 (client-go)
-backend/internal/rules/        # WAFv2 규칙 평가·조립, UA 위협 분류 (순수, 네트워크 없음)
-backend/internal/analysis/     # 이상 탐지·상관관계·핑거프린트·마스킹·인시던트 리포트 (순수)
-backend/internal/cache/        # TTL 캐시 + in-flight 중복 제거 (cache.ts 이식)
-backend/internal/config/       # 환경변수 + 설정 화면(오버라이드 → env → 기본값) + 임계치·경로 정책
-backend/internal/store/        # SQLite (src/lib/server/db.ts 와 동일 스키마)
-backend/internal/types/        # src/lib/types.ts 를 필드 단위로 옮긴 JSON 계약
-src/lib/api/dashboard.ts       # UI가 쓰는 fetch 클라이언트 (액션과 같은 함수명·계약)
-src/app/actions/dashboard.ts   # 이식 원본 서버 액션 (현재 UI는 호출하지 않음)
-src/app/dashboard/page.tsx     # 대시보드 페이지
-src/app/dashboard/ui/          # 클라이언트 컴포넌트 (탭 3개 + 설정 모달 + 공용 표시 요소)
-src/lib/awscreds.ts            # 붙여넣은 자격증명 블록 파싱·마스킹 (서버·클라이언트 공용)
-src/lib/server/                # server-only 모듈
-  config.ts     # env + 임계치 설정 객체
-  credentials.ts# 화면에서 주입한 AWS 키의 저장·해소(만료 시 자동 갱신)
-  awslogin.ts   # 로컬 aws CLI 세션 읽기 (export-credentials → ~/.aws/credentials)
-  credcheck.ts  # 주입된 키 확인 (인증 실패와 권한 거부를 구분)
-  aws.ts        # SDK 클라이언트, ALB/TG/리스너규칙 자동 탐색, EKS 노드그룹 스케일링
-  cloudwatch.ts # GetMetricData, current/previous/delta/%/status, TG별 지표
-  waf.ts        # 샘플 수집, HTTP 요약, setRuleAction (COUNT 적용/BLOCK 승격/내리기)
-  k8s.ts        # Pod/Event/Deployment/로그, JSON Patch + 검증
-  resources.ts  # Pod/Node 리소스 사용률(metrics.k8s.io), HPA/Nodegroup 스케일링, 상태 분포
-  requestlog.ts # Gin 액세스로그 파싱 → latency/상태코드/에러·경고
-  ruleassemble.ts # 관측 트래픽 → 정규식 패턴 세트 + 규칙 JSON 조립
-  logfields.ts  # 앱 로그 JSON에서 뽑는 Insights parse 구문 (requestid/uuid/User-Agent)
-  anomaly.ts    # 이상 감지 (오탐 방지 규칙 + 규칙 적용 후 채점 키 하락 경보)
-  wafcountevidence.ts # COUNT 매칭 요청 ↔ 앱 로그 requestid 조인 (GET 한정)
-  fingerprint.ts# 오류 정규화·핑거프린트
-  probe.ts      # 트래픽 점검 (입력 주소로 GET 1회, http/https만, 10초 제한)
-  mask.ts       # 민감정보 마스킹
-  db.ts         # SQLite (이력/baseline/스냅샷)
-  cache.ts      # TTL + in-flight dedup 캐시
-k8s-dashboard-rbac.yaml        # 스펙 필수 산출물 (참고용, 미적용)
+```text
+.
+├─ src/
+│  ├─ app/dashboard/          # 대시보드 페이지와 성능·트래픽·규칙 UI
+│  ├─ app/actions/            # UI가 사용하는 데이터 액션 호환 계층
+│  └─ lib/                    # 타입, API 클라이언트, 자격증명 파서
+├─ backend/
+│  ├─ internal/api/           # Fiber 라우트와 ActionResult 응답 봉투
+│  ├─ internal/service/       # 패널·운영 작업을 조합하는 서비스 계층
+│  ├─ internal/awsx/          # AWS SDK v2 연동
+│  ├─ internal/kube/          # Kubernetes/EKS 연동
+│  ├─ internal/live/          # 실제 AWS/Kubernetes provider 구현
+│  ├─ internal/rules/         # WAF 규칙 조립·시뮬레이션
+│  ├─ internal/analysis/      # 이상 탐지·상관관계·인시던트 분석
+│  └─ data/dashboard.db       # 로컬 설정·이력 저장소
+├─ docs/RUNBOOK.md            # 대회 당일 운영 절차
+├─ .env.example               # 환경 변수 예시
+├─ mise.toml                  # Node/Go 버전과 반복 작업 정의
+└─ package.json               # 프런트엔드·통합 실행 스크립트
 ```
 
-## 동작 원칙
+대회 당일에는 구현 설명보다 [`docs/RUNBOOK.md`](docs/RUNBOOK.md)를 먼저 읽으십시오. README는 시스템 구조와 개발·운영 전제를 설명하고, RUNBOOK은 실제 상황에서 무엇을 확인하고 어떤 버튼을 누를지 설명합니다.
 
-- WAF 변경은 항상 사람이 버튼을 누른다. SQLi는 조립 → COUNT 적용 → 실측 →
-  BLOCK 승격, UA는 조립 → BLOCK. 자동 승격도 자동 롤백도 없다.
-- 규칙은 **제공 API 경로 스코프다운 없이는 올라가지 않는다** — 조립 경로와
-  붙여넣기 경로가 같은 검사를 통과한다. 미지정 경로가 404 대신 403을 받으면
-  채점의 `Exception Handling`이 깨지기 때문이다.
-- 규칙을 올린 시점의 채점 키를 스냅샷으로 남기고, 5분 안에 1%p 이상 떨어지면
-  이상 목록에 CRITICAL로 띄운다.
-- 자동 차단·자동 정책 변경 없음. Deployment 패치도 명시적 승인 후에만 실행.
-- 단일 메트릭만으로 CRITICAL 판정 없음. 헬스체크 경로는 이상 판정에서 저순위
-  처리하는데, 그 경로는 **`/healthcheck` 하나뿐**이다 — `/health`·`/healthz` 같은
-  관용 경로는 이 앱이 서비스하지 않으므로 저순위가 아니라 **미지정 경로**이고,
-  그쪽을 훑는 요청은 의심 경로로 보여야 한다 (`HEALTH_PATHS` 로 변경 가능).
-- 서비스 경로(`APP_TRAFFIC_PATHS`)는 `/v1/user,/v1/product,/v1/stress,/v1/image,/images`.
-  이 목록은 허용 목록이자 **모든 규칙의 경로 스코프다운 재료**다 — 실제로 서비스되는
-  경로가 빠지면 그 경로로 오는 트래픽에는 규칙이 걸리지 않는다. 이미지가
-  `/images/*.png` 정적 자산으로도 나가므로 두 형태를 모두 넣었다.
-- 폴링 계층: K8s 3초 / 로그 5초(자동갱신 시) / CloudWatch·WAF 30초.
-  서버 캐시가 in-flight 중복과 과도한 API 호출을 차단.
-- 서브시스템 장애는 영역별로 격리 — 한 곳이 죽어도 화면 전체는 유지.
+## API 개요
 
-## 스택
+| 그룹 | 대표 엔드포인트 | 역할 |
+|---|---|---|
+| 패널 | `/api/kube-panel`, `/api/metrics-panel`, `/api/waf-panel`, `/api/grading-panel` | Kubernetes·CloudWatch·WAF·채점 데이터 조회 |
+| 로그 | `/api/pod-logs`, `/api/request-log-rows`, `/api/waf-log-rows` | Pod·애플리케이션·WAF 로그 조회 |
+| 설정 | `/api/settings`, `/api/settings/save`, `/api/discover` | 설정 조회·저장·자동 탐색 |
+| 자격증명 | `/api/credentials`, `/api/credentials/import`, `/api/credentials/check` | 자격증명 주입·확인·삭제 |
+| Deployment | `/api/deployment/preview`, `/api/deployment/patch`, `/api/verify` | 변경 사전 검증·적용·사후 검증 |
+| WAF 운영 | `/api/assemble-rule`, `/api/test-rule`, `/api/waf-rule/update`, `/api/waf-evidence`, `/api/probe` | 규칙 조립·테스트·COUNT 근거·적용·정상 경로 확인 |
 
-Go 1.25 · Fiber v2 · modernc.org/sqlite (백엔드) ·
-Next.js 15 App Router · React 19 · TypeScript strict · Tailwind CSS v4 ·
-AWS SDK v3 (cloudwatch, wafv2, elbv2, cloudwatch-logs, eks) · @kubernetes/client-node 1.x ·
-better-sqlite3 (이력·baseline 저장) · pnpm · mise
+`GET /healthz`는 SQLite 연결을 포함한 백엔드 생존 상태를 확인합니다. 그 외 `/api/*` 호출은 JSON body를 사용하는 `POST`입니다.
+
+## 문제 해결
+
+| 증상 | 확인 순서 |
+|---|---|
+| 모든 패널이 비어 있음 | `http://127.0.0.1:8787/healthz` 확인 → AWS 자격증명 확인 → AWS region과 WAF scope 확인 |
+| Kubernetes 패널만 비어 있음 | `kubectl config current-context`, `kubectl get pods -n default`, EKS 권한 확인 |
+| WAF 패널만 비어 있음 | `WAF_WEB_ACL_NAME`, `WAF_SCOPE=CLOUDFRONT`, WAF API region `us-east-1`, WebACL 권한 확인 |
+| 로그가 없음 | 공유 시간 창 확인 → 로그 그룹 이름 확인 → Logs Insights 스캔 범위와 실제 로그 유입 확인 |
+| API 연결 오류 | 백엔드가 `127.0.0.1:8787`에서 실행 중인지 확인하고 `VITE_API_BASE_URL` 또는 Vite proxy 설정 확인 |
+| 빌드는 되지만 페이지가 이상함 | `pnpm build:clean` 후 다시 빌드하고, 브라우저에서 `127.0.0.1:3100/dashboard`로 접속 |
+| 임시 AWS 키가 만료됨 | 설정 → AWS 자격증명 → `aws CLI 세션 불러오기`로 세션을 다시 주입 |
+
+## 라이선스
+
+이 프로젝트는 [BSD 3-Clause License](LICENSE)로 배포됩니다.
+
+## 참고 자료
+
+[1]: https://vite.dev/guide/ "Vite 공식 문서"
+[2]: https://gofiber.io/ "Fiber 공식 문서"
+[3]: https://docs.aws.amazon.com/waf/latest/developerguide/ "AWS WAF 개발자 안내서"
+[4]: https://kubernetes.io/docs/home/ "Kubernetes 공식 문서"
+
+프로젝트의 실제 코드와 설정 파일이 이 README의 최종 기준입니다. 외부 서비스의 API 동작과 권한 요구사항은 해당 공식 문서도 함께 확인하십시오 [1] [2] [3] [4].

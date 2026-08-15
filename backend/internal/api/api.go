@@ -127,6 +127,9 @@ func New(svc *service.Service, cfg config.Server) *fiber.App {
 	api.Post("/request-log-rows", handle(func(c *fiber.Ctx, p service.RequestLogParams) (types.RequestLogQueryResult, error) {
 		return svc.RequestLogRows(c.UserContext(), p)
 	}))
+	api.Post("/waf-log-rows", handle(func(c *fiber.Ctx, p service.WafLogParams) (types.WafLogQueryResult, error) {
+		return svc.WafLogRows(c.UserContext(), p)
+	}))
 
 	// --- settings -------------------------------------------------------------
 	api.Post("/settings", handle(func(c *fiber.Ctx, _ none) (types.SettingsView, error) {
@@ -139,6 +142,23 @@ func New(svc *service.Service, cfg config.Server) *fiber.App {
 		Kind string `json:"kind"`
 	}) (types.DiscoveryResult, error) {
 		return svc.Discover(c.UserContext(), p.Kind)
+	}))
+	// The keys go one way only: every route here answers with the masked view,
+	// and nothing on this surface can read an injected secret back out.
+	api.Post("/credentials", handle(func(c *fiber.Ctx, _ none) (types.CredentialsView, error) {
+		return svc.Credentials()
+	}))
+	api.Post("/credentials/save", handle(func(c *fiber.Ctx, p service.CredentialsInput) (types.CredentialsResult, error) {
+		return svc.SaveCredentials(c.UserContext(), p)
+	}))
+	api.Post("/credentials/import", handle(func(c *fiber.Ctx, p service.ImportCredentialsInput) (types.CredentialsResult, error) {
+		return svc.ImportCredentials(c.UserContext(), p)
+	}))
+	api.Post("/credentials/clear", handle(func(c *fiber.Ctx, _ none) (types.CredentialsResult, error) {
+		return svc.ClearCredentials(c.UserContext())
+	}))
+	api.Post("/credentials/check", handle(func(c *fiber.Ctx, _ none) (types.CredentialsResult, error) {
+		return svc.CheckCredentials(c.UserContext())
 	}))
 
 	// --- deployments ----------------------------------------------------------
@@ -182,6 +202,22 @@ func New(svc *service.Service, cfg config.Server) *fiber.App {
 		Window *types.WindowSelection `json:"window"`
 	}) (types.AssembledRule, error) {
 		return svc.AssembleRule(c.UserContext(), p.Kind, p.Window)
+	}))
+	api.Post("/waf-rule/update", handle(func(c *fiber.Ctx, p struct {
+		RuleJson string                 `json:"ruleJson"`
+		Action   *string                `json:"action"`
+		Window   *types.WindowSelection `json:"window"`
+	}) (types.WafRuleUpdateResult, error) {
+		return svc.UpdateWafRule(c.UserContext(), p.RuleJson, p.Action, p.Window)
+	}))
+	api.Post("/waf-evidence", handle(func(c *fiber.Ctx, p struct {
+		RuleName string                 `json:"ruleName"`
+		Window   *types.WindowSelection `json:"window"`
+	}) (types.CountEvidence, error) {
+		return svc.CountEvidence(c.UserContext(), p.RuleName, p.Window)
+	}))
+	api.Post("/node-cost", handle(func(c *fiber.Ctx, _ none) (types.NodeCountProjection, error) {
+		return svc.NodeCost(c.UserContext())
 	}))
 	api.Post("/test-rule", handle(func(c *fiber.Ctx, p service.RuleTestParams) (types.RuleTestResult, error) {
 		return svc.TestRule(c.UserContext(), p)

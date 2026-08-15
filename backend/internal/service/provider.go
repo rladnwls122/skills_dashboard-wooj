@@ -35,6 +35,19 @@ type Provider interface {
 	AssembleRule(ctx context.Context, kind string, win types.ResolvedWindow) (types.AssembledRule, error)
 	TestRule(ctx context.Context, p RuleTestParams) (types.RuleTestResult, error)
 	IncidentContext(ctx context.Context) (types.IncidentContextResult, error)
+	UpdateWafRule(ctx context.Context, ruleJson string, action *string, win types.ResolvedWindow) (types.WafRuleUpdateResult, error)
+	CountEvidence(ctx context.Context, ruleName string, win types.ResolvedWindow) (types.CountEvidence, error)
+	WafLogRows(ctx context.Context, p WafLogParams, win types.ResolvedWindow) (types.WafLogQueryResult, error)
+	NodeCost(ctx context.Context) (types.NodeCountProjection, error)
+
+	// Credentials are a provider concern for the same reason the reads are:
+	// they are the thing that makes a cloud call possible, and a build with no
+	// cloud layer wired up has nothing to inject them into.
+	CredentialsView(nowMs int64) (types.CredentialsView, error)
+	SaveCredentials(ctx context.Context, in CredentialsInput) error
+	ImportCredentials(ctx context.Context, in ImportCredentialsInput) error
+	ClearCredentials(ctx context.Context) error
+	CheckCredentials(ctx context.Context) (types.CredentialCheck, error)
 }
 
 // ErrUnavailable is what every unported capability returns. It is a plain
@@ -102,4 +115,40 @@ func (Unavailable) TestRule(context.Context, RuleTestParams) (types.RuleTestResu
 
 func (Unavailable) IncidentContext(context.Context) (types.IncidentContextResult, error) {
 	return types.IncidentContextResult{}, unavailable("인시던트 컨텍스트")
+}
+
+func (Unavailable) UpdateWafRule(context.Context, string, *string, types.ResolvedWindow) (types.WafRuleUpdateResult, error) {
+	return types.WafRuleUpdateResult{}, unavailable("WAF 규칙 변경")
+}
+
+func (Unavailable) CountEvidence(context.Context, string, types.ResolvedWindow) (types.CountEvidence, error) {
+	return types.CountEvidence{}, unavailable("WAF 차단 근거 분석")
+}
+
+func (Unavailable) WafLogRows(context.Context, WafLogParams, types.ResolvedWindow) (types.WafLogQueryResult, error) {
+	return types.WafLogQueryResult{}, unavailable("WAF 로그 조회")
+}
+
+func (Unavailable) NodeCost(context.Context) (types.NodeCountProjection, error) {
+	return types.NodeCountProjection{}, unavailable("비용/노드 수 산출")
+}
+
+func (Unavailable) CredentialsView(int64) (types.CredentialsView, error) {
+	return types.CredentialsView{}, unavailable("AWS 자격증명 조회")
+}
+
+func (Unavailable) SaveCredentials(context.Context, CredentialsInput) error {
+	return unavailable("AWS 자격증명 주입")
+}
+
+func (Unavailable) ImportCredentials(context.Context, ImportCredentialsInput) error {
+	return unavailable("aws 프로파일 세션 불러오기")
+}
+
+func (Unavailable) ClearCredentials(context.Context) error {
+	return unavailable("AWS 자격증명 해제")
+}
+
+func (Unavailable) CheckCredentials(context.Context) (types.CredentialCheck, error) {
+	return types.CredentialCheck{}, unavailable("AWS 자격증명 확인")
 }

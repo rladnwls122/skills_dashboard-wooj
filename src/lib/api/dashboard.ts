@@ -15,6 +15,8 @@ import type {
   ApplyHistoryEntry,
   AssembledRule,
   AssembleKind,
+  CredentialCheck,
+  CredentialsView,
   DeployChangeEntry,
   DeploymentInfo,
   DiscoverKind,
@@ -31,15 +33,67 @@ import type {
   SettingsView,
   TestRequest,
   VerificationResult,
+  WafLogQueryResult,
   WafPanel,
   WafSampleRow,
   WindowSelection,
 } from "@/lib/types";
 
-// Kept here rather than imported from src/lib/server/*: those modules are
-// server-only, and these two shapes are part of the request contract, not of
-// the AWS client code.
 export type StatusClass = "ALL" | "2xx" | "3xx" | "4xx" | "5xx";
+export type WafActionFilter = "BLOCK" | "COUNT" | "ALLOW" | "ALL";
+export type CountVerdict = "normal" | "abnormal" | "unjoinable";
+
+export interface CountMatch {
+  ts: string;
+  method: string;
+  uri: string;
+  args: string;
+  requestId: string | null;
+  status: number | null;
+  latencyMs: number | null;
+  verdict: CountVerdict;
+}
+
+export interface CountEvidence {
+  ruleName: string;
+  total: number;
+  normal: number;
+  abnormal: number;
+  unjoinable: number;
+  matches: CountMatch[];
+  bytesScanned: number;
+  notes: string[];
+}
+
+export interface ScoringWindow {
+  startMs: number;
+  endMs: number;
+}
+
+export interface InstanceRow {
+  id: string;
+  type: string;
+  az: string;
+  name: string | null;
+  clusterTag: string | null;
+  launchedMs: number | null;
+}
+
+export interface OffSpecInstance extends InstanceRow {
+  reason: string;
+}
+
+export interface NodeCountProjection {
+  window: ScoringWindow | null;
+  current: number | null;
+  elapsedMin: number | null;
+  remainingMin: number | null;
+  cumulativeAvg: number | null;
+  finalAvg: number | null;
+  marginalPerInstance: number | null;
+  offSpec: OffSpecInstance[];
+  notes: string[];
+}
 
 export interface DeploymentPatchRequest {
   namespace: string;
@@ -50,9 +104,17 @@ export interface DeploymentPatchRequest {
   memLimit?: string;
 }
 
-// Loopback by default: the service holds AWS credentials and binds 127.0.0.1
-// unless told otherwise.
-const BASE = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8787").replace(/\/+$/, "");
+export interface CredentialsResult {
+  view: CredentialsView;
+  check: CredentialCheck;
+}
+
+// In Vite development, requests to /api are proxied to http://127.0.0.1:8787 by vite.config.ts.
+// BASE can be overridden via VITE_API_BASE_URL if needed.
+const BASE = (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL
+  ? import.meta.env.VITE_API_BASE_URL
+  : ""
+).replace(/\/+$/, "");
 
 async function call<T>(path: string, body?: unknown): Promise<ActionResult<T>> {
   try {
@@ -104,6 +166,25 @@ export function getWafSamplesAction(): Promise<ActionResult<WafSampleRow[]>> {
   return call<WafSampleRow[]>("/waf-samples");
 }
 
+export function updateWafRuleAction(params: {
+  ruleJson: string;
+  action: "COUNT" | "BLOCK" | null;
+  window?: WindowSelection;
+}): Promise<ActionResult<{ ruleName: string; historyId: number }>> {
+  return call<{ ruleName: string; historyId: number }>("/waf-rule/update", params);
+}
+
+export function getCountEvidenceAction(
+  ruleName: string,
+  sel?: WindowSelection,
+): Promise<ActionResult<CountEvidence>> {
+  return call<CountEvidence>("/waf-evidence", { ruleName, window: sel ?? null });
+}
+
+export function getNodeCostAction(): Promise<ActionResult<NodeCountProjection>> {
+  return call<NodeCountProjection>("/node-cost");
+}
+
 // --- logs --------------------------------------------------------------------
 
 export function getPodLogsAction(params: {
@@ -127,6 +208,17 @@ export function getRequestLogRowsAction(params: {
   });
 }
 
+export function getWafLogRowsAction(params: {
+  action: WafActionFilter;
+  pathContains: string;
+  window?: WindowSelection;
+}): Promise<ActionResult<WafLogQueryResult>> {
+  return call<WafLogQueryResult>("/waf-log-rows", {
+    ...params,
+    window: params.window ?? null,
+  });
+}
+
 // --- settings ----------------------------------------------------------------
 
 export function getSettingsAction(): Promise<ActionResult<SettingsView>> {
@@ -141,6 +233,26 @@ export function saveSettingsAction(
 
 export function discoverAction(kind: DiscoverKind): Promise<ActionResult<DiscoveryResult>> {
   return call<DiscoveryResult>("/discover", { kind });
+}
+
+export function getCredentialsAction(): Promise<ActionResult<CredentialsView>> {
+  return call<CredentialsView>("/credentials");
+}
+
+export function saveCredentialsAction(input: any): Promise<ActionResult<CredentialsResult>> {
+  return call<CredentialsResult>("/credentials/save", input);
+}
+
+export function importAwsSessionAction(input: any): Promise<ActionResult<CredentialsResult>> {
+  return call<CredentialsResult>("/credentials/import", input);
+}
+
+export function clearCredentialsAction(): Promise<ActionResult<CredentialsResult>> {
+  return call<CredentialsResult>("/credentials/clear");
+}
+
+export function checkCredentialsAction(): Promise<ActionResult<CredentialsResult>> {
+  return call<CredentialsResult>("/credentials/check");
 }
 
 // --- deployments -------------------------------------------------------------

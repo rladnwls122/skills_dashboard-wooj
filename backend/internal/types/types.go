@@ -292,6 +292,126 @@ type WafAclInfo struct {
 	Rules        []WafAclRule `json:"rules"`
 }
 
+// WafRuleUpdateResult is what the apply/promote/demote/remove button gets back:
+// the rule the WebACL now holds (or no longer holds) and the history row the
+// rollback and the verification read from.
+type WafRuleUpdateResult struct {
+	RuleName  string `json:"ruleName"`
+	HistoryID int    `json:"historyId"`
+}
+
+// --- COUNT evidence ----------------------------------------------------------
+
+// CountMatch is one request a COUNT rule matched, joined to what the
+// application answered. status/latencyMs stay null when the join key is absent
+// — a POST carries no requestid in its query string.
+type CountMatch struct {
+	Ts        string   `json:"ts"`
+	Method    string   `json:"method"`
+	URI       string   `json:"uri"`
+	Args      string   `json:"args"`
+	RequestID *string  `json:"requestId"`
+	Status    *int     `json:"status"`
+	LatencyMs *float64 `json:"latencyMs"`
+	Verdict   string   `json:"verdict"`
+}
+
+type CountEvidence struct {
+	RuleName     string       `json:"ruleName"`
+	Total        int          `json:"total"`
+	Normal       int          `json:"normal"`
+	Abnormal     int          `json:"abnormal"`
+	Unjoinable   int          `json:"unjoinable"`
+	Matches      []CountMatch `json:"matches"`
+	BytesScanned int64        `json:"bytesScanned"`
+	Notes        []string     `json:"notes"`
+}
+
+// --- node count / cost -------------------------------------------------------
+
+type ScoringWindow struct {
+	StartMs int64 `json:"startMs"`
+	EndMs   int64 `json:"endMs"`
+}
+
+type InstanceRow struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	AZ   string `json:"az"`
+	Name *string `json:"name"`
+	// The `kubernetes.io/cluster/<name>` tag both EKS managed nodegroups and
+	// Karpenter put on the instances they create. Absent means the instance is
+	// running outside the cluster.
+	ClusterTag *string `json:"clusterTag"`
+	LaunchedMs *int64  `json:"launchedMs"`
+}
+
+type OffSpecInstance struct {
+	InstanceRow
+	Reason string `json:"reason"`
+}
+
+type NodeCountProjection struct {
+	// null when the match start time has not been set.
+	Window              *ScoringWindow    `json:"window"`
+	Current             *int              `json:"current"`
+	ElapsedMin          *int              `json:"elapsedMin"`
+	RemainingMin        *int              `json:"remainingMin"`
+	CumulativeAvg       *float64          `json:"cumulativeAvg"`
+	FinalAvg            *float64          `json:"finalAvg"`
+	MarginalPerInstance *float64          `json:"marginalPerInstance"`
+	OffSpec             []OffSpecInstance `json:"offSpec"`
+	Notes               []string          `json:"notes"`
+}
+
+// CloudTrailEvent is the slice of a LookupEvents result the node-count
+// reconstruction reads. Kept here so the AWS layer and the arithmetic that
+// consumes it do not have to import one another.
+type CloudTrailEvent struct {
+	Name string
+	TsMs int64
+	Body string
+}
+
+// --- AWS credentials ---------------------------------------------------------
+
+// CredentialsView never carries a secret. The access key id is masked, the
+// secret and the session token are reported as presence and length only — the
+// screen has to say which key is in force without being a place to read one
+// out of.
+type CredentialsView struct {
+	// 화면 주입 > 환경변수 > SDK 기본 체인(~/.aws · IRSA · 인스턴스 역할).
+	Source string `json:"source"`
+	// "paste" | "cli", or null when nothing is injected.
+	Origin *string `json:"origin"`
+	// false = 이 프로세스 메모리에만 있음 (재시작하면 사라짐).
+	Persisted            bool   `json:"persisted"`
+	Profile              string `json:"profile"`
+	AccessKeyIDMasked    string `json:"accessKeyIdMasked"`
+	SecretMasked         string `json:"secretMasked"`
+	HasSessionToken      bool   `json:"hasSessionToken"`
+	Temporary            bool   `json:"temporary"`
+	Expiration           string `json:"expiration"`
+	ExpiresInMs          *int64 `json:"expiresInMs"`
+	EnvAccessKeyIDMasked string `json:"envAccessKeyIdMasked"`
+	DefaultProfile       string `json:"defaultProfile"`
+}
+
+// CredentialCheck is the answer to "do these keys work, and as whom".
+type CredentialCheck struct {
+	// AUTH_FAIL is the credentials being rejected; DENIED is them being accepted
+	// and the probe call not being allowed, which still proves they are valid.
+	Status  string `json:"status"`
+	Account string `json:"account"`
+	Region  string `json:"region"`
+	Detail  string `json:"detail"`
+}
+
+type CredentialsResult struct {
+	View  CredentialsView `json:"view"`
+	Check CredentialCheck `json:"check"`
+}
+
 // --- deployments ------------------------------------------------------------
 
 type DeploymentContainerInfo struct {
@@ -445,6 +565,30 @@ type RequestLogQueryResult struct {
 	ScannedBytes int64           `json:"scannedBytes"`
 	WindowLabel  string          `json:"windowLabel"`
 	Truncated    bool            `json:"truncated"`
+}
+
+type WafLogRow struct {
+	Ts           string `json:"ts"`
+	Action       string `json:"action"`
+	Rule         string `json:"rule"`
+	SubRule      string `json:"subRule"`
+	IP           string `json:"ip"`
+	Country      string `json:"country"`
+	Method       string `json:"method"`
+	URI          string `json:"uri"`
+	Args         string `json:"args"`
+	RequestID    string `json:"requestId"`
+	UserAgent    string `json:"userAgent"`
+	ResponseCode *int   `json:"responseCode"`
+}
+
+type WafLogQueryResult struct {
+	Rows         []WafLogRow `json:"rows"`
+	TotalMatched int64       `json:"totalMatched"`
+	ScannedBytes int64       `json:"scannedBytes"`
+	WindowLabel  string      `json:"windowLabel"`
+	Truncated    bool        `json:"truncated"`
+	LogGroup     string      `json:"logGroup"`
 }
 
 // --- panels -----------------------------------------------------------------
