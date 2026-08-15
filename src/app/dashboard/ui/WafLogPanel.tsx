@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getWafLogRowsAction } from "@/app/actions/dashboard";
+import { getWafLogRowsAction } from "@/lib/api/dashboard";
 import type { WafLogQueryResult, WafLogRow, WindowSelection } from "@/lib/types";
 import {
   Card,

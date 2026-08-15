@@ -5,7 +5,7 @@ import {
   getKubePanelAction,
   getMetricsPanelAction,
   getWafPanelAction,
-} from "@/app/actions/dashboard";
+} from "@/lib/api/dashboard";
 import type { KubePanel, MetricsPanel, WafPanel, WindowSelection } from "@/lib/types";
 import { fmtClock, usePoll, ZoomDialog, type PollState } from "./shared";
 import { WindowBar } from "./WindowBar";

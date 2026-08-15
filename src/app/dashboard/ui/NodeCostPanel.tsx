@@ -1,7 +1,7 @@
 "use client";
 
-import { getNodeCostAction } from "@/app/actions/dashboard";
-import type { NodeCountProjection } from "@/app/actions/dashboard";
+import { getNodeCostAction } from "@/lib/api/dashboard";
+import type { NodeCountProjection } from "@/lib/types";
 import { Card, ErrorNote, SectionLoading, usePoll, type PollState } from "./shared";
 
 // Node count over the scoring window — the cost grader's input.

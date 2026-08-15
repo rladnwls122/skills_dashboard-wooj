@@ -6,8 +6,8 @@ import {
   getCountEvidenceAction,
   getWafSamplesAction,
   updateWafRuleAction,
-} from "@/app/actions/dashboard";
-import type { CountEvidence } from "@/app/actions/dashboard";
+} from "@/lib/api/dashboard";
+import type { CountEvidence } from "@/lib/types";
 import type { AssembledRule, AssembleKind, WafPanel, WindowSelection } from "@/lib/types";
 import { Card, ErrorNote, Truncate, fmtTs, usePoll, type PollState } from "./shared";
 import { ProbePanel } from "./ProbePanel";

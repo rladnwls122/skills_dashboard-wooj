@@ -13,6 +13,7 @@
 import type {
   ActionResult,
   ApplyHistoryEntry,
+  CountEvidence,
   AssembledRule,
   AssembleKind,
   CredentialCheck,
@@ -25,6 +26,7 @@ import type {
   IncidentContextResult,
   KubePanel,
   MetricsPanel,
+  NodeCountProjection,
   PodLogsResult,
   ProbeResult,
   RequestLogQueryResult,
@@ -41,60 +43,6 @@ import type {
 
 export type StatusClass = "ALL" | "2xx" | "3xx" | "4xx" | "5xx";
 export type WafActionFilter = "BLOCK" | "COUNT" | "ALLOW" | "ALL";
-export type CountVerdict = "normal" | "abnormal" | "unjoinable";
-
-export interface CountMatch {
-  ts: string;
-  method: string;
-  uri: string;
-  args: string;
-  requestId: string | null;
-  status: number | null;
-  latencyMs: number | null;
-  verdict: CountVerdict;
-}
-
-export interface CountEvidence {
-  ruleName: string;
-  total: number;
-  normal: number;
-  abnormal: number;
-  unjoinable: number;
-  matches: CountMatch[];
-  bytesScanned: number;
-  notes: string[];
-}
-
-export interface ScoringWindow {
-  startMs: number;
-  endMs: number;
-}
-
-export interface InstanceRow {
-  id: string;
-  type: string;
-  az: string;
-  name: string | null;
-  clusterTag: string | null;
-  launchedMs: number | null;
-}
-
-export interface OffSpecInstance extends InstanceRow {
-  reason: string;
-}
-
-export interface NodeCountProjection {
-  window: ScoringWindow | null;
-  current: number | null;
-  elapsedMin: number | null;
-  remainingMin: number | null;
-  cumulativeAvg: number | null;
-  finalAvg: number | null;
-  marginalPerInstance: number | null;
-  offSpec: OffSpecInstance[];
-  notes: string[];
-}
-
 export interface DeploymentPatchRequest {
   namespace: string;
   name: string;

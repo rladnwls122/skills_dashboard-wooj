@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getRequestLogRowsAction } from "@/app/actions/dashboard";
+import { getRequestLogRowsAction } from "@/lib/api/dashboard";
 import type { RequestLogQueryResult, RequestLogRow, WindowSelection } from "@/lib/types";
 import {
   Card,

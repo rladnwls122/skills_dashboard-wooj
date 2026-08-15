@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getPodLogsAction } from "@/app/actions/dashboard";
+import { getPodLogsAction } from "@/lib/api/dashboard";
 import type { KubePanel, MetricsPanel, PodLogsResult, WindowSelection } from "@/lib/types";
 import type { PodSelection } from "./DashboardClient";
 import { RequestLogPanel } from "./RequestLogPanel";

@@ -7,7 +7,7 @@ import {
   getCredentialsAction,
   importAwsSessionAction,
   saveCredentialsAction,
-} from "@/app/actions/dashboard";
+} from "@/lib/api/dashboard";
 import { parseCredentialBlob, credentialProblem } from "@/lib/awscreds";
 import type { CredentialCheck, CredentialsView } from "@/lib/types";
 import { Card, ErrorNote, SectionLoading } from "./shared";
