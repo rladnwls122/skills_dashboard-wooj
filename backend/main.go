@@ -30,8 +30,18 @@ func main() {
 	defer st.Close()
 
 	settings := config.NewSettings(st)
-	svc := service.New(st, settings, live.New(settings, st))
+	provider := live.New(settings, st)
+	svc := service.New(st, settings, provider)
 	app := api.New(svc, cfg)
+
+	// First start should not require a trip to the 설정 screen: import the
+	// local `aws` CLI session once, in the background so an SSO/assume-role
+	// resolution never delays the listen socket.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		provider.BootstrapCredentials(ctx)
+	}()
 
 	// Shut down on the first signal so a restart during an exercise does not
 	// leave the port held.

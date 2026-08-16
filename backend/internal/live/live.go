@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -50,6 +52,37 @@ func New(settings *config.Settings, st *store.Store) *Provider {
 
 func (p *Provider) Reset() {
 	p.AWS.Reset()
+}
+
+// BootstrapCredentials makes a fresh start behave like pressing the 설정
+// 화면's CLI 불러오기 button once: when nothing else supplies a key — no
+// persisted injection from a previous run, no environment key — the local
+// `aws` CLI's profile is imported session-only. Best-effort by design: a
+// machine with no aws CLI configured logs one line and runs exactly as before,
+// with the settings screen still available to inject by hand.
+func (p *Provider) BootstrapCredentials(ctx context.Context) {
+	if p.Creds.Injected() != nil {
+		// A persisted injection from a previous run is already in force, and it
+		// was a deliberate choice — do not shadow it with the CLI session.
+		return
+	}
+	env := creds.Parsed{
+		AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
+		SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+	}
+	if env.Complete() {
+		// The environment is in charge; ImportProfile would refuse anyway.
+		return
+	}
+	profile := creds.DefaultProfile()
+	if _, err := p.Creds.ImportProfile(ctx, profile, false); err != nil {
+		log.Printf("CLI 자격증명 자동 불러오기 실패 (profile %q): %v — 설정 탭에서 직접 불러올 수 있습니다", profile, err)
+		return
+	}
+	// SDK clients capture the credential provider at construction; anything
+	// built before this import must be rebuilt.
+	p.AWS.Reset()
+	log.Printf("CLI 자격증명 자동 불러오기 완료 (profile %q, 세션 한정)", profile)
 }
 
 // windowKey: cache keys have to change when the window does, or a panel serves
