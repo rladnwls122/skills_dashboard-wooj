@@ -8,6 +8,7 @@ package awsx
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -27,6 +28,9 @@ type InsightsResult struct {
 }
 
 type InsightsParams struct {
+	// One log group, or several separated by commas — ECS task definitions
+	// usually give each service its own awslogs group (/ecs/user, /ecs/product,
+	// /ecs/stress), and one query over all of them is what the panels want.
 	LogGroup string
 	Query    string
 	WindowMs int64
@@ -85,12 +89,17 @@ func (a *AWS) RunInsightsQuery(ctx context.Context, p InsightsParams) (InsightsR
 	}
 	defer func() { <-a.insightsSem }()
 
-	started, err := client.StartQuery(ctx, &cloudwatchlogs.StartQueryInput{
-		LogGroupName: aws.String(p.LogGroup),
-		StartTime:    aws.Int64(startSec),
-		EndTime:      aws.Int64(endSec),
-		QueryString:  aws.String(p.Query),
-	})
+	input := &cloudwatchlogs.StartQueryInput{
+		StartTime:   aws.Int64(startSec),
+		EndTime:     aws.Int64(endSec),
+		QueryString: aws.String(p.Query),
+	}
+	if groups := SplitLogGroups(p.LogGroup); len(groups) > 1 {
+		input.LogGroupNames = groups
+	} else {
+		input.LogGroupName = aws.String(p.LogGroup)
+	}
+	started, err := client.StartQuery(ctx, input)
 	if err != nil {
 		return InsightsResult{}, err
 	}
@@ -137,6 +146,18 @@ func (a *AWS) RunInsightsQuery(ctx context.Context, p InsightsParams) (InsightsR
 			return InsightsResult{}, fmt.Errorf("Logs Insights 쿼리 데드라인 초과 (%.0fs)", deadline.Seconds())
 		}
 	}
+}
+
+// SplitLogGroups turns the setting's comma-separated value into the list
+// StartQuery takes. A single name comes back as a one-element list.
+func SplitLogGroups(raw string) []string {
+	out := []string{}
+	for _, g := range strings.Split(raw, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 func FmtBytes(n int64) string {

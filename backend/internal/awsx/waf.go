@@ -252,7 +252,7 @@ func EmptySampleNotes(total int) []string {
 		"따라서 경로·IP·User-Agent 통계가 전부 비어 있고, 이 상태에서는 UA 규칙을 조립할 수 없습니다.",
 		"채우는 방법 ①: WAF 로깅을 CloudWatch Logs 로 켜고 .env 의 WAF_LOG_GROUP 을 그 로그 그룹으로 지정 — 표본이 아닌 전수 집계로 바뀝니다.",
 		"채우는 방법 ②: WebACL 에 광범위한 COUNT 규칙을 하나 추가 — 차단 없이 매칭만 시켜 표본을 만듭니다.",
-		"앱 액세스 로그로는 대체할 수 없습니다 — 이 환경의 앱 로그에는 user_agent 필드가 없습니다(app · client_ip · latency_ms · method · path · status · ts).",
+		"앱 액세스 로그로는 대체할 수 없습니다 — 바이너리의 [GIN] 액세스 라인에는 User-Agent 가 없습니다(시각 · 상태 · 지연 · client IP · 메소드 · 경로만).",
 	}
 }
 

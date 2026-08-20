@@ -70,7 +70,7 @@ var Specs = []types.SettingSpec{
 	{Key: "ALB_NAME", Label: "ALB 이름", Hint: "TargetResponseTime·상태코드 지표와 Target Group 자동 탐색의 기준.", Discover: types.Ptr("alb")},
 	{Key: "EKS_CLUSTER_NAME", Label: "EKS 클러스터", Hint: "노드 스케일링 조회에 사용. 앱 로그 그룹 기본값도 이 이름에서 만들어집니다.", Discover: types.Ptr("eks")},
 	{Key: "RDS_PROXY_NAME", Label: "RDS Proxy 이름", Hint: "AWS/RDS 지표의 ProxyName 차원 값.", Discover: types.Ptr("rdsproxy")},
-	{Key: "APP_LOG_GROUP", Label: "앱 로그 그룹", Hint: "요청 로그·채점 지표 집계에 쓰는 CloudWatch Logs 그룹.", Discover: types.Ptr("loggroup")},
+	{Key: "APP_LOG_GROUP", Label: "앱 로그 그룹", Hint: "요청 로그·채점 지표 집계에 쓰는 CloudWatch Logs 그룹. 앱이 ECS awslogs 로 서비스마다 따로 쓰면 쉼표로 여러 개 (예: /ecs/user,/ecs/product,/ecs/stress). [GIN] 액세스 라인이 들어 있는 그룹이어야 한다.", Discover: types.Ptr("loggroup")},
 	{Key: "TARGET_NAMESPACE", Label: "Kubernetes 네임스페이스", Hint: "Pod·Deployment·이벤트를 읽는 네임스페이스.", Discover: nil},
 	{Key: "MAX_REPLICAS", Label: "최대 replica", Hint: "Deployment 조정 화면이 허용하는 상한.", Discover: nil},
 	{Key: "MATCH_START", Label: "경기 시작 시각", Hint: "채점 창(경기 시작 +1h ~ +3h)의 기준. 로컬 시각으로 2026-08-14 09:00 또는 09:00 형태. 비워 두면 비용 패널이 평균을 만들지 않고 현재 대수만 보여줍니다.", Discover: nil},

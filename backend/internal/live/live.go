@@ -306,12 +306,8 @@ func (p *Provider) WafSamples(ctx context.Context) ([]types.WafSampleRow, error)
 // --- grading — on-demand, cached like every other Insights read --------------
 
 func (p *Provider) GradingPanel(ctx context.Context, win types.ResolvedWindow) (types.GradingPanel, error) {
-	wafBlocked := 0
-	if metrics, ok := cache.Peek[types.MetricsPanel]("panel:metrics:latest"); ok && metrics.HttpSummary != nil {
-		wafBlocked = metrics.HttpSummary.BlockedTotal
-	}
 	return cache.Cached("panel:grading:"+windowKey(win), config.Polling.LogCacheTTL, func() (types.GradingPanel, error) {
-		return p.AWS.FetchGradingPanel(ctx, win, wafBlocked)
+		return p.AWS.FetchGradingPanel(ctx, win)
 	}, config.Polling.LogFailTTL)
 }
 

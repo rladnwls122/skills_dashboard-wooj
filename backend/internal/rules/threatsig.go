@@ -31,9 +31,13 @@ type ThreatHit struct {
 var goAllowRe = regexp.MustCompile(`(?i)go-http-client/|go-language`)
 
 // Named offensive tools. A hit is an unambiguous attack signature.
+// "attacker-bot" is the User-Agent the product binary itself treats as an
+// attack (it answers 500 "Consumed resources by malicious attacks") — the
+// task's abnormal-request probe, which the WAF has to turn into a 403.
 var scannerTools = []string{
 	"sqlmap", "nikto", "acunetix", "dirbuster", "dirb", "w3af", "netsparker",
 	"zaproxy", "gobuster", "wpscan", "arachni", "nessus", "openvas", "commix",
+	"attacker-bot",
 }
 var reconTools = []string{"nmap", "masscan", "zgrab", "censysinspect", "zmap"}
 

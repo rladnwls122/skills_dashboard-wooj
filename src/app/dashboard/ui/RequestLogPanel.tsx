@@ -162,10 +162,10 @@ export function RequestLogPanel({ window: win }: { window: WindowSelection }) {
           <table className="w-full text-left font-mono text-[10px]">
             <thead className="sticky top-0 bg-neutral-900 text-neutral-500">
               <tr>
-                {/* No User-Agent column: the app does not log one, so it was a
-                    column of dashes for every row. The joined value still opens
-                    with the row, and the WAF log panel below has it natively. */}
-                {["시각", "메소드", "경로", "상태", "지연(ms)"].map((h) => (
+                {/* No User-Agent column: the binaries' [GIN] line does not carry
+                    one. The WAF-joined value opens with the row, and the WAF
+                    log panel below has it natively. */}
+                {["시각", "메소드", "경로", "상태", "지연(ms)", "client IP"].map((h) => (
                   <th key={h} className="px-2 py-1 font-medium whitespace-nowrap">
                     {h}
                   </th>
@@ -189,6 +189,7 @@ export function RequestLogPanel({ window: win }: { window: WindowSelection }) {
                     {r.status}
                   </td>
                   <td className="px-2 py-0.5 tabular-nums text-neutral-500">{r.latencyMs}</td>
+                  <td className="px-2 py-0.5 text-neutral-500">{r.clientIp}</td>
                 </tr>
               ))}
             </tbody>
@@ -223,7 +224,8 @@ export function RequestLogPanel({ window: win }: { window: WindowSelection }) {
                 ["시각", fmtTs(detail.ts)],
                 ["요청", `${detail.method} ${detail.path}`],
                 ["상태", `${detail.status} · ${detail.latencyMs}ms`],
-                ["requestid", detail.requestId || "(앱이 기록하지 않음 — POST·PUT)"],
+                ["client IP", detail.clientIp || "—"],
+                ["requestid", detail.requestId || "(액세스 라인에 없음 — POST 는 body 로 보냄)"],
                 [
                   "User-Agent",
                   detail.userAgent
@@ -239,7 +241,7 @@ export function RequestLogPanel({ window: win }: { window: WindowSelection }) {
             ))}
           </dl>
           <div className="mt-2 text-[10px] text-neutral-500">
-            로그 원문 — 앱이 남긴 헤더는 여기 그대로 있습니다 (민감값은 마스킹됨).
+            로그 원문 — 바이너리의 [GIN] 액세스 라인 그대로입니다 (민감값은 마스킹됨).
           </div>
           <pre className="mt-1 rounded bg-black p-2 font-mono text-[10px] leading-4 break-all whitespace-pre-wrap text-neutral-300">
             {detail.raw || "(원문 없음)"}

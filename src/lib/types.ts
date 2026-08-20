@@ -176,14 +176,13 @@ export interface GradingScore {
   okCount: number;
   total: number;
   // Where this line's numbers came from. Not decoration: the keys are
-  // measurable from different places — the app log answers the three APIs, but
-  // undefined paths never reach it (the ALB answers them with a fixed 404) and
-  // images never reach it either (CloudFront serves them from S3). A ratio
+  // measurable from different places — the app log answers the three APIs'
+  // 로드 처리 keys, but the 403 keys (Email Request Validation, 비정상 요청
+  // 처리율) are what the WAF blocked and never reached the app. A ratio
   // without its source reads as more certain than it is.
   source: string;
-  // Set when okCount means "arrived and was not blocked" rather than
-  // "confirmed 2xx" — the response code for this key is not observable without
-  // CloudFront access logs.
+  // Set when the figure is a proxy — e.g. a numerator whose denominator the
+  // grader keeps to itself (how many bad-email requests it injected).
   approximate?: boolean;
 }
 
@@ -512,6 +511,8 @@ export interface RequestLogEntry {
   path: string;
   status: number;
   latencyMs: number;
+  clientIp?: string;
+  requestId?: string;
 }
 
 export interface PathLatencyStat {
@@ -602,6 +603,10 @@ export interface RequestLogRow {
   path: string;
   status: number;
   latencyMs: number;
+  // What gin resolved as the client (after X-Forwarded-For) — the binaries'
+  // access line carries it, so it is shown; it is not a blocking key (the
+  // grader's load comes from one IP).
+  clientIp: string;
   // The task's own request id, carried in the query string and written to the
   // app log — the key that lines this row up with the WAF's record of the same
   // request. Empty on POST/PUT, which the app does not read it from.

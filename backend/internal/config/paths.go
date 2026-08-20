@@ -48,13 +48,15 @@ func IsLowPriorityPath(path string) bool {
 	return false
 }
 
-// AppTrafficPaths is the API surface this environment actually serves. The
-// scenario's load generator drives heavy traffic at these paths, so volume
+// AppTrafficPaths is the API surface this environment actually serves — the
+// routes the three competition binaries register (GET/POST /v1/user, GET/POST
+// /v1/product, POST /v1/stress; /healthcheck is a low-priority path). The
+// grader's load generator drives heavy traffic at these paths, so volume
 // against them is never treated as an attack.
 func AppTrafficPaths() []string {
 	raw := strings.TrimSpace(os.Getenv("APP_TRAFFIC_PATHS"))
 	if raw == "" {
-		raw = "/v1/user,/v1/product,/v1/stress,/v1/image"
+		raw = "/v1/user,/v1/product,/v1/stress"
 	}
 	out := []string{}
 	for _, p := range strings.Split(raw, ",") {

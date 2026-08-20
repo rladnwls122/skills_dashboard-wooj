@@ -84,8 +84,8 @@ func buildJoinQuery(requestIDs []string) string {
 		quoted = append(quoted, `"`+strings.ReplaceAll(id, `"`, "")+`"`)
 	}
 	return strings.Join([]string{
-		"fields @timestamp, log",
 		analysis.ParseFields,
+		analysis.AccessLogFilter,
 		fmt.Sprintf("filter requestid in [%s]", strings.Join(quoted, ", ")),
 		"fields requestid, status, latency_ms, path, method",
 		fmt.Sprintf("limit %d", len(requestIDs)),
@@ -93,9 +93,9 @@ func buildJoinQuery(requestIDs []string) string {
 }
 
 // extractRequestID reads the join key out of the query string. The WAF log
-// stores it verbatim, with or without a leading "?". Either `requestid` or
-// `uuid` is the key — the task appends both and the app writes both, but only
-// one is present on some paths.
+// stores it verbatim, with or without a leading "?". `requestid` is the key
+// the app side parses out of its access line; `uuid` is kept as a fallback
+// for a row that only carries that one.
 func extractRequestID(args string) *string {
 	if args == "" {
 		return nil

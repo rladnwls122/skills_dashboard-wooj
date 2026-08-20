@@ -159,6 +159,13 @@ type GradingScore struct {
 	Pct     float64 `json:"pct"`
 	OkCount int     `json:"okCount"`
 	Total   int     `json:"total"`
+	// Where this line's numbers came from — the keys are measured in different
+	// places (app log for the three APIs, WAF log for what never reached the
+	// app), and a ratio without its source reads as more certain than it is.
+	Source string `json:"source"`
+	// Set when the figure is a proxy — e.g. a numerator whose denominator is
+	// not observable — rather than a confirmed count.
+	Approximate bool `json:"approximate,omitempty"`
 }
 
 type GradingPanel struct {
@@ -528,6 +535,10 @@ type RequestLogEntry struct {
 	Path      string  `json:"path"`
 	Status    int     `json:"status"`
 	LatencyMs float64 `json:"latencyMs"`
+	// What gin resolved as the client (after X-Forwarded-For).
+	ClientIP string `json:"clientIp,omitempty"`
+	// The grader's requestid when the request carried it in the query string.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 type PathLatencyStat struct {
@@ -557,6 +568,17 @@ type RequestLogRow struct {
 	Path      string  `json:"path"`
 	Status    int     `json:"status"`
 	LatencyMs float64 `json:"latencyMs"`
+	ClientIP  string  `json:"clientIp"`
+	// The task's own request id, carried in the query string and therefore in
+	// the gin access line — the key that lines this row up with the WAF's
+	// record of the same request. Empty on POST, where it travels in the body.
+	RequestID string `json:"requestId"`
+	// Joined from the WAF log on RequestID; the app never logs a User-Agent.
+	UserAgent string `json:"userAgent"`
+	// "waf" when UserAgent was joined, "" otherwise.
+	UaSource string `json:"uaSource"`
+	// The whole log line, masked.
+	Raw string `json:"raw"`
 }
 
 type RequestLogQueryResult struct {
@@ -565,6 +587,10 @@ type RequestLogQueryResult struct {
 	ScannedBytes int64           `json:"scannedBytes"`
 	WindowLabel  string          `json:"windowLabel"`
 	Truncated    bool            `json:"truncated"`
+	// How many rows got their User-Agent from the WAF log, and why the rest
+	// did not — the join is only as good as the requestid both sides carry.
+	UaJoined   int    `json:"uaJoined"`
+	UaJoinNote string `json:"uaJoinNote"`
 }
 
 type WafLogRow struct {

@@ -9,7 +9,10 @@ import (
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/types"
 )
 
-var errorLineRe = regexp.MustCompile(`(?i)(error|fatal|exception|panic|fail(ed|ure)?|timeout|timed out|refused|oom|out of memory|too many connections|deadlock|5\d{2}\s)`)
+// "malicious" is the product binary's trap line for User-Agent Attacker-Bot;
+// "[Recovery]" is gin's panic handler; "5xx |" is the access line of a failed
+// request. See docs/binaries.md for every message the binaries can print.
+var errorLineRe = regexp.MustCompile(`(?i)(error|fatal|exception|panic|fail(ed|ure)?|timeout|timed out|refused|oom|out of memory|too many connections|deadlock|malicious|\[recovery\]|\|\s*5\d{2}\s*\||5\d{2}\s)`)
 
 var normalizers = []struct {
 	re  *regexp.Regexp

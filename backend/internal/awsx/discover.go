@@ -281,9 +281,11 @@ func (a *AWS) discoverAppLogGroups(ctx context.Context) (types.DiscoveryResult, 
 	seen := map[string]string{}
 	order := []string{}
 	notes := []string{}
-	// The Container Insights path first, then anything under /aws/, because a
-	// cluster set up by hand rarely uses the generated name.
-	for _, prefix := range []string{"/aws/containerinsights/", "/aws/eks/", "/aws/"} {
+	// ECS awslogs groups first (the 2025 task runs the binaries on ECS/EC2 —
+	// one group per task definition is the usual layout), then the Container
+	// Insights path, then anything under /aws/, because a cluster set up by
+	// hand rarely uses the generated name.
+	for _, prefix := range []string{"/ecs/", "/aws/ecs/", "/aws/containerinsights/", "/aws/eks/", "/aws/"} {
 		res, err := client.DescribeLogGroups(ctx, &cloudwatchlogs.DescribeLogGroupsInput{
 			LogGroupNamePrefix: aws.String(prefix), Limit: aws.Int32(50),
 		})

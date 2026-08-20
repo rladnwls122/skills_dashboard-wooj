@@ -1,9 +1,13 @@
 package live
 
-// Pod log reads and the app request-log query, ported from podlogs.ts,
-// applog.ts and applogquery.ts. Log reads/aggregations go to CloudWatch Logs
-// Insights (bills per byte scanned — results cached 30s, failures 10s); the
-// k8s API remains for previous-container logs and as a fallback.
+// Pod log reads and the app request-log query. Log reads/aggregations go to
+// CloudWatch Logs Insights (bills per byte scanned — results cached 30s,
+// failures 10s); the k8s API remains for previous-container logs and as a
+// fallback.
+//
+// Every query here parses the competition binaries' gin access line (see
+// analysis/logfields.go) — the log group may be an ECS awslogs group or an
+// EKS Container Insights group, and the parse handles both.
 
 import (
 	"context"
@@ -27,19 +31,27 @@ import (
 // is not a plain DNS-1123 name instead of trying to escape it.
 var podNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`)
 
+// podScope narrows a query to one pod/task. Container Insights tags every
+// event with kubernetes.pod_name; an ECS awslogs group has no such field but
+// names its streams "<prefix>/<container>/<task-id>", so the stream name is
+// the fallback. A missing field is simply false in Insights, never an error.
 func podScope(pod, container string) (string, error) {
 	if !podNameRe.MatchString(pod) {
 		return "", fmt.Errorf("invalid pod: %s", pod)
 	}
-	f := fmt.Sprintf(`kubernetes.pod_name = "%s"`, pod)
+	f := fmt.Sprintf(`(kubernetes.pod_name = "%s" or @logStream like "%s")`, pod, pod)
 	if container != "" {
 		if !podNameRe.MatchString(container) {
 			return "", fmt.Errorf("invalid container: %s", container)
 		}
-		f += fmt.Sprintf(` and kubernetes.container_name = "%s"`, container)
+		f += fmt.Sprintf(` and (kubernetes.container_name = "%s" or @logStream like "/%s/")`, container, container)
 	}
 	return f, nil
 }
+
+// lineField is the log line as the binary wrote it: the "log" field when a
+// Container Insights shipper wrapped it in JSON, the raw @message otherwise.
+const lineField = "coalesce(log, @message) as line"
 
 type podLogsFetch struct {
 	lines        []string
@@ -88,10 +100,12 @@ func (p *Provider) fetchPodLogsInsights(ctx context.Context, params service.PodL
 			*dst, *errDst = run(query)
 		}()
 	}
-	launch(&tailQ, &tailErr, fmt.Sprintf("fields @timestamp, log | filter %s | sort @timestamp desc | limit %d", scope, tail))
-	launch(&statsQ, &statsErr, fmt.Sprintf("filter %s | %s | filter ispresent(path) | stats count(*) as cnt, avg(latency_ms) as avgMs, max(latency_ms) as maxMs, sum(status >= 300) as nonOk by path | sort cnt desc | limit 1000", scope, analysis.ParseFields))
-	launch(&nonOkQ, &nonOkErr, fmt.Sprintf("filter %s | %s | filter status >= 300 | display @timestamp, method, path, status, latency_ms | sort @timestamp desc | limit 100", scope, analysis.ParseFields))
-	launch(&errWarnQ, &errWarnErr, fmt.Sprintf("fields @timestamp, log | filter %s and log like /(?i)(error|warn)/ | sort @timestamp desc | limit 100", scope))
+	launch(&tailQ, &tailErr, fmt.Sprintf("fields @timestamp, %s | filter %s | sort @timestamp desc | limit %d", lineField, scope, tail))
+	launch(&statsQ, &statsErr, fmt.Sprintf("filter %s | %s | %s | stats count(*) as cnt, avg(latency_ms) as avgMs, max(latency_ms) as maxMs, sum(status < 200 or status >= 300) as nonOk by path | sort cnt desc | limit 1000",
+		scope, analysis.ParseFields, analysis.AccessLogFilter))
+	launch(&nonOkQ, &nonOkErr, fmt.Sprintf("filter %s | %s | filter ispresent(status) and (status < 200 or status >= 300) | display @timestamp, method, path, status, latency_ms, client_ip, requestid | sort @timestamp desc | limit 100",
+		scope, analysis.ParseFields))
+	launch(&errWarnQ, &errWarnErr, fmt.Sprintf("fields @timestamp, %s | filter %s and @message like %s | sort @timestamp desc | limit 100", lineField, scope, analysis.ErrorLineLike))
 	wg.Wait()
 
 	if tailErr != nil {
@@ -101,7 +115,7 @@ func (p *Provider) fetchPodLogsInsights(ctx context.Context, params service.PodL
 	lines := make([]string, 0, len(tailQ.Rows))
 	for i := len(tailQ.Rows) - 1; i >= 0; i-- {
 		r := tailQ.Rows[i]
-		lines = append(lines, analysis.ToIso(r["@timestamp"])+" "+r["log"])
+		lines = append(lines, analysis.ToIso(r["@timestamp"])+" "+strings.TrimRight(r["line"], "\n"))
 	}
 	lines = analysis.MaskLines(lines)
 
@@ -125,7 +139,7 @@ func (p *Provider) fetchPodLogsInsights(ctx context.Context, params service.PodL
 			max := math.Round(parseF(r["maxMs"])*100) / 100
 			nonOk := atoiF(r["nonOk"])
 			byPath = append(byPath, types.PathLatencyStat{
-				Path: r["path"], Count: cnt, AvgLatencyMs: avg, MaxLatencyMs: max, NonOkCount: nonOk,
+				Path: analysis.CleanPath(r["path"]), Count: cnt, AvgLatencyMs: avg, MaxLatencyMs: max, NonOkCount: nonOk,
 			})
 			totalRequests += cnt
 			weighted += avg * float64(cnt)
@@ -144,9 +158,11 @@ func (p *Provider) fetchPodLogsInsights(ctx context.Context, params service.PodL
 				nonOkEntries = append(nonOkEntries, types.RequestLogEntry{
 					Ts:        analysis.Hhmmss(analysis.ToIso(r["@timestamp"])),
 					Method:    r["method"],
-					Path:      r["path"],
+					Path:      analysis.CleanPath(r["path"]),
 					Status:    atoiF(r["status"]),
 					LatencyMs: parseF(r["latency_ms"]),
+					ClientIP:  r["client_ip"],
+					RequestID: r["requestid"],
 				})
 			}
 		}
@@ -157,7 +173,7 @@ func (p *Provider) fetchPodLogsInsights(ctx context.Context, params service.PodL
 			fetch.scannedBytes += errWarnQ.BytesScanned
 			errorWarnTotal = int(errWarnQ.RecordsMatched)
 			for _, r := range errWarnQ.Rows {
-				errorWarnLines = append(errorWarnLines, analysis.ToIso(r["@timestamp"])+" "+r["log"])
+				errorWarnLines = append(errorWarnLines, analysis.ToIso(r["@timestamp"])+" "+strings.TrimRight(r["line"], "\n"))
 			}
 			errorWarnLines = analysis.MaskLines(errorWarnLines)
 		}
@@ -182,7 +198,7 @@ func (p *Provider) fetchPodLogsInsights(ctx context.Context, params service.PodL
 			TotalRequests:  types.Ptr(totalRequests),
 			NonOkTotal:     types.Ptr(nonOkTotal),
 			ErrorWarnTotal: types.Ptr(errorWarnTotal),
-			Basis:          types.Ptr(fmt.Sprintf("Logs Insights %s 전체 (샘플 목록은 최근 100건)", fetch.windowLabel)),
+			Basis:          types.Ptr(fmt.Sprintf("Logs Insights %s 전체 — [GIN] 액세스 라인 기준 (샘플 목록은 최근 100건)", fetch.windowLabel)),
 		}
 	}
 
@@ -263,6 +279,9 @@ func atoiF(s string) int { return int(parseF(s)) }
 const (
 	rowLimit      = 200
 	pathFilterMax = 120
+	// How many requestids one WAF-side join query carries. Insights truncates
+	// silently past 10,000 rows; this stays far under it.
+	uaJoinBatch = 200
 )
 
 var statusRange = map[string][2]int{
@@ -286,7 +305,7 @@ func validatePathFilter(raw string) (string, error) {
 }
 
 func buildRequestLogQuery(statusClass, pathContains string) (string, error) {
-	parts := []string{analysis.ParseFields, "filter ispresent(status)"}
+	parts := []string{analysis.ParseFields, analysis.AccessLogFilter}
 	if statusClass != "ALL" {
 		r, ok := statusRange[statusClass]
 		if !ok {
@@ -302,11 +321,29 @@ func buildRequestLogQuery(statusClass, pathContains string) (string, error) {
 		parts = append(parts, fmt.Sprintf(`filter path like "%s"`, path))
 	}
 	parts = append(parts,
-		"display @timestamp, method, path, status, latency_ms",
+		"display @timestamp, method, path, status, latency_ms, client_ip, requestid, @message",
 		"sort @timestamp desc",
 		fmt.Sprintf("limit %d", rowLimit),
 	)
 	return strings.Join(parts, " | "), nil
+}
+
+// buildUaJoinQuery is the WAF side of the User-Agent join: the WAF log has the
+// UA the app never writes, keyed by the same requestid the app's access line
+// carries in its query string.
+func buildUaJoinQuery(requestIDs []string) string {
+	quoted := make([]string, 0, len(requestIDs))
+	for _, id := range requestIDs {
+		quoted = append(quoted, `"`+strings.ReplaceAll(id, `"`, "")+`"`)
+	}
+	return strings.Join([]string{
+		"fields @timestamp",
+		uaParse,
+		ridParse,
+		fmt.Sprintf("filter rid in [%s]", strings.Join(quoted, ", ")),
+		"display rid, ua",
+		fmt.Sprintf("limit %d", len(requestIDs)*2),
+	}, " | ")
 }
 
 func (p *Provider) RequestLogRows(ctx context.Context, params service.RequestLogParams, win types.ResolvedWindow) (types.RequestLogQueryResult, error) {
@@ -332,17 +369,85 @@ func (p *Provider) RequestLogRows(ctx context.Context, params service.RequestLog
 			rows = append(rows, types.RequestLogRow{
 				Ts:        analysis.ToIso(r["@timestamp"]),
 				Method:    r["method"],
-				Path:      r["path"],
+				Path:      analysis.CleanPath(r["path"]),
 				Status:    atoiF(r["status"]),
 				LatencyMs: parseF(r["latency_ms"]),
+				ClientIP:  r["client_ip"],
+				RequestID: r["requestid"],
+				Raw:       analysis.MaskLine(strings.TrimRight(r["@message"], "\n")),
 			})
 		}
-		return types.RequestLogQueryResult{
+		out := types.RequestLogQueryResult{
 			Rows:         rows,
 			TotalMatched: res.RecordsMatched,
 			ScannedBytes: res.BytesScanned,
 			WindowLabel:  res.WindowLabel,
 			Truncated:    len(rows) >= rowLimit,
-		}, nil
+		}
+		p.joinUserAgents(ctx, &out, win)
+		return out, nil
 	}, config.Polling.LogFailTTL)
+}
+
+// joinUserAgents fills UserAgent from the WAF log for every row that carries a
+// requestid. Best effort: a failed or absent WAF log leaves the rows as they
+// were and says why in UaJoinNote.
+func (p *Provider) joinUserAgents(ctx context.Context, out *types.RequestLogQueryResult, win types.ResolvedWindow) {
+	ids := []string{}
+	seen := map[string]struct{}{}
+	for _, r := range out.Rows {
+		if r.RequestID == "" {
+			continue
+		}
+		if _, dup := seen[r.RequestID]; dup {
+			continue
+		}
+		seen[r.RequestID] = struct{}{}
+		ids = append(ids, r.RequestID)
+	}
+	if len(ids) == 0 {
+		if len(out.Rows) > 0 {
+			out.UaJoinNote = "requestid 가 있는 행이 없음 (POST 는 requestid 를 body 로 보내 액세스 라인에 남지 않는다)"
+		}
+		return
+	}
+	wafGroup := p.Settings.WafLogGroup()
+	if wafGroup == "" {
+		out.UaJoinNote = "WAF_LOG_GROUP 미설정 — User-Agent 결합 불가"
+		return
+	}
+	uaByID := map[string]string{}
+	for start := 0; start < len(ids); start += uaJoinBatch {
+		end := start + uaJoinBatch
+		if end > len(ids) {
+			end = len(ids)
+		}
+		res, err := p.AWS.RunInsightsQuery(ctx, awsx.InsightsParams{
+			LogGroup: wafGroup,
+			Region:   p.Settings.WafRegion(),
+			Query:    buildUaJoinQuery(ids[start:end]),
+			StartMs:  &win.StartMs,
+			EndMs:    &win.EndMs,
+		})
+		if err != nil {
+			out.UaJoinNote = "WAF 로그 결합 실패: " + awsx.ErrMsg(err)
+			return
+		}
+		out.ScannedBytes += res.BytesScanned
+		for _, r := range res.Rows {
+			if rid, ua := r["rid"], r["ua"]; rid != "" && ua != "" {
+				uaByID[rid] = ua
+			}
+		}
+	}
+	for i := range out.Rows {
+		if ua, ok := uaByID[out.Rows[i].RequestID]; ok {
+			out.Rows[i].UserAgent = ua
+			out.Rows[i].UaSource = "waf"
+			out.UaJoined++
+		}
+	}
+	if out.UaJoined == 0 {
+		out.UaJoinNote = "WAF 로그에서 같은 requestid 를 찾지 못함 (WAF 로그 구간·샘플링 확인)"
+	}
 }

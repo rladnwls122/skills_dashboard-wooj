@@ -1,28 +1,52 @@
 package analysis
 
-// Access-log parsing from raw pod log lines (spec item 1), ported from
-// requestlog.ts. Lines are already masked upstream.
+// Access-log parsing from raw pod/container log lines (spec item 1). Lines are
+// already masked upstream. The line shape is gin's default logger — what all
+// three competition binaries print (see logfields.go / docs/binaries.md).
 
 import (
 	"math"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/types"
 )
 
-// Parses Go/Gin's default access-log line, e.g.:
-//
-//	[GIN] 2026/08/09 - 12:00:00 | 200 |     1.234ms |   127.0.0.1 | GET      "/v1/user"
-//
-// Falls back to a generic "METHOD /path -> STATUS Nms" shape.
 var (
-	ginRe     = regexp.MustCompile(`\[GIN\]\s+\S+\s+-\s+(\d{2}:\d{2}:\d{2})\s*\|\s*(\d{3})\s*\|\s*([\d.]+)(µs|ms|s|ns)\s*\|[^|]*\|\s*(\S+)\s+"([^"]+)"`)
+	// [GIN] 2025/09/23 - 03:12:45 | 201 |   12.345678ms |   203.0.113.10 | POST     "/v1/user?requestid=1"
+	// The k8s API prefixes its own RFC3339 timestamp and the EKS log shipper
+	// may wrap the line in JSON; neither is anchored on, and the optional
+	// backslash before the quote is the JSON-escaped form.
+	ginRe = regexp.MustCompile(`\[GIN\]\s+(\d{4}/\d{2}/\d{2}) - (\d{2}:\d{2}:\d{2})\s*\|\s*(\d{3})\s*\|\s*([^\s|]+)\s*\|\s*([^\s|]+)\s*\|\s*([A-Z]+)\s+\\?"([^"\\]*)`)
+	// The custom middleware line: 2025/09/23 03:12:45 [2025-09-23T03:12:45Z] POST /v1/user from 203.0.113.10
+	// Logged before the handler runs, so it has no status — it duplicates the
+	// [GIN] line that follows and must not be counted as a second request.
+	arrivalRe = regexp.MustCompile(`\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^\]]*)\]\s+([A-Z]+)\s+(\S+)\s+from\s+(\S+)`)
+	// Generic "METHOD /path -> STATUS Nms" fallback for anything else.
 	genericRe = regexp.MustCompile(`(?i)\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(\S+)\D+?(\d{3})\D+?([\d.]+)\s*(µs|ms|s|ns)?`)
-	errWarnRe = regexp.MustCompile(`(?i)\b(error|warn|warning)\b`)
+	errWarnRe = regexp.MustCompile(`(?i)\b(error|warn|warning|fail|failed|panic|fatal|malicious)\b`)
 )
+
+// DurationMs parses a Go time.Duration as printed by String() — "850ns",
+// "45.678µs", "12.345678ms", "1.2s", "1m2s" (gin truncates anything past a
+// minute to whole seconds). The unit is taken literally so "ms" is never
+// mistaken for "s".
+func DurationMs(token string) (float64, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return 0, false
+	}
+	// Go's parser accepts both "µs" and "us"; the logger writes "µs".
+	d, err := time.ParseDuration(token)
+	if err != nil {
+		return 0, false
+	}
+	return float64(d) / float64(time.Millisecond), true
+}
 
 func toMs(value float64, unit string) float64 {
 	switch unit {
@@ -47,17 +71,59 @@ func stripQuery(p string) string {
 	return p
 }
 
-func parseLine(line string) *types.RequestLogEntry {
-	if m := ginRe.FindStringSubmatch(line); m != nil {
-		status, _ := strconv.Atoi(m[2])
-		lat, _ := strconv.ParseFloat(m[3], 64)
-		return &types.RequestLogEntry{
-			Ts:        m[1],
-			Method:    m[5],
-			Path:      stripQuery(m[6]),
-			Status:    status,
-			LatencyMs: round3(toMs(lat, m[4])),
+// RequestIDOf reads the grader's requestid out of a logged URI. "" when the
+// request did not carry one in the query string (POST bodies are not logged).
+func RequestIDOf(uri string) string {
+	i := strings.IndexByte(uri, '?')
+	if i < 0 {
+		return ""
+	}
+	q, err := url.ParseQuery(uri[i+1:])
+	if err == nil {
+		return q.Get("requestid")
+	}
+	// A malformed query usually still has the key readable.
+	for _, pair := range strings.Split(uri[i+1:], "&") {
+		if strings.HasPrefix(pair, "requestid=") {
+			return strings.TrimPrefix(pair, "requestid=")
 		}
+	}
+	return ""
+}
+
+// ParseAccessLine reads one gin access-log line. nil when the line is not one.
+func ParseAccessLine(line string) *types.RequestLogEntry {
+	m := ginRe.FindStringSubmatch(line)
+	if m == nil {
+		return nil
+	}
+	status, _ := strconv.Atoi(m[3])
+	lat, ok := DurationMs(m[4])
+	if !ok {
+		lat = 0
+	}
+	uri := CleanURI(m[7], false)
+	return &types.RequestLogEntry{
+		Ts:        m[2],
+		Method:    m[6],
+		Path:      stripQuery(uri),
+		Status:    status,
+		LatencyMs: round3(lat),
+		ClientIP:  m[5],
+		RequestID: RequestIDOf(uri),
+	}
+}
+
+// IsArrivalLine reports whether the line is the binaries' custom middleware
+// line ("[ts] METHOD /path from IP") — a request that arrived, status unknown.
+func IsArrivalLine(line string) bool { return arrivalRe.MatchString(line) }
+
+func parseLine(line string) *types.RequestLogEntry {
+	if e := ParseAccessLine(line); e != nil {
+		return e
+	}
+	if arrivalRe.MatchString(line) {
+		return nil
 	}
 	if m := genericRe.FindStringSubmatch(line); m != nil {
 		status, _ := strconv.Atoi(m[3])
@@ -81,6 +147,8 @@ func parseLine(line string) *types.RequestLogEntry {
 	return nil
 }
 
+func isNonOk(status int) bool { return status < 200 || status >= 300 }
+
 // AnalyzeRequestLog extracts latency / non-2xx responses / error-warn lines
 // from raw pod log lines.
 func AnalyzeRequestLog(lines []string) types.RequestLogAnalysis {
@@ -98,7 +166,7 @@ func AnalyzeRequestLog(lines []string) types.RequestLogAnalysis {
 
 	nonOkEntries := []types.RequestLogEntry{}
 	for _, e := range entries {
-		if e.Status != 200 && e.Status != 201 {
+		if isNonOk(e.Status) {
 			nonOkEntries = append(nonOkEntries, e)
 		}
 	}
@@ -123,7 +191,7 @@ func AnalyzeRequestLog(lines []string) types.RequestLogAnalysis {
 		if e.LatencyMs > s.max {
 			s.max = e.LatencyMs
 		}
-		if e.Status != 200 && e.Status != 201 {
+		if isNonOk(e.Status) {
 			s.nonOk++
 		}
 	}

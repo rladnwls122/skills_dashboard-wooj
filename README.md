@@ -174,6 +174,9 @@ API 포트는 UI 포트에서 자동 파생되고(3100→8787 오프셋 유지),
 | `RDS_PROXY_NAME` | `skills-db-proxy` | RDS Proxy 이름 |
 | `EKS_CLUSTER_NAME` | `skills-eks` | EKS 클러스터 이름 |
 | `WAF_LOG_GROUP` | 비움 | WAF 상세 로그 그룹. 설정하면 Logs Insights 사용 |
+| `APP_LOG_GROUP` | `/aws/containerinsights/<EKS>/application` | 앱 로그 그룹. ECS awslogs 처럼 서비스마다 다르면 쉼표로 여러 개 (`/ecs/user,/ecs/product,/ecs/stress`) |
+| `APP_TRAFFIC_PATHS` | `/v1/user,/v1/product,/v1/stress` | 바이너리가 제공하는 API 경로 — 차단 규칙의 scope-down 과 이상 탐지의 정상 기준 |
+| `ALLOWED_INSTANCE_TYPE` | `c5.large` | 규격 외 인스턴스 판정에 쓰는 허용 EC2 타입 |
 | `TARGET_NAMESPACE` | `default` | Kubernetes namespace |
 | `MAX_REPLICAS` | `20` | Deployment 조정 상한 |
 | `DB_PATH` | `./data/dashboard.db` | 설정·이력 SQLite 파일 |
@@ -191,7 +194,7 @@ AWS 자격증명은 설정 화면에서 로컬 AWS CLI 세션을 가져오거나
 
 성능 탭은 대회 중 계속 띄워 두는 감시 화면입니다. 상단에는 채점기 입력값과 노드 수 비용 투영이 배치되고, 이어서 TRT·4XX·5XX·RDS 연결 수, 이상 목록, Pod Health, Pod/Node 사용률, Target Group 지표, Warning Event Board, Deployment 조정 화면이 이어집니다.
 
-채점기 입력값은 점수를 계산하는 카드가 아니라 Logs Insights에서 집계한 관측값입니다. 각 항목은 비율·정상 건수·전체 건수·데이터 출처를 함께 보여 주며, 기본적으로 5분 주기로 갱신됩니다. Deployment 변경은 현재 상태를 먼저 미리 보고 승인한 뒤 적용하며, 이후 이력 ID를 기준으로 결과를 검증합니다.
+채점기 입력값은 점수를 계산하는 카드가 아니라 Logs Insights에서 집계한 관측값입니다. 키는 2025 전국대회 3과제 채점기준(user·product·stress API 로드 처리, 로드 처리 ≤ SLO, Email Request Validation, 비정상 요청 처리율)과 미지정 경로 404 계약을 따르고, 앱 로그는 과제 바이너리가 찍는 `[GIN]` 액세스 라인을 그대로 파싱합니다(형식과 응답 코드는 [`docs/binaries.md`](docs/binaries.md)). 각 항목은 비율·정상 건수·전체 건수·데이터 출처를 함께 보여 주며, 기본적으로 5분 주기로 갱신됩니다. Deployment 변경은 현재 상태를 먼저 미리 보고 승인한 뒤 적용하며, 이후 이력 ID를 기준으로 결과를 검증합니다.
 
 ### 트래픽
 

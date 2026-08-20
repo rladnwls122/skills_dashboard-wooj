@@ -113,10 +113,10 @@ func TestParseTrailEvents(t *testing.T) {
 
 func TestOffSpec(t *testing.T) {
 	rows := []types.InstanceRow{
-		{ID: "i-ok", Type: "t3.medium", AZ: "ap-northeast-2a", ClusterTag: types.Ptr("owned")},
+		{ID: "i-ok", Type: AllowedInstanceType(), AZ: "ap-northeast-2a", ClusterTag: types.Ptr("owned")},
 		{ID: "i-type", Type: "m5.large", AZ: "ap-northeast-2a", ClusterTag: types.Ptr("owned")},
-		{ID: "i-region", Type: "t3.medium", AZ: "us-east-1a", ClusterTag: types.Ptr("owned")},
-		{ID: "i-stray", Type: "t3.medium", AZ: "ap-northeast-2a"},
+		{ID: "i-region", Type: AllowedInstanceType(), AZ: "us-east-1a", ClusterTag: types.Ptr("owned")},
+		{ID: "i-stray", Type: AllowedInstanceType(), AZ: "ap-northeast-2a"},
 	}
 	got := OffSpec(rows, "ap-northeast-2")
 	if len(got) != 3 {

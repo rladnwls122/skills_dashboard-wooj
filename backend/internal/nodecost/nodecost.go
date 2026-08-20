@@ -12,6 +12,7 @@
 package nodecost
 
 import (
+	"os"
 	"encoding/json"
 	"math"
 	"regexp"
@@ -27,8 +28,10 @@ const (
 	// The scoring window opens an hour after the match starts and runs for two.
 	WindowOffset = time.Hour
 	WindowLength = 2 * time.Hour
-	// The only instance type the task allows for workload nodes.
-	AllowedType = "t3.medium"
+	// The only instance type the 2025 task sheet allows for workload hosts
+	// ("EC2 인스턴스는 c5.large 타입만"). Overridable with ALLOWED_INSTANCE_TYPE
+	// for a variant of the task that names another type.
+	DefaultAllowedType = "c5.large"
 	// Readings are floored to a 30s grid, matching the poll interval. The
 	// primary key is (key, t), so the floor makes repeated writes inside one
 	// bucket idempotent instead of accumulating rows.
@@ -194,6 +197,15 @@ func Project(samples []Sample, current *int, win types.ScoringWindow, nowMs int6
 	return out
 }
 
+// AllowedInstanceType is the one EC2 type the task permits — the environment
+// can override the task-sheet default when a variant names another.
+func AllowedInstanceType() string {
+	if v := strings.TrimSpace(os.Getenv("ALLOWED_INSTANCE_TYPE")); v != "" {
+		return v
+	}
+	return DefaultAllowedType
+}
+
 // OffSpec is anything outside what the task allows. Existence alone is a
 // penalty, so this reports facts (type, region, no cluster tag) and not a
 // judgement about how bad they are.
@@ -201,7 +213,7 @@ func OffSpec(rows []types.InstanceRow, region string) []types.OffSpecInstance {
 	out := []types.OffSpecInstance{}
 	for _, r := range rows {
 		reasons := []string{}
-		if r.Type != "" && r.Type != AllowedType {
+		if r.Type != "" && r.Type != AllowedInstanceType() {
 			reasons = append(reasons, "타입 "+r.Type)
 		}
 		if r.AZ != "" && !strings.HasPrefix(r.AZ, region) {

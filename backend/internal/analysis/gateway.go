@@ -21,7 +21,7 @@ var GatewayContract = struct {
 	UnlistedStatus: 404,
 	NormalStatus:   200,
 	AbnormalStatus: 403,
-	AbnormalKinds:  []string{"SQL Injection", "XSS", "Body 포맷 오류", "차단 IP", "Rate limit 초과"},
+	AbnormalKinds:  []string{"email 포맷 오류(POST /v1/user)", "User-Agent Attacker-Bot", "SQL Injection", "XSS", "Body 포맷 오류"},
 }
 
 // MaxQPromptChars: Amazon Q's prompt input caps at 10,000 characters —

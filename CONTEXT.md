@@ -12,6 +12,9 @@
 ## 비정상 요청 (abnormal request)
 
 **제공하는 API 경로**로 들어온 변조·공격성 요청. **403**으로 응답해야 하며, WAF `Block` 액션이 낸다.
+과제 바이너리가 스스로 드러내는 두 종류가 있다 (`docs/binaries.md`): `POST /v1/user` 의 이메일이
+`xxxx@xxxx.xxxx` 꼴이 아닌 요청(앱은 검사하지 않으므로 WAF 몫), 그리고 User-Agent `Attacker-Bot`
+(product 가 `Consumed resources by malicious attacks.` 를 찍고 500 을 낸다 — 앱까지 오면 이미 늦다).
 
 ## 미지정 경로 (undefined path)
 
@@ -32,7 +35,7 @@ WAF가 Block하면 403이 나가서 요구사항을 위반한다. 라우팅 계�
 
 ## 규격 외 인스턴스 (off-spec instance)
 
-과제가 허용한 것(`t3.medium`, 지정 리전 `ap-northeast-2`, 지정 DB 클래스) 밖의 인스턴스, 또는 미사용 인스턴스.
+과제가 허용한 것(`c5.large` — `ALLOWED_INSTANCE_TYPE` 로 변경 가능, 지정 리전 `ap-northeast-2`, 지정 DB 클래스 `db.t3.micro`) 밖의 인스턴스, 또는 미사용 인스턴스.
 존재 자체가 패널티 사유다.
 
 ## 승격 (promotion)
