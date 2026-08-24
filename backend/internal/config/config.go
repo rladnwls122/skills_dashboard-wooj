@@ -1,9 +1,9 @@
 // Package config resolves every value the service runs on.
 //
 // Two sources, in order: an override saved on the settings screen (SQLite),
-// then the process environment. No .env file is parsed here — the process is
-// started with an environment, and how that environment is populated is the
-// launcher's business, not this service's.
+// then the process environment. Nothing here reads a file — main folds .env into
+// the environment at start (LoadDotenv), so by the time this runs there is a
+// single source to read.
 package config
 
 import (

@@ -13,3 +13,7 @@ backend/bin/
 
 # Release build copies the built frontend here to embed it; not committed.
 backend/webdist/
+
+# The source build drops the backend binary in the repository root.
+api.exe
+api

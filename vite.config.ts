@@ -2,6 +2,13 @@ import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+import { loadDotenv } from "./scripts/dotenv.mjs";
+
+// `vite` / `vite build` run without the launcher still deserve the same
+// configuration file. Vite's own .env handling only reaches VITE_* variables in
+// client code; PORT and API_PROXY_TARGET are read here, from process.env.
+loadDotenv();
+
 // Overridable so a second instance can run alongside the first
 // (`pnpm start -p 3110` — see scripts/start.mjs). Defaults match the single
 // instance everything else documents: UI on 3100, API on 8787.

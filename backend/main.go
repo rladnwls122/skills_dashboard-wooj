@@ -1,8 +1,9 @@
 // Command backend serves the dashboard's data API.
 //
 // It replaces the Next.js server actions: same behaviour, same JSON contract,
-// different process. Configuration comes from the environment and from the
-// settings table in SQLite — no .env file is read here.
+// different process. Configuration comes from a .env file beside the binary,
+// then the process environment (which wins over the file), then the settings
+// table in SQLite (which wins over both, per request).
 package main
 
 import (
@@ -27,6 +28,12 @@ import (
 var version = "dev"
 
 func main() {
+	// Before LoadServer(), which reads the environment this populates. A venue
+	// machine starts this binary by hand, with no launcher to export anything.
+	if dotenv := config.LoadDotenv(""); dotenv.Path != "" {
+		log.Printf("env %s — %d개 적용, %d개는 환경변수가 우선", dotenv.Path, len(dotenv.Applied), len(dotenv.Skipped))
+	}
+
 	cfg := config.LoadServer()
 
 	st, err := store.Open(cfg.DBPath)

@@ -75,6 +75,12 @@ jobs:
           GOOS=linux   GOARCH=amd64 go build -trimpath -tags embed -ldflags "$LDFLAGS" -o ../out/skills-dashboard-linux-amd64 .
           GOOS=darwin  GOARCH=arm64 go build -trimpath -tags embed -ldflags "$LDFLAGS" -o ../out/skills-dashboard-darwin-arm64 .
 
+      # Shipped next to the binaries because the binary reads a .env from its own
+      # directory: a venue operator can fill this in and never open the settings
+      # screen twice.
+      - name: Ship the settings template
+        run: cp .env.example out/.env.example
+
       - name: Checksums
         run: |
           cd out
@@ -88,6 +94,7 @@ jobs:
           files: |
             out/skills-dashboard-*
             out/SHA256SUMS.txt
+            out/.env.example
           generate_release_notes: true
           body: |
             대회장 PC에서 쓰는 법 — **파일 하나만 받으면 됩니다.**
@@ -96,5 +103,9 @@ jobs:
             2. 그냥 실행한다. Node·Go·pnpm 전부 필요 없다 — 화면이 바이너리 안에 들어 있다.
             3. 브라우저로 `http://127.0.0.1:8787/dashboard` 를 연다.
             4. 톱니 → `AWS 자격증명` → `aws CLI 세션 불러오기` → `연결 확인`.
+
+            리전·리소스 이름을 미리 적어 두려면 같이 올라간 `.env.example` 을 `.env` 로 복사해
+            **실행 파일과 같은 폴더**에 두면 됩니다. 빈 값은 무시되고, 이미 지정한 환경변수가
+            파일보다 우선합니다.
 
             자세한 사용법은 저장소의 `README.md` 와 `docs/RUNBOOK.md` 를 보세요.
