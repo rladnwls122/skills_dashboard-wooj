@@ -156,6 +156,8 @@ const ASSEMBLE_SPECS: Record<string, KindSpec> = {
       "빈 User-Agent 는 ^$ 로 잡는다. 헤더 자체가 없는 요청은 SingleHeader 문장이 평가되지 않으므로 이 규칙으로는 잡히지 않는다 — 필요하면 별도 규칙이 필요",
       "경로 세트에는 NORMALIZE_PATH 만 걸고 LOWERCASE 는 걸지 않습니다 — 서비스 경로가 전부 소문자라 불필요하고, UA 쪽 파이프라인과 섞이지 않습니다.",
       "정규식 패턴 세트를 2개 만들어야 합니다 — 경로용·UA용 각각의 ARN 을 규칙 JSON 에 넣으세요.",
+      "과제에서 제공한 terraform 으로 구축했다면 두 세트는 이미 있습니다. ARN 은 `terraform output waf_api_paths_arn` 과 `terraform output waf_scanner_uas_arn` 이고, 위 패턴을 그 세트에 넣으면 됩니다 — 세트를 새로 만들 필요는 없습니다.",
+      "제공된 waf/scanner-ua.json 과 같은 모양입니다: Priority 30, sqli(10)·known-bad-inputs(20) 뒤, base64-sqli(40) 앞.",
       "적용 전 반드시 판정해 볼 것 — 허용 목록에 없는 정상 클라이언트가 이 환경에 있다면 함께 차단된다",
     ],
   },
