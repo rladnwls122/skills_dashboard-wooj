@@ -328,7 +328,7 @@ export interface ResolvedWindow extends WindowSelection {
 // A regex rule assembled for one purpose (see server/ruleassemble.ts).
 // No "path": an undefined path already gets a 404 from the ALB, and blocking it
 // in the WAF would return 403 instead (04).
-export type AssembleKind = "ua" | "sqli";
+export type AssembleKind = "ua";
 
 // A regex pattern set is a separate AWS resource, created before the rule that
 // references it. Both artefacts are produced here so neither has to be

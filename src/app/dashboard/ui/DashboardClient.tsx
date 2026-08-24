@@ -11,18 +11,18 @@ import { fmtClock, usePoll, ZoomDialog, type PollState } from "./shared";
 import { WindowBar } from "./WindowBar";
 import { PerformanceTab } from "./PerformanceTab";
 import { TrafficTab } from "./TrafficTab";
-import { AiTab } from "./AiTab";
+import { UaTab } from "./UaTab";
 import { SettingsTab } from "./SettingsTab";
 
 // Three tabs, one question each: is anything wrong right now (성능), what is
-// arriving (트래픽), what do we block (규칙 생성).
+// arriving (트래픽), what do we block (UA 규칙).
 //
 // Settings is not a tab: values are discovered automatically, and the screen
 // only exists to override a wrong guess — so it lives behind the gear.
 const TABS = [
   { id: "Performance", ko: "성능" },
   { id: "Traffic", ko: "트래픽" },
-  { id: "Generate", ko: "규칙 생성" },
+  { id: "Ua", ko: "UA 규칙" },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -71,7 +71,7 @@ export function DashboardClient() {
   const waf: PollState<WafPanel> = usePoll(
     () => getWafPanelAction(win),
     Math.max(refreshSec, 30) * 1000,
-    tab === "Traffic" || tab === "Generate",
+    tab === "Traffic" || tab === "Ua",
     [win.windowMin, win.intervalMin],
   );
 
@@ -180,11 +180,11 @@ export function DashboardClient() {
             metrics={metrics}
             selection={podSelection}
             onSelect={setPodSelection}
-            onMakeUaRule={() => setTab("Generate")}
+            onMakeUaRule={() => setTab("Ua")}
             window={win}
           />
         )}
-        {tab === "Generate" && <AiTab waf={waf} window={win} />}
+        {tab === "Ua" && <UaTab waf={waf} window={win} />}
       </main>
 
       <ZoomDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} label="설정">
