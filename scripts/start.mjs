@@ -20,6 +20,13 @@
 
 import { spawn } from "node:child_process";
 
+import { loadDotenv } from "../backend/config/dotenv.ts";
+
+// The launcher decides PORT / API_ADDR / DB_PATH before the backend starts, so
+// it has to see .env too — otherwise a port pinned in the file would apply to
+// the backend and not to the frontend proxy pointing at it.
+const dotenv = loadDotenv();
+
 const args = process.argv.slice(2);
 const dev = args.includes("--dev");
 
@@ -58,6 +65,7 @@ const command =
   `concurrently -k -p "[{name}]" -n "BACKEND,FRONTEND" -c "cyan,magenta" ` +
   `"${backend}" "${frontend}"`;
 
+if (dotenv.path) console.log(`[start] env ${dotenv.path}`);
 console.log(`[start] UI http://127.0.0.1:${port}/dashboard · API ${env.API_ADDR} · DB ${env.DB_PATH}`);
 
 const child = spawn(command, { stdio: "inherit", shell: true, env });

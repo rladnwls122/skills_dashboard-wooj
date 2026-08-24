@@ -1,13 +1,22 @@
 // Serves the dashboard's data API.
 //
-// Configuration comes from the environment and from the settings table in
-// SQLite — no .env file is read here.
+// Configuration comes from a .env file beside the project, then the process
+// environment (which wins over the file), then the settings table in SQLite
+// (which wins over both, per request).
 
 import { createServer } from "./api/api.ts";
 import { loadServer, Settings } from "./config/config.ts";
+import { loadDotenv } from "./config/dotenv.ts";
 import { LiveProvider } from "./live/live.ts";
 import { Service } from "./service/service.ts";
 import { Store } from "./store/store.ts";
+
+// Before loadServer(), which reads the environment this populates.
+const dotenv = loadDotenv();
+if (dotenv.path) {
+  const extra = dotenv.skipped.length > 0 ? `, ${dotenv.skipped.length}개는 환경변수가 우선` : "";
+  console.log(`env ${dotenv.path} — ${dotenv.applied.length}개 적용${extra}`);
+}
 
 const cfg = loadServer();
 
