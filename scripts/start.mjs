@@ -48,7 +48,11 @@ const env = {
 // Direct commands rather than `pnpm <script>`: the extra pnpm→cmd layer is
 // what turned the backend spawn into a bare "Access is denied." on Windows.
 // PATH already carries node_modules/.bin because pnpm launched this file.
-const backend = dev ? "go run -C backend ." : "node scripts/run-backend.mjs";
+//
+// The backend is TypeScript run straight by Node — v24 strips the types at
+// load, so there is no build step and no binary to spawn. --watch restarts it
+// on a source change in dev, which is what `go run` never did.
+const backend = dev ? "node --watch backend/main.ts" : "node backend/main.ts";
 const frontend = dev ? "vite" : "vite preview";
 const command =
   `concurrently -k -p "[{name}]" -n "BACKEND,FRONTEND" -c "cyan,magenta" ` +

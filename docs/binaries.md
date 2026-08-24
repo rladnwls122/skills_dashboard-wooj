@@ -35,9 +35,9 @@ stdout  [GIN] 2025/09/23 - 03:12:45 | 201 |   12.345678ms |   203.0.113.10 | POS
 * **ECS awslogs** (과제가 요구하는 배포): 위 줄이 그대로 `@message`. 서비스마다 그룹이 다르면 설정의 `APP_LOG_GROUP` 에 쉼표로 나열 (`/ecs/user,/ecs/product,/ecs/stress`).
 * **EKS Container Insights**: `{"log":"[GIN] … POST     \"/v1/user\"\n","stream":"stdout","kubernetes":{…}}` 처럼 JSON 으로 감싸이고 경로의 따옴표가 `\"` 로 이스케이프된다.
 
-대시보드의 Insights 파서(`backend/internal/analysis/logfields.go`)는 `@message` 에 정규식을 걸어 두 형태를 모두 읽는다.
+대시보드의 Insights 파서(`backend/analysis/logfields.ts`)는 `@message` 에 정규식을 걸어 두 형태를 모두 읽는다.
 패턴에 백슬래시를 쓰지 않는 이유도 거기 적혀 있다 — `\\\\` 형태는 parse 절이 하나일 때만 맞고 두 번째 parse 가 붙으면 결과 행이 달라지는 것을 실제 로그 그룹으로 확인했다.
-JSON 형태에서 uri/path 끝에 남는 `\` 는 Go 쪽(`CleanURI`/`CleanPath`)에서 떼어낸다.
+JSON 형태에서 uri/path 끝에 남는 `\` 는 백엔드(`cleanUri`/`cleanPath`)에서 떼어낸다.
 
 ## 2. 엔드포인트와 응답 코드 (바이너리가 낼 수 있는 모든 값)
 
@@ -111,7 +111,7 @@ GET 도 0~100 난수 sleep 이 있다.
 
 ## 5. 검증 방법
 
-`backend/internal/analysis/analysis_test.go` 가 위 표의 실제 로그 줄로 파서를 고정한다.
+`backend/analysis/analysis.test.ts` 가 위 표의 실제 로그 줄로 파서를 고정한다.
 Insights 쿼리는 2026-08-20 에 계정의 임시 로그 그룹(`/skills-dashboard/scratch-gin-format-test`, 검증 후 삭제)에 같은 줄을 넣고
 `stats … by path`, `coalesce` 지연 환산, `requestid in […]` 조인, `kubernetes.pod_name or @logStream` 스코프까지 실행해 확인했다.
 바꿀 일이 생기면 같은 방법으로 다시 확인한다 — Insights 는 새로 넣은 이벤트가 조회되기까지 5분 남짓 걸리고,

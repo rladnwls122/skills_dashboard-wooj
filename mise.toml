@@ -1,30 +1,29 @@
 [tools]
 node = "24"
-go = "latest"
 
 [tasks.install]
-run = "corepack enable pnpm && pnpm install && go mod download -C backend"
-description = "Install Node and Go dependencies"
+run = "corepack enable pnpm && pnpm install"
+description = "Install Node dependencies"
 
 [tasks.dev]
 run = "pnpm dev"
-description = "Run both Go Fiber backend and Vite frontend dev servers"
+description = "Run both the Node backend and the Vite frontend dev servers"
 
 [tasks.clean]
 run = "pnpm clean"
-description = "Delete build outputs (dist and api binary)"
+description = "Delete build outputs (dist)"
 
 [tasks.build]
 run = "pnpm build"
-description = "Build frontend (Vite) and backend (Go Fiber)"
+description = "Build the frontend (Vite); the backend runs from source"
 
 [tasks.build-clean]
 run = "pnpm build:clean"
-description = "Clean outputs and build frontend and backend"
+description = "Clean outputs and build the frontend"
 
 [tasks.start]
 run = "pnpm start"
-description = "Run production backend (api.exe) and frontend preview (3100)"
+description = "Run the backend and the frontend preview (3100)"
 
 [tasks.typecheck]
 run = "pnpm typecheck"
