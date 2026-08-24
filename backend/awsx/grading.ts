@@ -1,8 +1,9 @@
-// The grader's view of this environment. The keys follow the 2025 national
-// task-3 scoring sheet (docs/binaries.md §채점 키): per-API "로드 처리"
-// (availability) and "로드 처리 <= SLO" (performance) for user · product ·
-// stress, "Email Request Validation" and "비정상 요청 처리율" (abnormal
-// requests answered 403), plus the task's own "undefined path → 404" contract.
+// The grader's view of this environment. The keys are the ones the 2026
+// national task-3 scoring sheet (and its results_<비번호>.log) actually carry:
+// "image download" and "Exception Handling" (비정상 요청 처리), and per-API
+// "availability" and "performance ≤ SLO" for user · product · stress. Each key
+// is measured from the source that can see it — the app log for the four served
+// ratios, the WAF log for the 403 side of Exception Handling.
 //
 // The scoring itself is pure; the AWS-touching function runs the Insights
 // queries and hands rows to the builder. No points are assigned anywhere here —

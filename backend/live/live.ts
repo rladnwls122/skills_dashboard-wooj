@@ -82,25 +82,6 @@ const VISIBLE_METRICS = [
   "wafAllowed",
 ];
 
-/** The stand-in for the one assembly kind that reads no traffic at all. */
-const EMPTY_SUMMARY: HttpSummary = {
-  totalSampled: 0,
-  windowLabel: "",
-  source: "",
-  byPath: [],
-  byIp: [],
-  byUa: [],
-  uaActions: [],
-  surface: null,
-  byMethod: [],
-  queryPatterns: [],
-  headerPatterns: [],
-  blockedTotal: 0,
-  statusDist: null,
-  detailedStatus: null,
-  notes: [],
-};
-
 export class LiveProvider implements Provider {
   readonly aws: AWS;
   readonly kube: Kube;
@@ -468,9 +449,6 @@ export class LiveProvider implements Provider {
       wafScope: this.settings.wafScope(),
       wafRegion: this.settings.wafRegion(),
     };
-    // SQLi is a fixed signature set, so it must not fail when the WAF summary is
-    // unavailable — only the observed kinds need live traffic.
-    if (kind === "sqli") return buildAssembledRule("sqli", EMPTY_SUMMARY, env);
     const summary = await buildHttpSummary(this.aws, null, win);
     return buildAssembledRule(kind, summary, env);
   }
