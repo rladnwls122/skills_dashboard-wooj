@@ -60,6 +60,17 @@ export function apiOf(path: string): string {
 }
 
 /**
+ * Image delivery: S3 objects served under /images/<object path> through the
+ * same endpoint as the APIs. It is a scoring key of its own ("image download"),
+ * not part of any API's availability, so it has to be split out before apiOf
+ * ever sees the row.
+ */
+export function isImagePath(path: string): boolean {
+  const p = path.split("?")[0]!;
+  return p === "/images" || p.startsWith("/images/");
+}
+
+/**
  * Counts availability, both SLO tiers and the contract codes in the query
  * rather than pulling rows back — the rows would be the whole traffic volume.
  * Grouped by route (no query string), or every GET is its own row because the
@@ -164,6 +175,38 @@ export interface GradingParams {
   notes?: string[];
 }
 
+/**
+ * The score bands the 2026 sheet pays on, highest first. Every percentage key
+ * uses the same ladder, and each rung crossed is worth 0.5점 — so the number an
+ * operator needs is not "86.2%" but "one band below the next 0.5, and 1.3%p
+ * away from it". Kept as numbers rather than a formatted string so the gap can
+ * be computed against them.
+ */
+const SCORE_BANDS_AVAILABILITY = [90, 87.5, 85, 82.5, 80, 70, 50, 30];
+
+/**
+ * 비정상 요청 처리 (image download · Exception Handling) pays on four rungs,
+ * not eight. Same shape, different ladder — do not merge them.
+ */
+const SCORE_BANDS_ABNORMAL = [90, 85, 80, 50];
+
+function bandOf(pct: number, bands: number[]): { tier: string | null; nextTier: string | null } {
+  // bands is descending, so the first rung at or below the value is the one it
+  // has already earned; the rung above it is what the next 0.5점 costs.
+  let earnedIndex = -1;
+  for (let i = 0; i < bands.length; i++) {
+    if (pct >= bands[i]!) {
+      earnedIndex = i;
+      break;
+    }
+  }
+  const tier = earnedIndex >= 0 ? `${bands[earnedIndex]!}% 구간` : null;
+  const nextValue = earnedIndex === -1 ? bands[bands.length - 1]! : bands[earnedIndex - 1];
+  if (nextValue === undefined) return { tier, nextTier: null };
+  const gap = Math.round((nextValue - pct) * 10) / 10;
+  return { tier, nextTier: `${nextValue}% 까지 ${gap}%p` };
+}
+
 /** Builds the panel from already-fetched pieces so the scoring itself is pure. */
 export function buildGradingPanel(p: GradingParams): GradingPanel {
   const wafRows = p.wafRows ?? [];
@@ -172,12 +215,23 @@ export function buildGradingPanel(p: GradingParams): GradingPanel {
   const perApi = new Map<string, { total: number; availOk: number; sloOk: number }>();
   for (const api of GRADING_APIS) perApi.set(api, { total: 0, availOk: 0, sloOk: 0 });
 
-  // Requests to paths the binaries do not serve, and how many the app ended
-  // with the 404 the task requires.
+  // Image delivery is its own scoring key (1-1 ~ 1-4) and its own surface: S3
+  // objects served under /images/ through the same endpoint. Its SLO is the
+  // availability deadline itself — 5s for both — so there is no second tier.
+  let imageTotal = 0;
+  let imageOk = 0;
+
+  // Requests to paths the task does not serve. The contract is 404 there, and
+  // "Exception Handling" is what the grader calls the ratio that ends correctly.
   let undefTotal = 0;
   let undefOk = 0;
 
   for (const r of p.rows) {
+    if (isImagePath(r.path)) {
+      imageTotal += r.total;
+      imageOk += r.availOk;
+      continue;
+    }
     const api = apiOf(r.path);
     if (api === "") {
       if (!isLowPriorityPath(r.path)) {
@@ -195,84 +249,82 @@ export function buildGradingPanel(p: GradingParams): GradingPanel {
     else acc.sloOk += r.slowOk;
   }
 
-  // WAF side: blocks on the served surface are the 403s the abnormal-request
-  // keys count; blocks on undefined paths are 404s that became 403s.
+  // WAF side. A block on the served surface is an abnormal request answered
+  // 403 — which is what the task asks for. A block on an undefined path is a
+  // 404 that became a 403, which is the violation, so it only ever enlarges
+  // the denominator.
   let wafServedBlocked = 0;
-  let wafEmailBlocked = 0;
   let wafUndefBlocked = 0;
   for (const w of wafRows) {
     if (w.action !== "BLOCK") continue;
+    if (isImagePath(w.uri)) continue;
     if (apiOf(w.uri) !== "") {
       wafServedBlocked += w.count;
-      // normalizePath keeps a trailing slash because NORMALIZE_PATH does, so the
-      // endpoint comparison has to trim one — "/v1/user/" is the same route the
-      // grader posts to, and counting it as a different one would understate the
-      // email-validation key.
-      if (w.method === "POST" && trimTrailingSlash(normalizePath(w.uri)) === "/v1/user") {
-        wafEmailBlocked += w.count;
-      }
       continue;
     }
     if (!isLowPriorityPath(w.uri)) wafUndefBlocked += w.count;
   }
 
   const appSrc = "앱 로그";
+  const wafSrc = p.wafAvailable ? "WAF 로그" : "WAF 로그 없음";
   const lines: GradingScore[] = [];
+
+  const push = (
+    label: string,
+    okCount: number,
+    total: number,
+    source: string,
+    bands: number[],
+    approximate: boolean,
+  ): void => {
+    const line = measure(label, okCount, total, source, approximate);
+    const { tier, nextTier } = bandOf(line.pct, bands);
+    lines.push({ ...line, tier: total > 0 ? tier : null, nextTier: total > 0 ? nextTier : null });
+  };
+
+  // Ordered exactly as the sheet lists them, so the two read side by side.
+  push("image download", imageOk, imageTotal, appSrc, SCORE_BANDS_ABNORMAL, false);
+  // Numerator = abnormal requests the WAF turned into 403 + undefined-path
+  // requests the app ended as 404. Denominator adds what leaked to the app and
+  // what the WAF wrongly blocked on an undefined path.
+  push(
+    "Exception Handling",
+    wafServedBlocked + undefOk,
+    wafServedBlocked + undefOk + trapLeaked + (undefTotal - undefOk) + wafUndefBlocked,
+    `${wafSrc} + ${appSrc}`,
+    SCORE_BANDS_ABNORMAL,
+    true,
+  );
   for (const api of GRADING_APIS) {
     const acc = perApi.get(api)!;
-    lines.push(measure(`${api} API 로드 처리`, acc.availOk, acc.total, appSrc, false));
+    push(`(${api}) availability`, acc.availOk, acc.total, appSrc, SCORE_BANDS_AVAILABILITY, false);
   }
   for (const api of GRADING_APIS) {
     const acc = perApi.get(api)!;
-    lines.push(
-      measure(
-        `${api} API 로드 처리 ≤ ${(SLO_MS[api]! / 1000).toFixed(1)}s`,
-        acc.sloOk,
-        acc.total,
-        appSrc,
-        false,
-      ),
+    push(
+      `(${api}) performance ≤ ${(SLO_MS[api]! / 1000).toFixed(1)}s`,
+      acc.sloOk,
+      acc.total,
+      appSrc,
+      SCORE_BANDS_AVAILABILITY,
+      false,
     );
   }
 
-  const wafSrc = p.wafAvailable ? "WAF 로그" : "WAF 로그 없음";
-  // Denominator = what we saw end as 403 + what we saw get through. The
-  // grader's own count of what it injected is not observable anywhere.
-  lines.push(
-    measure(
-      "Email Request Validation (403)",
-      wafEmailBlocked,
-      wafEmailBlocked,
-      wafSrc + " · POST /v1/user 차단 건수, 분모 없음",
-      true,
-    ),
-  );
-  lines.push(
-    measure(
-      "비정상 요청 처리율 (403)",
-      wafServedBlocked,
-      wafServedBlocked + trapLeaked,
-      wafSrc + " + 앱 로그 trap 라인",
-      true,
-    ),
-  );
-  lines.push(
-    measure("미지정 경로 404", undefOk, undefTotal + wafUndefBlocked, appSrc + " + WAF 차단", false),
-  );
-
   const notes = [
     ...(p.notes ?? []),
-    `로드 처리 = 2xx && ${AVAIL_DEADLINE_MS / 1000}s 이내 / 해당 API 로 들어온 요청 전체. 성능 키는 그중 SLO(user·product ${SLO_MS.user}ms / stress ${SLO_MS.stress}ms) 이내.`,
-    "분모는 앱 로그의 [GIN] 액세스 라인 전체라 앱이 스스로 내는 403(username 중복 → 'It already exists in a database.')·400·500 도 들어간다. 채점기는 자신이 보낸 요청만 세므로 값이 다를 수 있다.",
-    `비정상 요청 처리율: 분자 = WAF BLOCK(서비스 경로), 분모 = 분자 + 앱까지 새어 들어온 Attacker-Bot 요청 ${trapLeaked}건 (product 가 'Consumed resources by malicious attacks.' 를 찍고 500 으로 응답). 채점기가 보낸 비정상 요청 전체 수는 관측 불가 — 새는 건수가 0 인지를 본다.`,
-    "Email Request Validation: WAF 가 POST /v1/user 를 차단한 건수만 보인다 — 잘못된 이메일이 몇 건 주입됐는지는 어디에도 기록되지 않는다(앱은 이메일을 검사하지 않는다). 0건이면 규칙이 없거나 COUNT 상태다.",
-    "미지정 경로 404: 앱 로그의 비서비스 경로 요청 중 404 로 끝난 비율. WAF 가 미지정 경로를 BLOCK 하면 403 이 나가 위반 — 그 건수는 분모에만 더했다.",
+    `채점기 로그(results_<비번호>.log)의 키 이름을 그대로 썼다 — image download · Exception Handling · (api) availability · (api) performance. cost ratio 는 이 화면이 아니라 아래 노드 대수 패널이 다룬다.`,
+    `availability = 2xx && ${AVAIL_DEADLINE_MS / 1000}s 이내. performance = 그중 SLO(user·product ${SLO_MS.user}ms / stress ${SLO_MS.stress}ms) 이내. image download 는 둘 다 ${AVAIL_DEADLINE_MS / 1000}s 라 한 줄뿐이다.`,
+    "채점기의 응답시간은 **클라이언트 도착 기준**이고 이 표는 앱이 기록한 처리 시간이다 — 네트워크·ALB·CloudFront 구간이 빠져 있어 항상 낙관적으로 보인다. 실제 점수는 이 값보다 낮게 나온다고 보는 편이 안전하다.",
+    "분모는 앱 로그의 [GIN] 액세스 라인 전체라 앱이 스스로 내는 403(username 중복)·400·500 도 들어간다. 채점기는 자신이 보낸 요청만 세므로 값이 다를 수 있다.",
+    `Exception Handling: 분자 = WAF BLOCK(서비스 경로) + 앱이 404 로 끝낸 미지정 경로. 분모에 앱까지 새어 들어온 비정상 요청 ${trapLeaked}건과 WAF 가 미지정 경로를 막아 403 이 된 ${wafUndefBlocked}건을 더했다 — 후자는 그 자체로 계약 위반이다.`,
+    "구간 표시는 채점표의 문턱(90 / 87.5 / 85 / 82.5 / 80 / 70 / 50 / 30%, 비정상 처리는 90 / 85 / 80 / 50%)에 맞춘 것이다. 다음 문턱까지 남은 %p 가 곧 다음 0.5점이다.",
     "점수는 매기지 않는다. 이 표는 관측값을 채점기 키에 맞춰 정렬해 둔 것이고, 점수는 채점 플랫폼이 정한다.",
     "서비스 경로: " + appTrafficPaths().join(", "),
   ];
   if (!p.wafAvailable) {
     notes.push(
-      "WAF_LOG_GROUP 이 비어 있어 403 키는 앱 로그만으로 채웠다 — 차단 건수는 0 으로 보인다. 설정에서 WAF 로그 그룹을 지정하면 채워진다.",
+      "WAF_LOG_GROUP 이 비어 있어 Exception Handling 의 403 쪽 분자가 0 이다 — 앱 로그만으로는 차단 건수를 볼 수 없다. 설정에서 WAF 로그 그룹을 지정하면 채워진다.",
     );
   }
 

@@ -92,7 +92,7 @@ pnpm dev
 | `WAF_SCOPE` | CloudFront 배포에 붙은 WebACL 이면 `CLOUDFRONT` (조회는 us-east-1) |
 | `WAF_WEB_ACL_NAME` | **정확히** 맞아야 합니다 — 이름이 틀리면 규칙 적용을 거부합니다(아래 참고) |
 | `WAF_LOG_GROUP` | 넣으면 표본이 아닌 **전수 집계**로 바뀝니다. 403 채점 키도 이때만 채워집니다 |
-| `APP_LOG_GROUP` | `[GIN]` 액세스 라인이 들어 있는 그룹. ECS 라면 쉼표로 여러 개 (`/ecs/user,/ecs/product,/ecs/stress`) |
+| `APP_LOG_GROUP` | `[GIN]` 액세스 라인이 들어 있는 그룹. EKS 라면 Container Insights 의 `/aws/containerinsights/<클러스터>/application`. 여러 그룹으로 나뉘면 쉼표로 나열 |
 | `ALB_NAME` · `EKS_CLUSTER_NAME` · `RDS_PROXY_NAME` | 자동 탐색 권장 |
 | `MATCH_START` | 경기 시작 시각. 비우면 비용 패널이 채점 창 평균을 계산하지 않습니다 |
 
@@ -135,7 +135,7 @@ pnpm dev:frontend   # 터미널 2
 시간 창(`15m/30m/1h/2h/4h`)은 세 탭이 공유합니다.
 
 ### 1. PERFORMANCE — 상시 감시
-- **채점기 입력값** — API 별 로드 처리·SLO, Email Request Validation, 비정상 요청 처리율, 미지정 경로 404. 각 줄이 **어느 로그에서 나온 값인지** 함께 적혀 있습니다. 점수는 매기지 않습니다.
+- **채점기 입력값** — `image download` · `Exception Handling` · `(api) availability` · `(api) performance`. 채점기 로그(`results_<비번호>.log`)와 같은 키 이름이고, 각 줄에 **지금 어느 채점 구간인지와 다음 구간까지 남은 %p** 가 함께 나옵니다. 점수는 매기지 않습니다.
 - **채점 창 노드 대수** — 누적/최종 평균과 1대 증감 효과. 규격 외 인스턴스도 잡아 줍니다.
 - TRT · 4XX · 5XX · RDS 연결 수, 이상 목록, Pod/Node 사용률.
 - Deployment 조정: 미리보기 → 승인 → 적용 → 약 2분 뒤 자동 검증.
@@ -174,7 +174,7 @@ pnpm dev:frontend   # 터미널 2
 | `WebACL "…" 을(를) 찾지 못했습니다 … 규칙 적용을 중단했습니다` | 이름·scope 오타입니다. **다른 WebACL 을 덮어쓰지 않으려고 일부러 멈춘 것**이니 이름을 고치세요 |
 | `ALB … 계정에 ALB 가 N개 있어 임의로 고르지 않았습니다` | `ALB_NAME` 을 지정하세요 |
 | UA 통계가 비어 있어 규칙 조립 불가 | WAF 표본은 **규칙에 매칭된 요청만** 남습니다 → `WAF_LOG_GROUP` 을 지정하거나 광범위한 COUNT 규칙을 하나 추가 |
-| 403 채점 키가 전부 0 | `WAF_LOG_GROUP` 미설정입니다. 앱 로그만으로는 차단 건수를 볼 수 없습니다 |
+| `Exception Handling` 이 낮거나 0 | `WAF_LOG_GROUP` 미설정이면 403 쪽 분자가 안 보입니다. 설정 후에도 낮으면 미지정 경로가 404 로 끝나는지 확인 |
 | 로그가 없음 | 시간 창 → `APP_LOG_GROUP` 이 `[GIN]` 라인이 있는 그룹인지 → 실제 유입 여부 |
 | `…는 이미 사용 중입니다` | 이전 백엔드가 살아 있습니다. 종료하거나 `pnpm dev -p 3110` |
 | 화면이 안 갱신됨 | 다른 창을 보고 있으면 폴링이 멈춥니다(의도된 동작). 창을 앞으로 가져오면 즉시 갱신됩니다 |

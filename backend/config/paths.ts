@@ -71,8 +71,12 @@ export function isLowPriorityPath(path: string): boolean {
  * never treated as an attack.
  */
 export function appTrafficPaths(): string[] {
+  // /images is the static surface: S3 objects served under /images/<object
+  // path> through the same endpoint. It is graded on its own key, and a WAF
+  // rule that reaches it costs image download points, so it belongs on the
+  // served list even though no binary registers it as a route.
   const raw =
-    (process.env.APP_TRAFFIC_PATHS ?? "").trim() || "/v1/user,/v1/product,/v1/stress";
+    (process.env.APP_TRAFFIC_PATHS ?? "").trim() || "/v1/user,/v1/product,/v1/stress,/images";
   return raw
     .split(",")
     .map((p) => p.trim())

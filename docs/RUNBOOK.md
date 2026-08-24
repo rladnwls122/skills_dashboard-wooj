@@ -51,13 +51,15 @@
 
 화면 맨 위 두 줄이 채점기 입력값이다. 아래 표대로 움직인다.
 
+키 이름은 채점기 로그(`results_<비번호>.log`)와 **같은 이름**을 쓴다. 나란히 놓고 읽으라고 그렇게 맞췄다.
+각 줄에 지금 어느 채점 구간인지와 다음 구간까지 몇 %p 남았는지가 함께 나온다 — **그 %p 가 곧 다음 0.5점이다.**
+
 | 보는 값 | 선 | 넘으면 하는 일 |
 |---|---|---|
-| user/product/stress API 로드 처리 | 90% | 그 API의 Pod / replica를 먼저 본다 (2xx·5초 이내 비율) |
-| 로드 처리 ≤ 0.2s / ≤ 1.0s | 로드 처리는 높은데 이것만 낮음 | 스케일이 아니라 지연 문제 — 캐시·인덱스·limit |
-| 비정상 요청 처리율 (403) | 분모 > 분자 | Attacker-Bot 이 앱까지 새고 있다 (product 가 500을 낸다). UA 규칙을 BLOCK 으로 |
-| Email Request Validation (403) | 0건 | POST /v1/user 잘못된 이메일을 막는 WAF 규칙이 없거나 COUNT 상태 |
-| 미지정 경로 404 | 100% 미만 | **WAF를 뒤지지 마라.** 3절로 |
+| (user/product/stress) availability | 90% | 그 API의 Pod / replica를 먼저 본다 (2xx·5초 이내 비율) |
+| (…) performance ≤ 0.2s / ≤ 1.0s | availability는 높은데 이것만 낮음 | 스케일이 아니라 지연 문제 — 캐시·인덱스·limit |
+| image download | 90% | `/images/` 정적 전송. S3·CloudFront·캐시를 본다. API Pod 문제가 아니다 |
+| Exception Handling | 90% | 비정상 요청이 403으로, 미지정 경로가 404로 끝나는 비율. 2절·3절로 |
 | TargetResponseTime | 0.5s | Pod·노드 CPU 확인. 2.0s + 200%면 즉시 스케일업 |
 | Target 4XX | 50/min | `트래픽` 탭에서 404인지 403인지 가른다 |
 | Target 5XX | 20/min | 앱 장애. 로그 → Pod 상태 → replica 순 |
@@ -147,13 +149,13 @@ UA만으로 막으면 미지정 경로에도 403이 나가고, 그건 3절이 �
 |---|---|
 | **모든** 패널이 한꺼번에 비었다 | 톱니 → `AWS 자격증명`. 세션 만료가 가장 흔하다 |
 | 패널 하나가 비었다 | 톱니 → 리소스 이름. 자동 탐색 |
-| `관측 요청 0건` | 앱 로그 그룹 이름(ECS 면 `/ecs/user,/ecs/product,/ecs/stress` 처럼 쉼표로 여러 개), 또는 트래픽이 아직 없음. 로그에 `[GIN]` 액세스 라인이 있어야 한다 — `docs/binaries.md` |
+| `관측 요청 0건` | 앱 로그 그룹 이름(EKS Container Insights 의 `/aws/containerinsights/<클러스터>/application`), 또는 트래픽이 아직 없음. 로그에 `[GIN]` 액세스 라인이 있어야 한다 — `docs/binaries.md` |
 | 비용 패널이 `경기 시작 시각 미설정` | 톱니 → 경기 시작 시각 |
 | WAF 샘플 0건 | 트래픽이 없다는 뜻이 아니다. 아무 규칙도 매칭하지 않은 것 |
 | Pod 사용률이 `limit 없음` | manifest에 limit이 없다. 비율을 못 낸다 |
 | 상단바 갱신 시각(K8S·CW·WAF) 한 줄이 멈춤 | 그 소스가 죽었다 |
 | K8s만 `ENOTFOUND …eks.amazonaws.com` | kubeconfig가 옛 클러스터를 가리킨다 → `aws eks update-kubeconfig` 재실행 |
-| 403 채점 키가 전부 0 | `WAF_LOG_GROUP` 미설정. 앱 로그만으로는 차단 건수를 볼 수 없다 |
+| `Exception Handling` 이 0 | `WAF_LOG_GROUP` 미설정. 앱 로그만으로는 차단 건수를 볼 수 없다 |
 | 화면이 갱신을 멈춘 것 같다 | 다른 창을 보고 있으면 폴링이 멈춘다(의도된 동작). 창을 앞으로 가져오면 즉시 갱신된다 |
 | `…는 이미 사용 중입니다` | 이전 백엔드가 살아 있다. 종료하거나 `pnpm dev -p 3110` |
 

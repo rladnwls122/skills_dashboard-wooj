@@ -184,6 +184,13 @@ export interface GradingScore {
   // Set when the figure is a proxy — e.g. a numerator whose denominator the
   // grader keeps to itself (how many bad-email requests it injected).
   approximate?: boolean;
+  // The scoring band this value currently sits in, and the next one up. The
+  // sheet pays per threshold crossed (90 / 87.5 / 85 / … ), so "86.2%" on its
+  // own does not tell the operator whether the next point is worth chasing —
+  // "지금 85.0% 구간, 87.5% 까지 1.3%p" does. null when the sheet has no band
+  // for this key (cost ratio) or the value is below the lowest one.
+  tier?: string | null;
+  nextTier?: string | null;
 }
 
 // What the WAF log says arrived at each part of the surface, taken from the

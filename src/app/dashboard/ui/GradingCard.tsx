@@ -58,7 +58,7 @@ export function GradingCard({ window: win }: { window: WindowSelection }) {
                     counted from the app log, one from the WAF log and one from
                     ALB metrics, and a ratio whose origin is invisible invites
                     comparing numbers that were never comparable. */}
-                {["채점 키", "비율", "충족/전체", "출처"].map((h) => (
+                {["채점 키", "비율", "채점 구간", "충족/전체", "출처"].map((h) => (
                   <th key={h} className="px-2 py-1 font-medium">
                     {h}
                   </th>
@@ -83,6 +83,21 @@ export function GradingCard({ window: win }: { window: WindowSelection }) {
                       }`}
                     >
                       {none ? "—" : `${l.approximate ? "≈" : ""}${l.pct}%`}
+                    </td>
+                    {/* The sheet pays per threshold crossed, so the gap to the
+                        next one is the only number that says whether chasing a
+                        point is worth it during the match. */}
+                    <td className="px-2 py-1 whitespace-nowrap tabular-nums">
+                      {none ? (
+                        <span className="text-neutral-600">—</span>
+                      ) : (
+                        <>
+                          <span className="text-neutral-300">{l.tier ?? "구간 미달"}</span>
+                          {l.nextTier && (
+                            <span className="ml-1 text-neutral-600">· {l.nextTier}</span>
+                          )}
+                        </>
+                      )}
                     </td>
                     <td className="px-2 py-1 tabular-nums text-neutral-500">
                       {none

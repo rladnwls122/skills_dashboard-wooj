@@ -203,11 +203,11 @@ async function discoverAppLogGroups(a: AWS): Promise<DiscoveryResult> {
   const client = a.logs(a.settings.region());
   const seen = new Map<string, string>();
   const notes: string[] = [];
-  // ECS awslogs groups first (the 2025 task runs the binaries on ECS/EC2 —
-  // one group per task definition is the usual layout), then the Container
-  // Insights path, then anything under /aws/, because a cluster set up by
-  // hand rarely uses the generated name.
-  for (const prefix of ["/ecs/", "/aws/ecs/", "/aws/containerinsights/", "/aws/eks/", "/aws/"]) {
+  // Container Insights first: the 2026 task mandates EKS and forbids ECS, so
+  // that is where the application log actually lands. The /ecs/ prefixes stay
+  // last rather than being dropped — a variant of the task, or a leftover
+  // group from an earlier build, still shows up rather than silently missing.
+  for (const prefix of ["/aws/containerinsights/", "/aws/eks/", "/aws/", "/ecs/", "/aws/ecs/"]) {
     try {
       const res = await client.send(
         new DescribeLogGroupsCommand({ logGroupNamePrefix: prefix, limit: 50 }),

@@ -96,7 +96,7 @@ export const SPECS: SettingSpec[] = [
     key: "APP_LOG_GROUP",
     label: "앱 로그 그룹",
     hint:
-      "요청 로그·채점 지표 집계에 쓰는 CloudWatch Logs 그룹. 앱이 ECS awslogs 로 서비스마다 따로 쓰면 쉼표로 여러 개 (예: /ecs/user,/ecs/product,/ecs/stress). [GIN] 액세스 라인이 들어 있는 그룹이어야 한다.",
+      "요청 로그·채점 지표 집계에 쓰는 CloudWatch Logs 그룹. EKS Container Insights 면 /aws/containerinsights/<클러스터>/application. 그룹이 여러 개로 나뉘면 쉼표로 나열. [GIN] 액세스 라인이 들어 있는 그룹이어야 한다.",
     discover: "loggroup",
   },
   {
