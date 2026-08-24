@@ -18,21 +18,15 @@ import { ProbePanel } from "./ProbePanel";
 const KINDS: { kind: AssembleKind; label: string; sub: string; field: string }[] = [
   {
     kind: "ua",
-    label: "의심 User-Agent",
-    sub: "공격 도구·위조로 분류된 UA",
-    field: "SingleHeader: user-agent",
-  },
-  {
-    kind: "sqli",
-    label: "SQL 인젝션",
-    sub: "고정 시그니처 세트 (관측 무관)",
-    field: "QueryString",
+    label: "스캐너 User-Agent",
+    sub: "서비스 경로 AND 공격 도구·위조 UA",
+    field: "UriPath + SingleHeader: user-agent",
   },
 ];
 
-// Generates one regex rule per purpose out of what the environment is seeing,
-// and hands the incident snapshot to Amazon Q. Nothing here touches the WebACL:
-// the output is JSON to read, apply as Count, then promote by hand.
+// Builds the scanner User-Agent rule out of what the environment is seeing.
+// Nothing here touches the WebACL until a button is pressed: the output is JSON
+// to read, apply as Count, then promote by hand.
 // Derived from the WebACL, so "추천됨" means exactly "not in the ACL".
 function RuleState({ action }: { action: string | null }) {
   const [text, cls] =
@@ -48,7 +42,7 @@ function RuleState({ action }: { action: string | null }) {
   );
 }
 
-export function AiTab({
+export function UaTab({
   waf,
   window: win,
 }: {
@@ -167,6 +161,38 @@ export function AiTab({
                 {k.sub} · 검사 대상 <span className="text-neutral-300">{k.field}</span>
               </div>
 
+              {/* Stated on screen, not just in the generated JSON: someone
+                  reading this over the operator's shoulder has to be able to
+                  see why the rule is shaped this way without parsing WAF JSON.
+                  The path condition in particular looks redundant until you
+                  know it is what keeps a 403 off the undefined paths. */}
+              <div className="mb-2 space-y-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1.5 text-[11px] text-neutral-400">
+                <div className="font-semibold text-neutral-300">동작 원리</div>
+                <div>
+                  두 조건을 <span className="text-neutral-200">모두</span> 만족할 때만 차단합니다
+                  (AndStatement).
+                </div>
+                <div>
+                  <span className="text-neutral-200">① 어디로</span> — 요청 경로가 서비스 경로
+                  (<span className="font-mono">/v1/user · /v1/product · /v1/stress</span>) 인가.
+                  URL_DECODE → NORMALIZE_PATH 로 <span className="font-mono">%2f</span> ·{" "}
+                  <span className="font-mono">/./</span> 우회를 편 뒤 비교합니다.
+                </div>
+                <div>
+                  <span className="text-neutral-200">② 누가</span> — User-Agent 가 관측된 공격
+                  도구·위조 UA 인가. COMPRESS_WHITE_SPACE → LOWERCASE 로 정규화한 뒤 비교합니다.
+                </div>
+                <div className="text-neutral-500">
+                  경로 조건을 빼면 미지정 경로에도 403 이 나갑니다. 과제 계약은 미지정 경로에 404 를
+                  요구하므로 그 자체가 위반입니다 — <span className="text-neutral-300">403 이 정답인
+                  곳에서만</span> 차단하려고 조건을 두 개로 나눴습니다.
+                </div>
+                <div className="text-neutral-500">
+                  패턴은 관측된 트래픽에서 만들어집니다. 정상 클라이언트(실제 브라우저 · Go 부하생성기 ·
+                  AWS 헬스체크)는 애초에 패턴이 되지 않습니다.
+                </div>
+              </div>
+
               <ErrorNote error={error ?? null} />
 
               {rule && (
@@ -266,23 +292,25 @@ export function AiTab({
                       <RuleState action={aclAction(rule.name)} />
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      {k.kind === "sqli" && (
-                        <button
-                          type="button"
-                          disabled={moving !== null || pendingArns(rule) > 0}
-                          onClick={() => void move(rule, "COUNT")}
-                          className="rounded bg-amber-900 px-2 py-0.5 font-semibold text-amber-100 hover:bg-amber-800 disabled:opacity-40"
-                        >
-                          COUNT 로 올리기
-                        </button>
-                      )}
+                      {/* COUNT first is always available: it is the only way to
+                          see what a rule would have blocked before it blocks
+                          anything, and during a match a false positive costs
+                          more than a few minutes of counting. */}
+                      <button
+                        type="button"
+                        disabled={moving !== null || pendingArns(rule) > 0}
+                        onClick={() => void move(rule, "COUNT")}
+                        className="rounded bg-amber-900 px-2 py-0.5 font-semibold text-amber-100 hover:bg-amber-800 disabled:opacity-40"
+                      >
+                        COUNT 로 올리기
+                      </button>
                       <button
                         type="button"
                         disabled={moving !== null || pendingArns(rule) > 0}
                         onClick={() => void move(rule, "BLOCK")}
                         className="rounded bg-red-900 px-2 py-0.5 font-semibold text-red-100 hover:bg-red-800 disabled:opacity-40"
                       >
-                        {k.kind === "sqli" ? "BLOCK 으로 승격" : "BLOCK 으로 올리기"}
+                        BLOCK 으로 승격
                       </button>
                       <button
                         type="button"
@@ -294,14 +322,13 @@ export function AiTab({
                       </button>
                       {moving === rule.name && <span className="text-neutral-500">적용 중…</span>}
                     </div>
-                    {k.kind === "ua" && (
-                      <div className="mt-1 text-neutral-500">
-                        올린 직후 아래 정상 경로 프로브를 한 번 돌리세요 — COUNT 를 거치지 않으므로
-                        오탐을 즉시 알 수 있는 유일한 신호입니다.
-                      </div>
-                    )}
+                    <div className="mt-1 text-neutral-500">
+                      COUNT 로 올린 뒤 아래 실측을 읽고, 정상 응답 0건일 때 BLOCK 으로 승격하세요.
+                      바로 BLOCK 으로 갈 거면 직후에 아래 정상 경로 프로브를 한 번 돌리세요 — 오탐을
+                      즉시 알 수 있는 유일한 신호입니다.
+                    </div>
 
-                    {k.kind === "sqli" && aclAction(rule.name) === "COUNT" && (
+                    {aclAction(rule.name) === "COUNT" && (
                       <div className="mt-2 border-t border-neutral-800 pt-2">
                         <button
                           type="button"

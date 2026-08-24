@@ -184,6 +184,13 @@ export interface GradingScore {
   // Set when the figure is a proxy — e.g. a numerator whose denominator the
   // grader keeps to itself (how many bad-email requests it injected).
   approximate?: boolean;
+  // The scoring band this value currently sits in, and the next one up. The
+  // sheet pays per threshold crossed (90 / 87.5 / 85 / … ), so "86.2%" on its
+  // own does not tell the operator whether the next point is worth chasing —
+  // "지금 85.0% 구간, 87.5% 까지 1.3%p" does. null when the sheet has no band
+  // for this key (cost ratio) or the value is below the lowest one.
+  tier?: string | null;
+  nextTier?: string | null;
 }
 
 // What the WAF log says arrived at each part of the surface, taken from the
@@ -328,7 +335,7 @@ export interface ResolvedWindow extends WindowSelection {
 // A regex rule assembled for one purpose (see server/ruleassemble.ts).
 // No "path": an undefined path already gets a 404 from the ALB, and blocking it
 // in the WAF would return 403 instead (04).
-export type AssembleKind = "ua" | "sqli";
+export type AssembleKind = "ua";
 
 // A regex pattern set is a separate AWS resource, created before the rule that
 // references it. Both artefacts are produced here so neither has to be

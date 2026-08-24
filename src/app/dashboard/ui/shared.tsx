@@ -51,7 +51,15 @@ export function usePoll<T>(
   const inputKey = JSON.stringify(inputs);
   const lastInputKey = useRef(inputKey);
 
-  const tick = useCallback(async (): Promise<void> => {
+  const tick = useCallback(async (scheduled = false): Promise<void> => {
+    // A scheduled tick is skipped while the page is hidden. Nobody is reading
+    // it, and on a low-spec machine each round costs an AWS call, a React
+    // render and a canvas redraw across every mounted panel — minimising the
+    // window during a match should cost nothing. Manual refreshes and the first
+    // load still run, so a panel is never left empty or stuck on "loading".
+    if (scheduled && typeof document !== "undefined" && document.visibilityState === "hidden") {
+      return;
+    }
     if (inflight.current) return;
     inflight.current = true;
     try {
@@ -90,8 +98,18 @@ export function usePoll<T>(
     }
     setLoading(true);
     void tick();
-    const id = setInterval(() => void tick(), intervalMs);
-    return () => clearInterval(id);
+    const id = setInterval(() => void tick(true), intervalMs);
+    // Coming back to a hidden tab must not show whatever was on screen when it
+    // was hidden — that number could be an hour old and carries no marker
+    // saying so. One immediate read on return, then the interval resumes.
+    const onVisible = (): void => {
+      if (document.visibilityState === "visible") void tick();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [tick, intervalMs, enabled, inputKey]);
 
   return { data, error, loading, lastUpdated, refresh: () => void tick() };
