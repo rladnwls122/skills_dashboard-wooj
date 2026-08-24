@@ -1,0 +1,100 @@
+name: release
+
+# Builds the Go dashboard and attaches the binaries to a GitHub Release.
+#
+# The point of this workflow is that neither the machine cutting the release
+# nor the machine running the dashboard needs a toolchain. The frontend is
+# compiled here and embedded into the binary, so the venue PC downloads one
+# file and runs it — no Node, no Go, no pnpm, no dist/ folder to keep next to
+# the executable and lose.
+#
+# Triggered by a tag so a release is always deliberate, and manually so a bad
+# artifact can be rebuilt without burning a version number.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # go:embed cannot reach outside the module directory, so the built
+      # frontend is copied to where the embed directive can see it. Doing the
+      # copy here rather than committing a second copy of dist/ keeps one
+      # source of truth in the repo.
+      - name: Build the frontend into the module
+        run: |
+          set -eux
+          pnpm build:frontend
+          rm -rf backend/webdist
+          cp -r dist backend/webdist
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Vet and test
+        working-directory: backend
+        run: |
+          go vet ./...
+          go test ./...
+
+      # CGO off: a static binary that runs on a venue PC with no toolchain and
+      # no matching libc. -trimpath keeps build paths out of the artifact.
+      - name: Build
+        working-directory: backend
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -eux
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          mkdir -p ../out
+          GOOS=windows GOARCH=amd64 go build -trimpath -tags embed -ldflags "$LDFLAGS" -o ../out/skills-dashboard-windows-amd64.exe .
+          GOOS=linux   GOARCH=amd64 go build -trimpath -tags embed -ldflags "$LDFLAGS" -o ../out/skills-dashboard-linux-amd64 .
+          GOOS=darwin  GOARCH=arm64 go build -trimpath -tags embed -ldflags "$LDFLAGS" -o ../out/skills-dashboard-darwin-arm64 .
+
+      - name: Checksums
+        run: |
+          cd out
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -la
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            out/skills-dashboard-*
+            out/SHA256SUMS.txt
+          generate_release_notes: true
+          body: |
+            대회장 PC에서 쓰는 법 — **파일 하나만 받으면 됩니다.**
+
+            1. `skills-dashboard-windows-amd64.exe` 를 받는다 (Linux 는 `-linux-amd64`, Apple Silicon 은 `-darwin-arm64`).
+            2. 그냥 실행한다. Node·Go·pnpm 전부 필요 없다 — 화면이 바이너리 안에 들어 있다.
+            3. 브라우저로 `http://127.0.0.1:8787/dashboard` 를 연다.
+            4. 톱니 → `AWS 자격증명` → `aws CLI 세션 불러오기` → `연결 확인`.
+
+            자세한 사용법은 저장소의 `README.md` 와 `docs/RUNBOOK.md` 를 보세요.

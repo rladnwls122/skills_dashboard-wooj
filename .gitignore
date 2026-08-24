@@ -10,3 +10,6 @@ data/
 next-env.d.ts
 *.tsbuildinfo
 backend/bin/
+
+# Release build copies the built frontend here to embed it; not committed.
+backend/webdist/
