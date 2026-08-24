@@ -50,16 +50,21 @@ func (p *Provider) backfillOnce(ctx context.Context, win types.ScoringWindow, cu
 	if p.backfill.attempted {
 		return p.backfill.note
 	}
-	p.backfill.attempted = true
-
 	from := win.StartMs
 	to := win.EndMs
 	if nowMs < to {
 		to = nowMs
 	}
 	if to <= from {
+		// There is nothing to reconstruct yet, so this was not an attempt.
+		// Marking it as one before this check burned the single one-shot on
+		// whoever opened the 비용 panel before the scoring window opened — and
+		// the stretch the dashboard was not running for then stayed empty for
+		// the rest of the process's life, with no note saying why.
 		return ""
 	}
+	p.backfill.attempted = true
+
 	runs, err := p.AWS.LookupInstanceEvents(ctx, "RunInstances", from, to)
 	if err == nil {
 		var terms []types.CloudTrailEvent

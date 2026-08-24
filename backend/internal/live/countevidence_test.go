@@ -104,3 +104,28 @@ func TestBuildWafLogQuery(t *testing.T) {
 		t.Error("unknown action must be rejected")
 	}
 }
+
+// Every stage of a Logs Insights pipeline has to begin with a command. A bare
+// field expression after a pipe is a MalformedQueryException, which meant this
+// query had never once returned a row and the panel read as "잡힌 것 없음".
+func TestBuildCountQueryEveryStageBeginsWithACommand(t *testing.T) {
+	commands := map[string]bool{
+		"fields": true, "filter": true, "stats": true, "sort": true,
+		"limit": true, "parse": true, "display": true, "dedup": true,
+	}
+	q := buildCountQuery("sqli-block")
+	for _, stage := range strings.Split(q, "|") {
+		stage = strings.TrimSpace(stage)
+		if stage == "" {
+			t.Fatalf("empty pipeline stage in %q", q)
+		}
+		command, _, _ := strings.Cut(stage, " ")
+		if !commands[command] {
+			t.Errorf("stage %q does not begin with a command (query: %s)", stage, q)
+		}
+	}
+	// The method is still asked for — it is a column of the evidence table.
+	if !strings.Contains(q, "httpRequest.httpMethod as method") {
+		t.Errorf("method field dropped: %s", q)
+	}
+}

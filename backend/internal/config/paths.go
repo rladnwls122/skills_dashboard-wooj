@@ -14,28 +14,55 @@ var LowPriorityPaths = []string{
 	"/health", "/healthz", "/ready", "/readyz", "/liveness", "/healthcheck",
 }
 
-// NormalizePath resolves "." and ".." segments and collapses repeated slashes,
-// the way WAF's NORMALIZE_PATH transform does. Without this a traversal
-// attempt reads as the served path it is prefixed with.
+// NormalizePathTransform is WAF's NORMALIZE_PATH and nothing else: "." and
+// ".." segments resolved, repeated slashes collapsed, a trailing slash kept.
+//
+// The trailing slash is the whole reason there is only one implementation now.
+// There used to be two — this one and normalizePathT in internal/rules — and
+// they disagreed about exactly that character, so the rule assembler could
+// describe a path that the sandbox then evaluated as a different string and
+// returned a different verdict for. The sandbox is only worth anything if it
+// answers the question AWS will answer, and AWS keeps the trailing slash. So
+// this keeps it, and any caller that wants it gone strips it itself.
+//
+// It does not strip a query string either: NORMALIZE_PATH is applied to a field
+// that has already been isolated. NormalizePath below is the analysis-layer
+// helper that does that first.
+func NormalizePathTransform(path string) string {
+	segments := []string{}
+	for _, seg := range strings.Split(path, "/") {
+		switch seg {
+		case "", ".":
+			continue
+		case "..":
+			if len(segments) > 0 {
+				segments = segments[:len(segments)-1]
+			}
+		default:
+			segments = append(segments, seg)
+		}
+	}
+	trailing := ""
+	if len(path) > 1 && strings.HasSuffix(path, "/") && len(segments) > 0 {
+		trailing = "/"
+	}
+	return "/" + strings.Join(segments, "/") + trailing
+}
+
+// NormalizePath is the analysis-layer helper: it takes a logged URI, which may
+// still carry its query string, and resolves it the way WAF would. Without the
+// normalisation a traversal attempt reads as the served path it is prefixed
+// with.
+//
+// Callers comparing the result with == have to account for the preserved
+// trailing slash: "/v1/user/" and "/v1/user" are the same route, and WAF will
+// tell you they are different strings.
 func NormalizePath(path string) string {
 	raw := path
 	if i := strings.IndexByte(raw, '?'); i >= 0 {
 		raw = raw[:i]
 	}
-	out := []string{}
-	for _, seg := range strings.Split(raw, "/") {
-		switch seg {
-		case "", ".":
-			continue
-		case "..":
-			if len(out) > 0 {
-				out = out[:len(out)-1]
-			}
-		default:
-			out = append(out, seg)
-		}
-	}
-	return "/" + strings.Join(out, "/")
+	return NormalizePathTransform(raw)
 }
 
 func IsLowPriorityPath(path string) bool {
@@ -54,9 +81,13 @@ func IsLowPriorityPath(path string) bool {
 // grader's load generator drives heavy traffic at these paths, so volume
 // against them is never treated as an attack.
 func AppTrafficPaths() []string {
+	// /images is the static surface: S3 objects served under /images/<object
+	// path> through the same endpoint. It is graded on its own key, and a WAF
+	// rule that reaches it costs image download points, so it belongs on the
+	// served list even though no binary registers it as a route.
 	raw := strings.TrimSpace(os.Getenv("APP_TRAFFIC_PATHS"))
 	if raw == "" {
-		raw = "/v1/user,/v1/product,/v1/stress"
+		raw = "/v1/user,/v1/product,/v1/stress,/images"
 	}
 	out := []string{}
 	for _, p := range strings.Split(raw, ",") {

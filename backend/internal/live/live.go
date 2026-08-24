@@ -12,6 +12,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/analysis"
@@ -42,7 +43,7 @@ func New(settings *config.Settings, st *store.Store) *Provider {
 	cm := creds.New(st)
 	return &Provider{
 		AWS:      awsx.New(settings, st, cm),
-		Kube:     kube.New(settings, st),
+		Kube:     kube.New(settings, st, cm),
 		Store:    st,
 		Settings: settings,
 		Creds:    cm,
@@ -50,8 +51,19 @@ func New(settings *config.Settings, st *store.Store) *Provider {
 	}
 }
 
+// Reset drops every memoized client, so the next request rebuilds them against
+// whatever credentials are in force now.
+//
+// It used to reset AWS only, and the asymmetry was invisible until it mattered:
+// after injecting keys on the 설정 screen the AWS panels came back and the
+// Kubernetes panel stayed broken for the life of the process, because
+// internal/kube builds its clients once and EKS exec-auth resolves an identity
+// when that client is built. Re-injecting could not fix it either — nothing was
+// asking for a new client. A credential change has to invalidate every client
+// built from the old ones, not the convenient half.
 func (p *Provider) Reset() {
 	p.AWS.Reset()
+	p.Kube.Reset()
 }
 
 // BootstrapCredentials makes a fresh start behave like pressing the 설정
@@ -79,9 +91,10 @@ func (p *Provider) BootstrapCredentials(ctx context.Context) {
 		log.Printf("CLI 자격증명 자동 불러오기 실패 (profile %q): %v — 설정 탭에서 직접 불러올 수 있습니다", profile, err)
 		return
 	}
-	// SDK clients capture the credential provider at construction; anything
+	// SDK clients capture the credential provider at construction, and the
+	// Kubernetes exec plugin captures its environment the same way; anything
 	// built before this import must be rebuilt.
-	p.AWS.Reset()
+	p.Reset()
 	log.Printf("CLI 자격증명 자동 불러오기 완료 (profile %q, 세션 한정)", profile)
 }
 
@@ -95,10 +108,54 @@ func windowKey(w types.ResolvedWindow) string {
 
 func (p *Provider) KubePanel(ctx context.Context) (types.KubePanel, error) {
 	return cache.Cached("panel:kube", config.Polling.KubeTTL, func() (types.KubePanel, error) {
-		pods, podsErr := p.Kube.ListPods(ctx)
-		events, _ := p.Kube.ListWarningEvents(ctx)
-		deployments, _ := p.Kube.ListDeployments(ctx)
-		nodesReady, nodesTotal, _ := p.Kube.CountReadyNodes(ctx)
+		// Eight reads, in two waves rather than one queue.
+		//
+		// They used to run strictly one after another inside a 3-second TTL
+		// cache. With EKS exec-auth every one of them pays for an `aws eks
+		// get-token` round trip — call it 300ms — so the whole panel took
+		// longer to build than the cache entry it was building lived for, and
+		// the cache was never once warm: every poll re-ran every call, and the
+		// screen lagged permanently behind the cluster.
+		//
+		// The reads share no state, only a shape: four of them depend on the
+		// results of the first wave (pod resources on the pod list, pod scaling
+		// on the deployment list, node scaling on the node count), so they
+		// cannot start until it lands. Everything else goes out together.
+		//
+		// Error semantics are unchanged on purpose. podsErr is still captured
+		// here and still returned AFTER the panel is assembled, because that
+		// ordering is what lets the recording side effect below see a complete
+		// panel; the other reads still swallow their errors into empty defaults
+		// or into their own *Error field, which is what the UI renders them as.
+		var (
+			pods         []types.PodInfo
+			podsErr      error
+			events       []types.WarningEvent
+			deployments  []types.DeploymentInfo
+			nodeListing  kube.NodeListing
+			firstWaveWg  sync.WaitGroup
+			secondWaveWg sync.WaitGroup
+		)
+		firstWaveWg.Add(4)
+		go func() {
+			defer firstWaveWg.Done()
+			pods, podsErr = p.Kube.ListPods(ctx)
+		}()
+		go func() {
+			defer firstWaveWg.Done()
+			events, _ = p.Kube.ListWarningEvents(ctx)
+		}()
+		go func() {
+			defer firstWaveWg.Done()
+			deployments, _ = p.Kube.ListDeployments(ctx)
+		}()
+		go func() {
+			defer firstWaveWg.Done()
+			// One node listing for both the header count and the per-node
+			// capacity denominators — it used to be fetched twice.
+			nodeListing = p.Kube.ListNodes(ctx)
+		}()
+		firstWaveWg.Wait()
 
 		if pods == nil {
 			pods = []types.PodInfo{}
@@ -109,11 +166,39 @@ func (p *Provider) KubePanel(ctx context.Context) (types.KubePanel, error) {
 		if deployments == nil {
 			deployments = []types.DeploymentInfo{}
 		}
+		// A failed listing keeps its ignored-error default of zero nodes, as
+		// before; the listing itself is passed on with its error intact so the
+		// resource table can refuse to draw rather than divide by a capacity it
+		// never read.
+		nodesReady, nodesTotal := nodeListing.Ready, nodeListing.Total
 
-		podResources, podResourceError := p.Kube.GetPodResourceUsage(ctx, pods)
-		nodeResources, nodeResourceError := p.Kube.GetNodeResourceUsage(ctx)
-		podScaling := p.Kube.GetPodScaling(ctx, deployments)
-		nodeScaling, scalingError := p.nodeScaling(ctx, nodesTotal)
+		var (
+			podResources      []types.PodResourceUsage
+			podResourceError  *string
+			nodeResources     []types.NodeResourceUsage
+			nodeResourceError *string
+			podScaling        []types.ScaleInfo
+			nodeScaling       []types.ScaleInfo
+			scalingError      *string
+		)
+		secondWaveWg.Add(4)
+		go func() {
+			defer secondWaveWg.Done()
+			podResources, podResourceError = p.Kube.GetPodResourceUsage(ctx, pods)
+		}()
+		go func() {
+			defer secondWaveWg.Done()
+			nodeResources, nodeResourceError = p.Kube.GetNodeResourceUsageFrom(ctx, nodeListing)
+		}()
+		go func() {
+			defer secondWaveWg.Done()
+			podScaling = p.Kube.GetPodScaling(ctx, deployments)
+		}()
+		go func() {
+			defer secondWaveWg.Done()
+			nodeScaling, scalingError = p.nodeScaling(ctx, nodesTotal)
+		}()
+		secondWaveWg.Wait()
 
 		panel := types.KubePanel{
 			Pods:              pods,
@@ -338,28 +423,11 @@ func (p *Provider) Discover(ctx context.Context, kind string) (types.DiscoveryRe
 	return p.AWS.Discover(ctx, kind)
 }
 
-// emptySummary is the stand-in for the one assembly kind that reads no traffic
-// at all.
-var emptySummary = types.HttpSummary{
-	ByPath:         []types.PathStat{},
-	ByIp:           []types.IpStat{},
-	ByUa:           []types.KeyCount{},
-	ByMethod:       []types.KeyCount{},
-	QueryPatterns:  []types.KeyCount{},
-	HeaderPatterns: []types.KeyCount{},
-	Notes:          []string{},
-}
-
 func (p *Provider) assembleEnv() rules.AssembleEnv {
 	return rules.AssembleEnv{WafScope: p.Settings.WafScope(), WafRegion: p.Settings.WafRegion()}
 }
 
 func (p *Provider) AssembleRule(ctx context.Context, kind string, win types.ResolvedWindow) (types.AssembledRule, error) {
-	// SQLi is a fixed signature set, so it must not fail when the WAF summary
-	// is unavailable — only the observed kinds need live traffic.
-	if kind == "sqli" {
-		return rules.AssembleRule("sqli", emptySummary, p.assembleEnv())
-	}
 	summary, err := p.AWS.BuildHttpSummary(ctx, nil, win)
 	if err != nil {
 		return types.AssembledRule{}, err
@@ -504,4 +572,3 @@ func (p *Provider) ClearCredentials(ctx context.Context) error {
 func (p *Provider) CheckCredentials(ctx context.Context) (types.CredentialCheck, error) {
 	return p.AWS.CheckCredentials(ctx), nil
 }
-

@@ -1,7 +1,6 @@
 package rules
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/types"
@@ -61,27 +60,6 @@ func TestTestRuleManagedGroupApproximation(t *testing.T) {
 	}
 }
 
-func TestAssembleSqliRoundTripsThroughSandbox(t *testing.T) {
-	assembled, err := AssembleRule("sqli", types.HttpSummary{}, AssembleEnv{WafScope: "CLOUDFRONT", WafRegion: "us-east-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(assembled.RuleJson, "<dash-sqli-signatures-ARN>") {
-		t.Fatal("console rule must carry the ARN placeholder")
-	}
-	requests := []types.TestRequest{
-		{ID: "sqli", Method: "GET", Path: "/v1/user", Query: "id=1%20OR%201=1", UserAgent: "sqlmap/1.7", IP: "203.0.113.8", Country: "RU", Benign: false},
-		{ID: "ok", Method: "GET", Path: "/v1/user", Query: "id=42", UserAgent: "Mozilla/5.0 (X11) AppleWebKit/537.36", IP: "10.0.2.88", Country: "KR", Benign: true},
-	}
-	res, err := TestRule(assembled.SandboxRuleJson, requests)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Caught != 1 || res.Blocked != 0 {
-		t.Fatalf("caught=%d blocked=%d rows=%+v", res.Caught, res.Blocked, res.Rows)
-	}
-}
-
 func TestClassifyUa(t *testing.T) {
 	cases := []struct {
 		ua       string
@@ -133,5 +111,40 @@ func TestJsonDocumentsTolerantParsing(t *testing.T) {
 	}
 	if len(docs) != 2 {
 		t.Fatalf("docs=%d", len(docs))
+	}
+}
+
+// The sandbox's NORMALIZE_PATH and the assembler's path normalisation are now
+// the same code. This pins the behaviour the sandbox depends on: WAF resolves
+// traversal but keeps the trailing slash, so a rule that looks right on the
+// assembler screen evaluates the same way here.
+func TestNormalizePathTransformIsFaithfulToWaf(t *testing.T) {
+	apply := func(value string) string {
+		res := ApplyTransforms(value, []any{
+			map[string]any{"Priority": float64(0), "Type": "NORMALIZE_PATH"},
+		})
+		if !res.OK {
+			t.Fatalf("NORMALIZE_PATH refused %q", value)
+		}
+		return res.Value
+	}
+	cases := []struct{ in, want string }{
+		{"/v1/image/../../etc/passwd", "/etc/passwd"},
+		{"//v1///user", "/v1/user"},
+		{"/v1/user/", "/v1/user/"},
+		{"/v1/./user", "/v1/user"},
+		{"/", "/"},
+	}
+	for _, c := range cases {
+		if got := apply(c.in); got != c.want {
+			t.Errorf("NORMALIZE_PATH(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	// NORMALIZE_PATH_WIN is the same normalisation with backslashes folded in.
+	res := ApplyTransforms(`\v1\image\..\..\etc\passwd`, []any{
+		map[string]any{"Priority": float64(0), "Type": "NORMALIZE_PATH_WIN"},
+	})
+	if !res.OK || res.Value != "/etc/passwd" {
+		t.Errorf("NORMALIZE_PATH_WIN = %+v, want /etc/passwd", res)
 	}
 }

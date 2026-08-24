@@ -91,12 +91,18 @@ func DetectAnomalies(input AnomalyInput, now time.Time) []types.Anomaly {
 	}
 
 	abnormal := func(m *types.MetricSummary) bool { return m != nil && m.Status != "NORMAL" }
+	// A metric CloudWatch never returned is a hole in the evidence, not a
+	// corroborating spike. Counting nil as a signal meant that on a cluster
+	// where, say, the WAF metrics are simply not published, every single alarm
+	// arrived with three free "corroborating" signals and escalate() promoted a
+	// lone WARNING to CRITICAL. abnormal() is the shape the rest of this file
+	// already uses, and it is the one that is true only about what was measured.
 	spikeSignals := 0
 	for _, hit := range []bool{
-		trt == nil || trt.Status != "NORMAL",
-		c4 == nil || c4.Status != "NORMAL",
-		c5 == nil || c5.Status != "NORMAL",
-		wafB == nil || wafB.Status != "NORMAL",
+		abnormal(trt),
+		abnormal(c4),
+		abnormal(c5),
+		abnormal(wafB),
 		len(badPods) > 0,
 		len(repeatedErrors) > 0,
 	} {

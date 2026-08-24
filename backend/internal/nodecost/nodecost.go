@@ -12,9 +12,9 @@
 package nodecost
 
 import (
-	"os"
 	"encoding/json"
 	"math"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -28,10 +28,14 @@ const (
 	// The scoring window opens an hour after the match starts and runs for two.
 	WindowOffset = time.Hour
 	WindowLength = 2 * time.Hour
-	// The only instance type the 2025 task sheet allows for workload hosts
-	// ("EC2 인스턴스는 c5.large 타입만"). Overridable with ALLOWED_INSTANCE_TYPE
-	// for a variant of the task that names another type.
-	DefaultAllowedType = "c5.large"
+	// The only instance type the task sheet allows for workload hosts — 2026 §7:
+	// "EC2 인스턴스는 t3.medium 타입만을 사용하도록 하며". Overridable with
+	// ALLOWED_INSTANCE_TYPE for a variant that names another type.
+	//
+	// Getting this wrong is not a cosmetic error: every legitimate node is drawn
+	// as 규격 외 in red, during the match, while the real off-spec instance it is
+	// supposed to surface hides in the same list.
+	DefaultAllowedType = "t3.medium"
 	// Readings are floored to a 30s grid, matching the poll interval. The
 	// primary key is (key, t), so the floor makes repeated writes inside one
 	// bucket idempotent instead of accumulating rows.

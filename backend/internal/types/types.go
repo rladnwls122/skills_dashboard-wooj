@@ -166,6 +166,13 @@ type GradingScore struct {
 	// Set when the figure is a proxy — e.g. a numerator whose denominator is
 	// not observable — rather than a confirmed count.
 	Approximate bool `json:"approximate,omitempty"`
+	// The scoring band this value currently sits in, and the next one up. The
+	// sheet pays per threshold crossed (90 / 87.5 / 85 / … ), so "86.2%" on its
+	// own does not tell the operator whether the next point is worth chasing —
+	// "지금 85% 구간, 87.5% 까지 1.3%p" does. nil when total is 0 or the value is
+	// below the lowest rung. Pointers so JSON null is expressible.
+	Tier     *string `json:"tier"`
+	NextTier *string `json:"nextTier"`
 }
 
 type GradingPanel struct {
@@ -342,9 +349,9 @@ type ScoringWindow struct {
 }
 
 type InstanceRow struct {
-	ID   string `json:"id"`
-	Type string `json:"type"`
-	AZ   string `json:"az"`
+	ID   string  `json:"id"`
+	Type string  `json:"type"`
+	AZ   string  `json:"az"`
 	Name *string `json:"name"`
 	// The `kubernetes.io/cluster/<name>` tag both EKS managed nodegroups and
 	// Karpenter put on the instances they create. Absent means the instance is

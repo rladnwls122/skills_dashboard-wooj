@@ -78,7 +78,11 @@ func (a *AWS) SetRuleAction(ctx context.Context, ruleJson, action string) (RuleU
 		if err != nil {
 			return RuleUpdate{}, err
 		}
-		h, err := a.getAclHandle(ctx)
+		// The write-only handle: UpdateWebACL below replaces the whole rule
+		// list, so it must never run against the WebACL the read fallback
+		// guessed at. A refusal here costs one corrected setting; the guess
+		// costs someone else's ACL.
+		h, err := a.getAclHandleForWrite(ctx)
 		if err != nil {
 			return RuleUpdate{}, err
 		}

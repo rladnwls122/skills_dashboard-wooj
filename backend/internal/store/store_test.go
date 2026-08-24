@@ -103,3 +103,55 @@ func TestApplyHistoryRollbackFlag(t *testing.T) {
 		t.Fatalf("canRollback wrong: %+v", rows)
 	}
 }
+
+// One poll of the kube panel is one write. The single-series form is kept for
+// the callers that record exactly one reading, and both share the retention
+// sweep — which now runs on a clock rather than on every insert, because it is
+// a full scan of a table whose only index is (key, t).
+func TestSaveMetricSampleBatchWritesEverySeries(t *testing.T) {
+	s := open(t)
+	now := time.Now().UnixMilli()
+	err := s.SaveMetricSampleBatch([]SeriesSamples{
+		{Key: "res:pod:cpu:api-1", Points: []Sample{{T: now, V: 12}}},
+		{Key: "res:pod:mem:api-1", Points: []Sample{{T: now, V: 34}}},
+		{Key: "res:node:cpu:ip-10-0-0-1", Points: []Sample{{T: now, V: 56}, {T: now - 10_000, V: 55}}},
+	})
+	if err != nil {
+		t.Fatalf("batch: %v", err)
+	}
+	keys, err := s.ListMetricKeys("res:", 0)
+	if err != nil || len(keys) != 3 {
+		t.Fatalf("keys=%v err=%v", keys, err)
+	}
+	rows, err := s.LoadMetricSamples("res:node:cpu:ip-10-0-0-1", 0)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows=%v err=%v", rows, err)
+	}
+	// Same key and time, new value: still one row, still the newer value.
+	if err := s.SaveMetricSampleBatch([]SeriesSamples{
+		{Key: "res:pod:cpu:api-1", Points: []Sample{{T: now, V: 99}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.LoadMetricSamples("res:pod:cpu:api-1", 0)
+	if err != nil || len(rows) != 1 || rows[0].V != 99 {
+		t.Fatalf("expected one row overwritten to 99, got %v %v", rows, err)
+	}
+}
+
+func TestRetentionSweepStillDropsExpiredRows(t *testing.T) {
+	s := open(t)
+	now := time.Now().UnixMilli()
+	// Older than the retention horizon, written before the first sweep of this
+	// store has run — so this very call is the one that must sweep it.
+	if err := s.SaveMetricSamples("nodes:count", []Sample{
+		{T: now - sampleRetentionMs - 60_000, V: 1},
+		{T: now, V: 2},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.LoadMetricSamples("nodes:count", 0)
+	if err != nil || len(rows) != 1 || rows[0].V != 2 {
+		t.Fatalf("expected only the fresh row to survive, got %v %v", rows, err)
+	}
+}

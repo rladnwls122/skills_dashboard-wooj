@@ -242,5 +242,17 @@ func AnalyzeRequestLog(lines []string) types.RequestLogAnalysis {
 		AvgLatencyMs:   avgLatency,
 		MaxLatencyMs:   maxLatency,
 		ByPath:         byPath,
+		// Counted over everything parsed, not over the truncated sample lists
+		// above — the panel prints these three as the totals, and a tail of 500
+		// entries would understate a 3,000-line fetch. Leaving them unset was
+		// worse still: this function runs exactly when Logs Insights failed and
+		// the Kubernetes fallback fired, so the counts went blank at the one
+		// moment the operator was already looking at a degraded panel and
+		// needed to know how much traffic it had actually seen. The Insights
+		// path (internal/live/podlogs.go) fills the same three fields from
+		// RecordsMatched.
+		TotalRequests:  types.Ptr(len(entries)),
+		NonOkTotal:     types.Ptr(len(nonOkEntries)),
+		ErrorWarnTotal: types.Ptr(len(errorWarnLines)),
 	}
 }

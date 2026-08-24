@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -65,6 +66,12 @@ CREATE TABLE IF NOT EXISTS incident_snapshots (
 
 type Store struct {
 	db *sql.DB
+
+	// When the retention sweep last ran. metric_samples has no index on t, so
+	// the sweep is a full table scan; see SaveMetricSampleBatch for why it is
+	// rationed rather than run on every write.
+	pruneMutex      sync.Mutex
+	lastPruneUnixMs int64
 }
 
 // Open creates the parent directory, opens the database in WAL mode and applies
@@ -144,7 +151,49 @@ type Sample struct {
 	V float64
 }
 
-func (s *Store) SaveMetricSamples(key string, points []Sample) error {
+// SeriesSamples is one metric series and the points to append to it — the unit
+// SaveMetricSampleBatch takes so a whole poll lands as one write.
+type SeriesSamples struct {
+	Key    string
+	Points []Sample
+}
+
+const (
+	// Rows older than this are swept. A three-hour match plus the CloudTrail
+	// backfill in front of it fits comfortably; raise it if this is ever used
+	// outside a contest day.
+	sampleRetentionMs = 6 * 3600_000
+	// The sweep is a full scan of metric_samples, so it runs on a clock rather
+	// than on a write count.
+	prunePeriodMs = 60_000
+)
+
+// SaveMetricSampleBatch writes every series of one poll in a single transaction
+// and sweeps expired rows at most once a minute.
+//
+// The previous shape did the sweep — `DELETE FROM metric_samples WHERE t < ?`,
+// a full table scan, because the primary key is (key, t) and nothing indexes t
+// alone — inside every call, and RecordResourceSamplesTo calls it once per pod
+// metric series on a 3-second poll. Twenty pods is forty transactions and forty
+// full scans every three seconds against a database opened with
+// SetMaxOpenConns(1): the whole dashboard queues behind housekeeping that only
+// needs to happen when something has actually aged out. One transaction per
+// poll plus one scan per minute is the same retention with none of the
+// contention.
+func (s *Store) SaveMetricSampleBatch(series []SeriesSamples) error {
+	nowMs := time.Now().UnixMilli()
+
+	// Claim the sweep before opening the transaction: concurrent pollers must
+	// not all decide to scan, and a caller that claims it and then fails simply
+	// leaves the rows for the next minute — expired samples are read by nothing.
+	prune := false
+	s.pruneMutex.Lock()
+	if nowMs-s.lastPruneUnixMs >= prunePeriodMs {
+		s.lastPruneUnixMs = nowMs
+		prune = true
+	}
+	s.pruneMutex.Unlock()
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -155,15 +204,25 @@ func (s *Store) SaveMetricSamples(key string, points []Sample) error {
 		return err
 	}
 	defer stmt.Close()
-	for _, p := range points {
-		if _, err := stmt.Exec(key, p.T, p.V); err != nil {
+	for _, one := range series {
+		for _, point := range one.Points {
+			if _, err := stmt.Exec(one.Key, point.T, point.V); err != nil {
+				return err
+			}
+		}
+	}
+	if prune {
+		if _, err := tx.Exec("DELETE FROM metric_samples WHERE t < ?", nowMs-sampleRetentionMs); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec("DELETE FROM metric_samples WHERE t < ?", time.Now().UnixMilli()-6*3600_000); err != nil {
-		return err
-	}
 	return tx.Commit()
+}
+
+// SaveMetricSamples is the single-series form, kept for the callers that record
+// exactly one reading (the node count) and for the tests written against it.
+func (s *Store) SaveMetricSamples(key string, points []Sample) error {
+	return s.SaveMetricSampleBatch([]SeriesSamples{{Key: key, Points: points}})
 }
 
 // ListMetricKeys is the index: pod names cannot be enumerated ahead of time, so

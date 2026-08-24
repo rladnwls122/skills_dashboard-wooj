@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/rladnwls122/skills_dashboard-wooj/backend/internal/config"
 )
 
 type TransformResult struct {
@@ -88,24 +90,13 @@ func urlDecodeUni(s string) string {
 	})
 }
 
+// normalizePathT is config.NormalizePathTransform under the name this file's
+// transform table uses. It is a call, not a copy: the assembler describes paths
+// through config.NormalizePath and the sandbox evaluates them through here, so
+// a second implementation is a second opinion about what a path is — and the
+// two did in fact disagree about the trailing slash.
 func normalizePathT(s string) string {
-	segs := []string{}
-	for _, seg := range strings.Split(s, "/") {
-		switch seg {
-		case "", ".":
-		case "..":
-			if len(segs) > 0 {
-				segs = segs[:len(segs)-1]
-			}
-		default:
-			segs = append(segs, seg)
-		}
-	}
-	trailing := ""
-	if len(s) > 1 && strings.HasSuffix(s, "/") && len(segs) > 0 {
-		trailing = "/"
-	}
-	return "/" + strings.Join(segs, "/") + trailing
+	return config.NormalizePathTransform(s)
 }
 
 var b64StrictRe = regexp.MustCompile(`^[A-Za-z0-9+/]+={0,2}$`)

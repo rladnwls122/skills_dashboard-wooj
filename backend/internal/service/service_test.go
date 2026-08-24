@@ -188,3 +188,46 @@ func TestProbeRejectsNonHttpTargets(t *testing.T) {
 		}
 	}
 }
+
+// The preview path and the apply path have to reject the same requests. They
+// used to run two separate copies of the rules and this one was the weaker: the
+// confirm screen accepted resource quantities that the cluster then refused,
+// with the operator already committed to the change.
+func TestValidateEnforcesTheSameResourceRulesAsTheApplyPath(t *testing.T) {
+	svc := newTestService(t)
+	container := "api"
+	str := func(s string) *string { return &s }
+	rejected := []struct {
+		name string
+		req  DeploymentPatchRequest
+	}{
+		{"cpu quantity nonsense", DeploymentPatchRequest{
+			Namespace: "default", Name: "api", ContainerName: &container, CPULimit: str("half a core")}},
+		{"cpu quantity with a unit kubernetes does not take", DeploymentPatchRequest{
+			Namespace: "default", Name: "api", ContainerName: &container, CPULimit: str("500mi")}},
+		{"memory quantity without a unit", DeploymentPatchRequest{
+			Namespace: "default", Name: "api", ContainerName: &container, MemLimit: str("256")}},
+		{"resource change without a container", DeploymentPatchRequest{
+			Namespace: "default", Name: "api", MemLimit: str("256Mi")}},
+	}
+	for _, c := range rejected {
+		if err := svc.Validate(c.req); err == nil {
+			t.Errorf("%s: expected rejection", c.name)
+		}
+	}
+	accepted := []DeploymentPatchRequest{
+		{Namespace: "default", Name: "api", ContainerName: &container, CPULimit: str("500m"), MemLimit: str("256Mi")},
+		{Namespace: "default", Name: "api", ContainerName: &container, CPULimit: str("1")},
+		{Namespace: "default", Name: "api", ContainerName: &container, CPULimit: str("1.5"), MemLimit: str("1Gi")},
+	}
+	for _, req := range accepted {
+		if err := svc.Validate(req); err != nil {
+			t.Errorf("valid request rejected: %+v: %v", req, err)
+		}
+	}
+	// The string internal/api's tests assert on has to survive the extraction.
+	err := svc.Validate(DeploymentPatchRequest{Namespace: "kube-system", Name: "api"})
+	if err == nil || !strings.Contains(err.Error(), "namespace must be") {
+		t.Fatalf("namespace rejection message changed: %v", err)
+	}
+}

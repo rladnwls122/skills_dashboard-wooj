@@ -25,6 +25,11 @@ type aclHandle struct {
 	webACL    *waftypes.WebACL
 	lockToken string
 	arn       string
+	// Whether this handle is the WebACL the operator actually named, or the
+	// first one in the account picked up by the fallback below. Reads may live
+	// with a guess; writes may not, so the distinction has to survive as far as
+	// the write path.
+	exact bool
 }
 
 func (a *AWS) getAclHandle(ctx context.Context) (aclHandle, error) {
@@ -39,13 +44,19 @@ func (a *AWS) getAclHandle(ctx context.Context) (aclHandle, error) {
 	}
 	name := a.Settings.WafWebAclName()
 	var summary *waftypes.WebACLSummary
+	exact := false
 	for i := range list.WebACLs {
 		if aws.ToString(list.WebACLs[i].Name) == name {
 			summary = &list.WebACLs[i]
+			exact = true
 			break
 		}
 	}
 	if summary == nil && len(list.WebACLs) > 0 {
+		// Kept for reads only: a dashboard that shows the one WebACL in the
+		// account is more useful than one that shows nothing because
+		// WAF_WEB_ACL_NAME has a typo in it. getAclHandleForWrite is where this
+		// guess stops being acceptable.
 		summary = &list.WebACLs[0]
 	}
 	if summary == nil || summary.Name == nil || summary.Id == nil || summary.ARN == nil {
@@ -58,7 +69,32 @@ func (a *AWS) getAclHandle(ctx context.Context) (aclHandle, error) {
 	if res.WebACL == nil || res.LockToken == nil {
 		return aclHandle{}, fmt.Errorf("GetWebACL returned empty result")
 	}
-	return aclHandle{webACL: res.WebACL, lockToken: *res.LockToken, arn: *summary.ARN}, nil
+	return aclHandle{webACL: res.WebACL, lockToken: *res.LockToken, arn: *summary.ARN, exact: exact}, nil
+}
+
+// getAclHandleForWrite is the same read with the fallback taken away.
+//
+// UpdateWebACL replaces the entire rule list. With the read fallback in force, a
+// typo in WAF_WEB_ACL_NAME or the wrong WAF_SCOPE (REGIONAL vs CLOUDFRONT list
+// completely different sets) meant the apply button rewrote the rule list of
+// whichever WebACL happened to come back first — someone else's, possibly a
+// production one — and then reported 성공. There is no undo for that inside this
+// dashboard, so a write against a WebACL nobody named is refused outright and
+// the message names both what was configured and what was actually found, since
+// seeing the two side by side is what makes the typo obvious.
+func (a *AWS) getAclHandleForWrite(ctx context.Context) (aclHandle, error) {
+	h, err := a.getAclHandle(ctx)
+	if err != nil {
+		return aclHandle{}, err
+	}
+	if !h.exact {
+		return aclHandle{}, fmt.Errorf(
+			"설정된 WebACL 이름 %q 을(를) scope=%s 에서 찾지 못했습니다 — 대신 발견된 것은 %q 입니다. "+
+				"이름이 다른 WebACL 의 규칙 목록을 덮어쓰지 않도록 변경을 중단했습니다. "+
+				"설정에서 WAF_WEB_ACL_NAME 과 WAF_SCOPE(REGIONAL · CLOUDFRONT) 를 확인한 뒤 다시 시도하세요.",
+			a.Settings.WafWebAclName(), a.Settings.WafScope(), aws.ToString(h.webACL.Name))
+	}
+	return h, nil
 }
 
 func (a *AWS) GetAclInfo(ctx context.Context) (types.WafAclInfo, error) {
@@ -233,13 +269,6 @@ func truncateStr(s string, n int) string {
 	return s[:n]
 }
 
-// Why the Insights path was skipped on the most recent call, so the fallback's
-// source line can say it instead of silently reading as the intended source.
-var (
-	insightsFallbackMu     sync.Mutex
-	insightsFallbackReason string
-)
-
 // EmptySampleNotes explains an empty panel: GetSampledRequests only samples
 // requests that a rule matched, so "no samples" means "nothing was collected",
 // not "nothing suspicious is happening".
@@ -257,6 +286,14 @@ func EmptySampleNotes(total int) []string {
 }
 
 func (a *AWS) BuildHttpSummary(ctx context.Context, statusDist *types.StatusDistribution, win types.ResolvedWindow) (types.HttpSummary, error) {
+	// Why this call fell back, carried on the stack rather than in a package
+	// variable. A shared variable was not merely a race (the mutex handled
+	// that) — it was the wrong scope: one request's Insights failure got pasted
+	// onto a different request's 출처 line, and a reason nobody consumed sat
+	// there until some unrelated summary picked it up minutes later. Provenance
+	// belongs to the response it describes.
+	insightsFallbackReason := ""
+
 	// Real counts over the shared window when WAF logs are available; the
 	// sampled-requests path below is the fallback and says so.
 	if logGroup := a.Settings.WafLogGroup(); logGroup != "" {
@@ -276,15 +313,13 @@ func (a *AWS) BuildHttpSummary(ctx context.Context, statusDist *types.StatusDist
 				BlockedTotal:   agg.blockedTotal,
 				StatusDist:     statusDist,
 				DetailedStatus: nil,
-				Notes: []string{
+				Notes: append([]string{
 					"헤더 패턴은 WAF 로그 집계에서 수집하지 않음 — 헤더는 요청마다 순서가 달라 인덱스로 집계할 수 없다. 샘플 모드(WAF_LOG_GROUP 미설정)에서만 나온다.",
-				},
+				}, agg.notes...),
 			}, nil
 		}
 		// Fall through to sampling, but say why the better source is missing.
-		insightsFallbackMu.Lock()
 		insightsFallbackReason = ErrMsg(err)
-		insightsFallbackMu.Unlock()
 	}
 
 	set, err := a.FetchSampledRequests(ctx)
@@ -369,14 +404,11 @@ func (a *AWS) BuildHttpSummary(ctx context.Context, statusDist *types.StatusDist
 	}
 
 	source := fmt.Sprintf("WAF GetSampledRequests (최근 %d분, 샘플 %d건 — 규칙당 500건 상한이라 전수가 아님, 선택한 구간을 따르지 않음)", set.WindowMinutes, total)
-	insightsFallbackMu.Lock()
 	if insightsFallbackReason != "" {
 		source += " · WAF 로그 집계 실패로 폴백: " + insightsFallbackReason
-		insightsFallbackReason = ""
 	} else if a.Settings.WafLogGroup() == "" {
 		source += " · WAF_LOG_GROUP 을 설정하면 선택 구간의 전수 집계로 바뀜"
 	}
-	insightsFallbackMu.Unlock()
 	if logGroup := a.Settings.WafLogGroup(); logGroup != "" {
 		if byIPLog, err := a.fetchWafLogIPCounts(ctx); err == nil {
 			for _, r := range byIPLog {
@@ -436,6 +468,10 @@ type wafLogAggregation struct {
 	// End of the span these numbers actually cover — a cached result is older
 	// than the window the caller resolved, and the panel has to say so.
 	coveredEndMs int64
+	// One line per secondary query that failed. An empty IP / UA / method /
+	// query-pattern table has to be distinguishable from "관측 없음", or the
+	// operator reads a query failure as a clean environment.
+	notes []string
 }
 
 // Keyed by span alone: the aggregation groups by key, never by time bucket, so
@@ -517,28 +553,69 @@ func (a *AWS) fetchWafLogInsights(ctx context.Context, win types.ResolvedWindow)
 		return a.RunInsightsQuery(ctx, p)
 	}
 
+	// Five queries, each with its own ~20s deadline, and the 성능 panel awaits
+	// this inline: run sequentially the worst case was a ~100s hang on the
+	// metrics endpoint with every concurrent caller queued behind the same
+	// cache entry. They share no state, so they go out together and the wall
+	// clock becomes the slowest one (subject to the Insights concurrency
+	// semaphore, which stays as it is — it is the thing keeping this from
+	// hammering the API).
+	//
 	// The User-Agent lives inside httpRequest.headers[], whose index varies per
 	// request, so it is pulled off the raw message rather than a JSON field.
-	pathRes, err := run("stats count(*) as cnt by httpRequest.uri as path, action | sort cnt desc | limit 200")
-	if err != nil {
-		return wafLogAggregation{}, err
+	type namedQuery struct {
+		label string
+		query string
 	}
-	ipRes, err := run("stats count(*) as cnt by httpRequest.clientIp as ip, action | sort cnt desc | limit 100")
-	if err != nil {
-		return wafLogAggregation{}, err
+	queries := []namedQuery{
+		{"경로", "stats count(*) as cnt by httpRequest.uri as path, action | sort cnt desc | limit 200"},
+		{"클라이언트 IP", "stats count(*) as cnt by httpRequest.clientIp as ip, action | sort cnt desc | limit 100"},
+		{"User-Agent", `parse @message /"name":"(?i)user-agent","value":"(?<ua>[^"]*)"/ | stats count(*) as cnt by ua | sort cnt desc | limit 20`},
+		{"HTTP 메소드", "stats count(*) as cnt by httpRequest.httpMethod as method | sort cnt desc | limit 10"},
+		{"쿼리스트링", "filter httpRequest.args != '' | stats count(*) as cnt by httpRequest.args as args | sort cnt desc | limit 20"},
 	}
-	uaRes, err := run(`parse @message /"name":"(?i)user-agent","value":"(?<ua>[^"]*)"/ | stats count(*) as cnt by ua | sort cnt desc | limit 20`)
-	if err != nil {
-		return wafLogAggregation{}, err
+	type queryOutcome struct {
+		result InsightsResult
+		err    error
 	}
-	methodRes, err := run("stats count(*) as cnt by httpRequest.httpMethod as method | sort cnt desc | limit 10")
-	if err != nil {
-		return wafLogAggregation{}, err
+	outcomes := make([]queryOutcome, len(queries))
+	var wg sync.WaitGroup
+	for i, q := range queries {
+		wg.Add(1)
+		go func(index int, query string) {
+			defer wg.Done()
+			res, err := run(query)
+			outcomes[index] = queryOutcome{result: res, err: err}
+		}(i, q.query)
 	}
-	argsRes, err := run("filter httpRequest.args != '' | stats count(*) as cnt by httpRequest.args as args | sort cnt desc | limit 20")
-	if err != nil {
-		return wafLogAggregation{}, err
+	wg.Wait()
+
+	// The path query is load-bearing: total, blockedTotal and every share
+	// threshold that hangs off them fold out of it alone. Losing it means the
+	// whole aggregation is untrustworthy, so it still fails the call and drops
+	// the caller to the sampled-requests path.
+	if outcomes[0].err != nil {
+		return wafLogAggregation{}, outcomes[0].err
 	}
+	notes := []string{}
+	// The other four degrade to empty rather than taking the panel down with
+	// them — but never silently. An empty 상위 IP table that means "the query
+	// failed" looks exactly like one that means "no traffic", and on this screen
+	// those two lead to opposite decisions.
+	optional := func(index int) InsightsResult {
+		if err := outcomes[index].err; err != nil {
+			notes = append(notes, fmt.Sprintf(
+				"%s 집계 쿼리가 실패해 해당 목록이 비어 있습니다 — 관측이 없다는 뜻이 아닙니다: %s",
+				queries[index].label, ErrMsg(err)))
+			return InsightsResult{}
+		}
+		return outcomes[index].result
+	}
+	pathRes := outcomes[0].result
+	ipRes := optional(1)
+	uaRes := optional(2)
+	methodRes := optional(3)
+	argsRes := optional(4)
 
 	pathFolded, pathOrder := foldByAction(pathRes.Rows, "path")
 	total, blockedTotal := 0, 0
@@ -601,6 +678,7 @@ func (a *AWS) fetchWafLogInsights(ctx context.Context, win types.ResolvedWindow)
 		blockedTotal:  blockedTotal,
 		bytesScanned:  pathRes.BytesScanned + ipRes.BytesScanned + uaRes.BytesScanned + methodRes.BytesScanned + argsRes.BytesScanned,
 		coveredEndMs:  win.EndMs,
+		notes:         notes,
 	}, nil
 }
 

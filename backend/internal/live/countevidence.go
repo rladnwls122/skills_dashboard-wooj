@@ -66,8 +66,13 @@ func escapeForRegex(s string) string {
 // indices if either ever bites.
 func buildCountQuery(ruleName string) string {
 	return strings.Join([]string{
-		"fields @timestamp, httpRequest.uri as uri, httpRequest.args as args",
-		"httpRequest.httpMethod as method",
+		// One `fields` clause, not two stages. Every stage of a Logs Insights
+		// pipeline has to begin with a command, so a bare field expression
+		// after a pipe is a MalformedQueryException — this query never ran at
+		// all, and the empty result read on screen as "이 규칙은 아무것도
+		// 잡지 않았다" rather than as a query that was rejected. The trailing
+		// comma belongs to the previous element, not to a new stage.
+		"fields @timestamp, httpRequest.uri as uri, httpRequest.args as args, httpRequest.httpMethod as method",
 		fmt.Sprintf(`filter @message like /"ruleId":"%s"/`, escapeForRegex(ruleName)),
 		`filter action != "BLOCK"`,
 		"sort @timestamp desc",

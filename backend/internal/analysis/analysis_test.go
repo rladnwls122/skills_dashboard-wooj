@@ -128,9 +128,9 @@ func TestDurationMs(t *testing.T) {
 func TestRequestIDOf(t *testing.T) {
 	cases := map[string]string{
 		"/v1/user?email=a%40b.org&requestid=999999999999&uuid=x": "999999999999",
-		"/v1/product?id=1&requestid=abc-1":                      "abc-1",
-		"/v1/user":                                              "",
-		"/v1/user?uuid=only":                                    "",
+		"/v1/product?id=1&requestid=abc-1":                       "abc-1",
+		"/v1/user":                                               "",
+		"/v1/user?uuid=only":                                     "",
 	}
 	for in, want := range cases {
 		if got := RequestIDOf(in); got != want {
@@ -203,5 +203,71 @@ func TestPackToLimitDropsWholeSectionsFirst(t *testing.T) {
 	}
 	if !strings.Contains(out, "생략") {
 		t.Fatal("must state what was dropped")
+	}
+}
+
+// A metric CloudWatch never returned is a hole in the evidence, not a
+// corroborating spike: counting nil metrics as signals let one alarm escalate
+// itself to CRITICAL on a cluster that simply does not publish the others.
+func TestMissingMetricsDoNotCorroborate(t *testing.T) {
+	now := time.Date(2026, 8, 20, 9, 0, 0, 0, time.UTC)
+	critical := func(key string) types.MetricSummary {
+		return types.MetricSummary{Key: key, Status: "CRITICAL", Previous: 1, Current: 99}
+	}
+	severityOf := func(anomalies []types.Anomaly, typ string) string {
+		for _, a := range anomalies {
+			if a.Type == typ {
+				return a.Severity
+			}
+		}
+		return ""
+	}
+
+	// One alarming metric, every other metric absent.
+	lone := DetectAnomalies(AnomalyInput{Metrics: []types.MetricSummary{critical("http4xx")}}, now)
+	if got := severityOf(lone, "4XX_SPIKE"); got != "WARNING" {
+		t.Fatalf("a lone alarm must not reach CRITICAL, got %q", got)
+	}
+
+	// Two metrics that were actually measured and are actually abnormal do
+	// corroborate each other.
+	pair := DetectAnomalies(AnomalyInput{Metrics: []types.MetricSummary{
+		critical("http4xx"), critical("http5xx"),
+	}}, now)
+	if got := severityOf(pair, "4XX_SPIKE"); got != "CRITICAL" {
+		t.Fatalf("two measured alarms must corroborate, got %q", got)
+	}
+}
+
+// The three totals describe everything parsed, not the tail the panel samples.
+// They are set precisely when Logs Insights failed and this fallback ran, so a
+// blank count is a blank count at the worst possible moment.
+func TestAnalyzeRequestLogCountsBeyondTheSampleTail(t *testing.T) {
+	lines := []string{}
+	for i := 0; i < 600; i++ {
+		lines = append(lines,
+			`[GIN] 2025/09/23 - 03:12:45 | 500 |   12.345678ms |   203.0.113.10 | POST     "/v1/user"`)
+	}
+	a := AnalyzeRequestLog(lines)
+	if len(a.Entries) != 500 {
+		t.Fatalf("sample list should stay capped at 500, got %d", len(a.Entries))
+	}
+	if a.TotalRequests == nil || *a.TotalRequests != 600 {
+		t.Fatalf("totalRequests=%v, want 600", a.TotalRequests)
+	}
+	if a.NonOkTotal == nil || *a.NonOkTotal != 600 {
+		t.Fatalf("nonOkTotal=%v, want 600", a.NonOkTotal)
+	}
+	// Error/warn lines are sampled at 100 and counted in full.
+	errorLines := []string{}
+	for i := 0; i < 150; i++ {
+		errorLines = append(errorLines, "2025/09/23 03:12:47 Failed to query DB: Error 1062")
+	}
+	warn := AnalyzeRequestLog(errorLines)
+	if len(warn.ErrorWarnLines) != 100 {
+		t.Fatalf("errorWarnLines should stay capped at 100, got %d", len(warn.ErrorWarnLines))
+	}
+	if warn.ErrorWarnTotal == nil || *warn.ErrorWarnTotal != 150 {
+		t.Fatalf("errorWarnTotal=%v, want 150", warn.ErrorWarnTotal)
 	}
 }

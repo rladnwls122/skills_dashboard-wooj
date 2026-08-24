@@ -281,11 +281,11 @@ func (a *AWS) discoverAppLogGroups(ctx context.Context) (types.DiscoveryResult, 
 	seen := map[string]string{}
 	order := []string{}
 	notes := []string{}
-	// ECS awslogs groups first (the 2025 task runs the binaries on ECS/EC2 —
-	// one group per task definition is the usual layout), then the Container
-	// Insights path, then anything under /aws/, because a cluster set up by
-	// hand rarely uses the generated name.
-	for _, prefix := range []string{"/ecs/", "/aws/ecs/", "/aws/containerinsights/", "/aws/eks/", "/aws/"} {
+	// Container Insights first: the 2026 task mandates EKS and forbids ECS, so
+	// that is where the application log actually lands. The /ecs/ prefixes stay
+	// last rather than being dropped — a variant of the task, or a leftover
+	// group from an earlier build, still shows up rather than silently missing.
+	for _, prefix := range []string{"/aws/containerinsights/", "/aws/eks/", "/aws/", "/ecs/", "/aws/ecs/"} {
 		res, err := client.DescribeLogGroups(ctx, &cloudwatchlogs.DescribeLogGroupsInput{
 			LogGroupNamePrefix: aws.String(prefix), Limit: aws.Int32(50),
 		})

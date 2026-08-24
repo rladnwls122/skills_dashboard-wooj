@@ -57,11 +57,31 @@ func (a *AWS) discoverAlb(ctx context.Context) (AlbDimensions, error) {
 		}
 	}
 	if lb == nil {
+		// Fall back only where there is nothing to get wrong. Taking the first
+		// application load balancer out of several meant every
+		// TargetResponseTime, every 5XX count and every target-group panel
+		// downstream described a load balancer nobody named — and said nothing
+		// about it, so the numbers looked healthy while belonging to something
+		// else entirely. One ALB in the account is an unambiguous match; two is
+		// a question only the operator can answer.
+		candidates := []*elbtypes.LoadBalancer{}
 		for i := range lbs.LoadBalancers {
 			if lbs.LoadBalancers[i].Type == elbtypes.LoadBalancerTypeEnumApplication {
-				lb = &lbs.LoadBalancers[i]
-				break
+				candidates = append(candidates, &lbs.LoadBalancers[i])
 			}
+		}
+		switch {
+		case len(candidates) == 1:
+			lb = candidates[0]
+		case len(candidates) > 1:
+			names := make([]string, 0, len(candidates))
+			for _, c := range candidates {
+				names = append(names, aws.ToString(c.LoadBalancerName))
+			}
+			return AlbDimensions{}, fmt.Errorf(
+				"설정된 ALB 이름 %q 을(를) 찾지 못했고, 계정에 Application Load Balancer 가 %d개 있어 어느 것인지 결정할 수 없습니다: %s. "+
+					"설정에서 ALB_NAME 을 지정하세요 — 임의로 하나를 고르면 엉뚱한 로드밸런서의 지연·상태 코드가 이 화면에 표시됩니다.",
+				albName, len(candidates), strings.Join(names, ", "))
 		}
 	}
 	if lb == nil || lb.LoadBalancerArn == nil {

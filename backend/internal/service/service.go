@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -271,28 +270,25 @@ func (s *Service) ListDeployHistory() ([]types.DeployChangeEntry, error) {
 
 // --- deployments -------------------------------------------------------------
 
-var nameRe = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-
 // Validate rejects before anything is sent to the cluster (spec §22): the
-// namespace is pinned to the configured one, names must be DNS labels, and the
-// replica count is bounded by MAX_REPLICAS.
+// namespace is pinned to the configured one, names must be DNS labels, the
+// replica count is bounded by MAX_REPLICAS and resource quantities have to be
+// in a form Kubernetes will take.
+//
+// Every one of those rules now comes from config.ValidateDeploymentPatch, which
+// kube.ValidatePatch calls as well. This function used to carry its own weaker
+// copy, and since the preview path runs this one, the confirm screen approved
+// CPU/memory values that the apply then rejected at the cluster — the operator
+// finding out only after they had pressed the button.
 func (s *Service) Validate(req DeploymentPatchRequest) error {
-	if !nameRe.MatchString(req.Namespace) {
-		return fmt.Errorf("invalid namespace: %s", req.Namespace)
-	}
-	if target := s.Settings.Value("TARGET_NAMESPACE"); req.Namespace != target {
-		return fmt.Errorf("namespace must be %s", target)
-	}
-	if !nameRe.MatchString(req.Name) {
-		return fmt.Errorf("invalid deployment name: %s", req.Name)
-	}
-	if req.Replicas != nil {
-		max := s.Settings.MaxReplicas()
-		if *req.Replicas < 0 || *req.Replicas > max {
-			return fmt.Errorf("replicas out of range (0..%d): %d", max, *req.Replicas)
-		}
-	}
-	return nil
+	return s.Settings.ValidateDeploymentPatch(config.DeploymentPatchFields{
+		Namespace:     req.Namespace,
+		Name:          req.Name,
+		Replicas:      req.Replicas,
+		ContainerName: req.ContainerName,
+		CPULimit:      req.CPULimit,
+		MemLimit:      req.MemLimit,
+	})
 }
 
 func (s *Service) Deployment(ctx context.Context, namespace, name string) (types.DeploymentInfo, error) {
@@ -601,32 +597,38 @@ func (s *Service) RecordResourceSamples(pods []types.PodResourceUsage, nodes []t
 
 // RecordResourceSamplesTo is the free-function form so the live provider can
 // record on the kube-panel poll without holding a *Service.
+//
+// Every series of one poll goes down as a single batch. Writing them one at a
+// time meant one transaction — and, before the batch entry point existed, one
+// full-table retention sweep — per pod per metric, four times over on a
+// twenty-pod cluster every three seconds, all of it queued through the store's
+// single connection. The readings are one observation of one moment; they
+// belong in one write.
 func RecordResourceSamplesTo(st *store.Store, pods []types.PodResourceUsage, nodes []types.NodeResourceUsage, nowMs int64) error {
 	const gridMs = 10_000
 	t := nowMs / gridMs * gridMs
-	write := func(kind, metric, name string, v *float64) error {
+	batch := make([]store.SeriesSamples, 0, len(pods)*2+len(nodes)*2)
+	add := func(kind, metric, name string, v *float64) {
 		// A pod with no limit set has no percentage. Writing 0 would draw a
 		// floor that reads as "idle" when it means "not measurable".
 		if v == nil || math.IsNaN(*v) || math.IsInf(*v, 0) {
-			return nil
+			return
 		}
-		return st.SaveMetricSamples(resPrefix+kind+":"+metric+":"+name, []store.Sample{{T: t, V: *v}})
+		batch = append(batch, store.SeriesSamples{
+			Key:    resPrefix + kind + ":" + metric + ":" + name,
+			Points: []store.Sample{{T: t, V: *v}},
+		})
 	}
 	for _, p := range pods {
-		if err := write("pod", "cpu", p.Pod, p.CPUPct); err != nil {
-			return err
-		}
-		if err := write("pod", "mem", p.Pod, p.MemPct); err != nil {
-			return err
-		}
+		add("pod", "cpu", p.Pod, p.CPUPct)
+		add("pod", "mem", p.Pod, p.MemPct)
 	}
 	for _, n := range nodes {
-		if err := write("node", "cpu", n.Name, &n.CPUPct); err != nil {
-			return err
-		}
-		if err := write("node", "mem", n.Name, &n.MemPct); err != nil {
-			return err
-		}
+		add("node", "cpu", n.Name, &n.CPUPct)
+		add("node", "mem", n.Name, &n.MemPct)
 	}
-	return nil
+	if len(batch) == 0 {
+		return nil
+	}
+	return st.SaveMetricSampleBatch(batch)
 }
