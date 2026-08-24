@@ -1,4 +1,4 @@
-# 과제 바이너리가 실제로 찍는 것 (2025 전국기능경기대회 · 클라우드컴퓨팅 3과제)
+# 과제 바이너리가 실제로 찍는 것 (전국기능경기대회 · 클라우드컴퓨팅 3과제)
 
 대시보드의 로그 파싱·채점 키·규칙 샌드박스는 전부 이 문서의 사실 위에 서 있다.
 출처는 `3과제/문제/` 의 `user` · `product` · `stress` ELF 바이너리(Go 1.22, Gin v1.10.1, 디버그 심볼 포함)를
@@ -32,8 +32,11 @@ stdout  [GIN] 2025/09/23 - 03:12:45 | 201 |   12.345678ms |   203.0.113.10 | POS
 
 ### 로그 그룹 형태
 
-* **ECS awslogs** (과제가 요구하는 배포): 위 줄이 그대로 `@message`. 서비스마다 그룹이 다르면 설정의 `APP_LOG_GROUP` 에 쉼표로 나열 (`/ecs/user,/ecs/product,/ecs/stress`).
-* **EKS Container Insights**: `{"log":"[GIN] … POST     \"/v1/user\"\n","stream":"stdout","kubernetes":{…}}` 처럼 JSON 으로 감싸이고 경로의 따옴표가 `\"` 로 이스케이프된다.
+* **EKS Container Insights** — 2026 과제가 요구하는 배포다(ECS 사용 불가). 기본 그룹은
+  `/aws/containerinsights/<클러스터>/application`. 줄이 JSON 으로 감싸이고 경로의 따옴표가 `\"` 로
+  이스케이프된다: `{"log":"[GIN] … POST     \"/v1/user\"\n","stream":"stdout","kubernetes":{…}}`
+* **ECS awslogs** — 2026 에서는 쓸 수 없지만 파서는 이 형태도 그대로 읽는다. 위 줄이 감싸이지 않은
+  `@message` 로 온다. 그룹이 여러 개로 나뉘면 `APP_LOG_GROUP` 에 쉼표로 나열한다.
 
 대시보드의 Insights 파서(`backend/analysis/logfields.ts`)는 `@message` 에 정규식을 걸어 두 형태를 모두 읽는다.
 패턴에 백슬래시를 쓰지 않는 이유도 거기 적혀 있다 — `\\\\` 형태는 parse 절이 하나일 때만 맞고 두 번째 parse 가 붙으면 결과 행이 달라지는 것을 실제 로그 그룹으로 확인했다.
@@ -87,32 +90,33 @@ GET 도 0~100 난수 sleep 이 있다.
 
 | 채점 항목 | 배점 | 대시보드 줄 | 출처 | 계산 |
 |---|---|---|---|---|
-| user/product/stress API 로드 처리 ≥ 30…90 % | 12 | `<api> API 로드 처리` | 앱 로그 | 2xx 이고 5초 이내 / 그 경로 전체 |
-| (로드 처리 ≤ 0.2 s) user·product, ≤ 1.0 s stress | 12 | `<api> API 로드 처리 ≤ 0.2s / ≤ 1.0s` | 앱 로그 | 2xx 이고 SLO 이내 / 전체 |
-| Email Request Validation ≥ 50…90 % | 2 | `Email Request Validation (403)` ≈ | WAF 로그 | POST /v1/user 를 WAF 가 BLOCK 한 건수. **분모(주입된 잘못된 이메일 수)는 어디에도 없다** — 0건이면 규칙이 없거나 COUNT |
-| 비정상 요청 처리율 ≥ 50…90 % | 2 | `비정상 요청 처리율 (403)` ≈ | WAF 로그 + 앱 로그 | 서비스 경로 BLOCK / (BLOCK + 앱까지 샌 `Consumed resources by malicious attacks.` 줄 수) |
-| (과제 본문) 미지정 경로 → 404 | — | `미지정 경로 404` | 앱 로그 + WAF | 비서비스 경로 요청 중 404 / (비서비스 요청 + WAF 가 BLOCK 한 미지정 경로) |
-| 인스턴스 비용 ratio | 12 | 노드 수 비용 패널 | EC2 | 허용 타입 `c5.large` (`ALLOWED_INSTANCE_TYPE`) |
+| image download ≥ 50…90 % | 2 | `image download` | 앱 로그 | `/images/…` 요청 중 2xx 이고 5초 이내 / 전체 |
+| Exception Handling ≥ 50…90 % | 2 | `Exception Handling` ≈ | WAF 로그 + 앱 로그 | (서비스 경로 BLOCK + 미지정 경로 404) / (그 합 + 앱까지 샌 비정상 요청 + 404 로 안 끝난 미지정 경로 + WAF 가 막아 403 이 된 미지정 경로) |
+| (user/product/stress) availability ≥ 30…90 % | 12 | `(<api>) availability` | 앱 로그 | 2xx 이고 5초 이내 / 그 경로 전체 |
+| (user/product/stress) performance ≥ 30…90 % | 12 | `(<api>) performance ≤ 0.2s / ≤ 1.0s` | 앱 로그 | 2xx 이고 SLO 이내 / 전체 |
+| 인스턴스 비용 ratio 0.5 ~ 3.75 | 12 | 노드 수 비용 패널 | EC2 | 허용 타입 **`t3.medium`** (문제지 §7, `ALLOWED_INSTANCE_TYPE` 로 변경 가능) |
+
+채점 문턱은 availability·performance 가 90 / 87.5 / 85 / 82.5 / 80 / 70 / 50 / 30 %,
+image download·Exception Handling 이 90 / 85 / 80 / 50 % 다. 하나 넘을 때마다 0.5점이라
+대시보드가 각 줄에 **지금 구간과 다음 문턱까지 남은 %p** 를 같이 찍는다.
 
 주의할 점:
 
-* 분모가 앱 로그 전체라 **앱이 스스로 내는 403(username 중복)·400·500 도 로드 처리 분모에 들어간다.** 채점기는 자신이 보낸 요청만 센다.
-* 응답 시간·코드는 **클라이언트 도착 기준**으로 채점된다. 앱 로그의 지연은 앱 내부 처리 시간이라 ALB·WAF·네트워크 구간이 빠져 있다 — 대시보드 값이 채점기보다 낙관적일 수 있다.
-* "≈" 가 붙은 줄은 분자만 관측 가능한 값이다. 비율이 아니라 **건수가 움직이는지**를 본다.
+* 분모가 앱 로그 전체라 **앱이 스스로 내는 403(username 중복)·400·500 도 availability 분모에 들어간다.** 채점기는 자신이 보낸 요청만 센다.
+* 응답 시간·코드는 **클라이언트 도착 기준**으로 채점된다. 앱 로그의 지연은 앱 내부 처리 시간이라 ALB·CloudFront·네트워크 구간이 빠져 있다 — 대시보드 값은 채점기보다 항상 낙관적이다.
+* "≈" 가 붙은 줄은 분모 일부가 관측 불가다. 비율보다 **건수가 움직이는지**를 본다.
+* cost ratio 는 채점기가 자기 기준으로 계산한다. 대시보드는 노드 대수와 1대 증감 효과만 보여주고 ratio 를 추정하지 않는다.
 
-## 4. 과제 환경 (PDF)
+## 4. 과제 환경 (2026 문제지)
 
-* 컴퓨트: **ECS + EC2(c5.large 만)**, EKS·Fargate·Lambda 금지. 엔드포인트 하나(ALB/CloudFront), 프로토콜+호스트만 채점기에 등록.
-* DB: RDS MySQL 8.0 `apdev-rds-instance` · db.t3.micro · Multi-AZ · gp3, `load_user.dump` 로 `dev.user` 5,000 행 적재. DynamoDB 테이블 1개 (`id` / `name` / `price`).
-* 트래픽: 경기 시작 1시간 뒤부터 2시간. Score Board 의 Response(total/2xx/3xx/4xx/5xx/err) 는 샘플링 값.
-* 모든 시간 KST.
+* 컴퓨트: **EKS + EC2(`t3.medium` 만)**. **ECS 사용 불가**, Fargate·Lambda 는 어떤 목적으로도 사용 불가.
+  엔드포인트 하나로 단일화하고 프로토콜+호스트만 채점 플랫폼에 등록(경로 기입 금지).
+* DB: RDS MySQL 8.0 `apdev-rds-instance` · db.t3.micro · Multi-AZ · gp3, `load_user.dump` 로 적재.
+* 정적: S3 이미지를 같은 엔드포인트의 `/images/<object path>` 로 제공. 가용성·SLO 모두 5초.
+* 응답 계약: 서비스 경로의 비정상 요청 → **403**, 제공하지 않는 경로 → **404**.
+* 트래픽: 경기 시작 1시간 뒤부터 2시간. 경기 시간 3시간, 모든 시간 KST.
 
-대시보드의 Kubernetes 패널·Deployment 조정·노드 스케일링은 EKS 전제라 ECS 환경에서는 비어 있다(연결 실패로 표시됨). 로그·채점·WAF·규칙 화면은 로그 그룹만 맞추면 그대로 쓴다.
-
-## 5. 검증 방법
-
-`backend/analysis/analysis.test.ts` 가 위 표의 실제 로그 줄로 파서를 고정한다.
-Insights 쿼리는 2026-08-20 에 계정의 임시 로그 그룹(`/skills-dashboard/scratch-gin-format-test`, 검증 후 삭제)에 같은 줄을 넣고
-`stats … by path`, `coalesce` 지연 환산, `requestid in […]` 조인, `kubernetes.pod_name or @logStream` 스코프까지 실행해 확인했다.
-바꿀 일이 생기면 같은 방법으로 다시 확인한다 — Insights 는 새로 넣은 이벤트가 조회되기까지 5분 남짓 걸리고,
-로그 그룹 생성 시각보다 앞선 타임스탬프의 이벤트는 끝내 조회되지 않았다.
+> **연도 차이 주의.** 이 문서 1~2절(로그 형식·바이너리 동작)은 2025 바이너리를 디스어셈블해 얻은
+> 것이고 2026 과제도 같은 Go/Gin 바이너리를 쓰므로 그대로 유효하다. 반면 3절 채점 키와 4절 환경은
+> **2026 문제지·채점기준 기준으로 갱신**했다 — 2025 는 ECS + `c5.large` 였고 채점 키 이름도 달랐다.
+> 대시보드는 2026 기준으로 맞춰져 있다.
