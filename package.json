@@ -7,7 +7,7 @@
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "vite build",
-    "build:clean": "pnpm clean && pnpm build",
+    "build:clean": "npm run clean && npm run build",
     "dev:frontend": "vite",
     "dev:backend": "node --watch backend/main.ts",
     "dev": "node scripts/start.mjs --dev",
@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.backend.json --noEmit",
     "test:contracts": "node scripts/shared-types.test.mjs && node scripts/dashboard-api-contract.test.mjs",
     "test:unit": "node --test backend/**/*.test.ts",
-    "test": "pnpm typecheck && pnpm test:contracts && pnpm test:unit"
+    "test": "npm run typecheck && npm run test:contracts && npm run test:unit"
   },
   "dependencies": {
     "@aws-sdk/client-cloudtrail": "^3.1108.0",

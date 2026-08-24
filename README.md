@@ -25,21 +25,31 @@
 
 ### 1. 내려받기와 설치
 
-**mise 사용**
 ```bash
 git clone https://github.com/rladnwls122/skills_dashboard-wooj.git
 cd skills_dashboard-wooj
-mise install
-mise run install
 ```
 
-**mise 미사용**
+**pnpm** — corepack 이 Node 에 들어 있으므로 따로 설치할 것이 없습니다.
 ```bash
-git clone https://github.com/rladnwls122/skills_dashboard-wooj.git
-cd skills_dashboard-wooj
 corepack enable pnpm
-pnpm install
+pnpm install --frozen-lockfile
 ```
+
+**npm 이 편하면 그것도 됩니다.**
+```bash
+npm ci
+```
+
+`package-lock.json` 과 `pnpm-lock.yaml` 을 둘 다 두는 이유가 이것입니다.
+
+> `npm ci` 와 `--frozen-lockfile` 은 락파일을 **그대로** 씁니다. 락파일과 `package.json` 이 어긋나면
+> 조용히 다른 버전을 깔지 않고 실패합니다 — 당일에는 그게 맞습니다.
+> 출력은 일부러 줄이지 않았습니다. 무엇이 깔리는지 보이는 편이 낫습니다.
+>
+> **필요한 도구는 Node.js 하나뿐입니다.** mise 도, Go 도 필요 없습니다 — 저장소에 `mise.toml` 이
+> 있지만 편의용이고 대회장에서는 쓰지 않습니다. 모든 `pnpm <스크립트>` 는 `npm run <스크립트>` 로
+> 그대로 바꿔 쓸 수 있습니다.
 
 ### 2. AWS 자격증명
 
